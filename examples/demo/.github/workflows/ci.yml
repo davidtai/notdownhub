@@ -1,0 +1,48 @@
+name: demo-ci
+
+# A deliberately small workflow that still exercises the features that
+# distinguish a real Actions engine from an approximation:
+#   - a build matrix
+#   - actions/checkout@v4 (fetched through the hub's mirror, cached after)
+#   - job outputs written to $GITHUB_OUTPUT
+#   - a needs: graph between jobs
+#
+# It runs unchanged on github.com, with `ndh run`, and dispatched to a fleet
+# with `ndh dispatch`.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [alpha, beta, gamma]
+    outputs:
+      # Surfaces the last matrix leg's greeting to downstream jobs.
+      greeting: ${{ steps.greet.outputs.greeting }}
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Show the checkout landed
+        run: |
+          echo "Building flavor '${{ matrix.flavor }}' on ${{ runner.os }}"
+          ls -la
+
+      - name: Produce a job output
+        id: greet
+        run: echo "greeting=hello-from-${{ matrix.flavor }}" >> "$GITHUB_OUTPUT"
+
+  report:
+    runs-on: ubuntu-latest
+    needs: build          # runs only after every matrix leg of `build` succeeds
+    steps:
+      - name: Consume the upstream output
+        run: |
+          echo "build says: '${{ needs.build.outputs.greeting }}'"
+          test -n "${{ needs.build.outputs.greeting }}"
+          echo "needs-graph and job outputs both work."

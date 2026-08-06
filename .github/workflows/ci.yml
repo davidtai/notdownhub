@@ -1,0 +1,41 @@
+name: ci
+
+# Builds and tests every workspace package. `pnpm -r build` / `pnpm -r test`
+# are recursive, so this stays correct as packages (e.g. a future web app) are
+# added — no per-package edits needed.
+#
+# It uses only checkout + pnpm/setup-node, so it is also runnable locally with
+# the tool this repo ships:  `ndh run -W .github/workflows/ci.yml`
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.8.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build all packages
+        run: pnpm -r build
+
+      - name: Test all packages
+        run: pnpm -r test
