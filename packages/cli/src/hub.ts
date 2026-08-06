@@ -17,6 +17,7 @@ export async function hubCmd(argv: string[]): Promise<number> {
       "no-mirror-rewrite": { type: "boolean", default: false },
       "no-ui": { type: "boolean", default: false },
       "github-token": { type: "string" },
+      host: { type: "string" },
     },
   });
   if (positionals[0] !== "up") {
@@ -25,6 +26,11 @@ export async function hubCmd(argv: string[]): Promise<number> {
   }
   await ensureVendor();
   const port = Number(values.port);
+  // Mirror URLs are handed to runners verbatim — they must be reachable from the fleet,
+  // not just this machine. Default to our LAN address; --host overrides (DNS, tailnet, etc).
+  const { networkInterfaces } = await import("node:os");
+  const lanIp = Object.values(networkInterfaces()).flatMap((i) => i ?? []).find((i) => i.family === "IPv4" && !i.internal)?.address;
+  const host = values.host ?? lanIp ?? "127.0.0.1";
   const hubPort = Number(values["hub-port"]);
   const hubHome = join(ndhHome(), "hub");
   await mkdir(hubHome, { recursive: true });
@@ -48,8 +54,8 @@ export async function hubCmd(argv: string[]): Promise<number> {
   if (values["github-token"]) env["Runner.Server__GITHUB_TOKEN"] = values["github-token"];
   if (!values["no-mirror-rewrite"]) {
     // Route `uses:` downloads through our caching mirror → offline-capable after first use.
-    env["Runner.Server__ActionDownloadUrls__0__TarballUrl"] = `http://127.0.0.1:${port}/mirror/{0}/tarball/{1}`;
-    env["Runner.Server__ActionDownloadUrls__0__ZipballUrl"] = `http://127.0.0.1:${port}/mirror/{0}/zipball/{1}`;
+    env["Runner.Server__ActionDownloadUrls__0__TarballUrl"] = `http://${host}:${port}/mirror/{0}/tarball/{1}`;
+    env["Runner.Server__ActionDownloadUrls__0__ZipballUrl"] = `http://${host}:${port}/mirror/{0}/zipball/{1}`;
   }
 
   const child = spawn(vendorExe("Runner.Server"), ["--urls", `http://*:${hubPort}`], {

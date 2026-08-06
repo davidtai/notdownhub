@@ -1,0 +1,12 @@
+name: Inner Smoke
+on: [push, workflow_dispatch]
+jobs:
+  inception:
+    runs-on: self-hosted
+    steps:
+      - name: Deepest level
+        run: |
+          echo "recursion depth 2: ndh-inside-ndh on $(hostname)"
+          echo "MARKER=inception-ok" >> "$GITHUB_ENV"
+      - name: Env file works down here too
+        run: test "$MARKER" = inception-ok && echo "GITHUB_ENV OK at depth 2"
