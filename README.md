@@ -37,8 +37,9 @@ nothing pointing at github.com.
 
 ## 60-second quickstart
 
-**Requirements:** Node.js >= 20 to *run* `ndh`. Building from source needs
-Node >= 22.13 (the repo pins pnpm 11). macOS / Linux / Windows on x64 or arm64.
+**Requirements:** Node.js >= 22.13 to *run* and to build `ndh` (the CLI depends
+on commander 15, which needs Node >= 22.12; the repo pins pnpm 11).
+macOS / Linux / Windows on x64 or arm64.
 
 notdownhub isn't published to npm yet, so today the way in is clone + build
 (the CLI's bin is `ndh`):

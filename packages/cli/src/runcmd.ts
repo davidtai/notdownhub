@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { ensureVendor } from "./vendor.js";
 import { run, vendorExe } from "./lib.js";
+import { currentRepoSlug, withRunnerSecrets } from "./secrets.js";
 
 function dockerAvailable(): boolean {
   return spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
@@ -20,18 +21,35 @@ function defaultPlatformArgs(argv: string[]): string[] {
   ];
 }
 
+/** Seams so tests can observe the exact Runner.Client argv without spawning it. */
+export interface RunDeps {
+  runner?: (cmd: string, args: string[]) => Promise<number>;
+  ensure?: () => Promise<unknown>;
+  repoSlug?: () => string | null;
+}
+
 /** `ndh run` — one-shot: in-process hub + runner, executes this repo's workflows right here. */
-export async function runCmd(argv: string[]): Promise<number> {
-  await ensureVendor();
-  return run(vendorExe("Runner.Client"), [...defaultPlatformArgs(argv), ...argv]);
+export async function runCmd(argv: string[], deps: RunDeps = {}): Promise<number> {
+  const runner = deps.runner ?? run;
+  await (deps.ensure ?? ensureVendor)();
+  const slug = (deps.repoSlug ?? currentRepoSlug)();
+  // Secret VALUES are passed only through the ephemeral --secret-file, never on argv.
+  return withRunnerSecrets(slug, (extra) =>
+    runner(vendorExe("Runner.Client"), [...defaultPlatformArgs(argv), ...extra, ...argv]),
+  );
 }
 
 /** `ndh dispatch --server <hub>` — ship this repo's workflows to a hub for the fleet to run. */
-export async function dispatchCmd(argv: string[]): Promise<number> {
-  await ensureVendor();
+export async function dispatchCmd(argv: string[], deps: RunDeps = {}): Promise<number> {
+  const runner = deps.runner ?? run;
+  await (deps.ensure ?? ensureVendor)();
   if (!argv.includes("--server")) {
     console.error("usage: ndh dispatch --server http://hub:4949 [Runner.Client args...]");
     return 2;
   }
-  return run(vendorExe("Runner.Client"), argv);
+  const slug = (deps.repoSlug ?? currentRepoSlug)();
+  return withRunnerSecrets(slug, (extra) => runner(vendorExe("Runner.Client"), [...extra, ...argv]));
 }
+
+/** Exported for tests. */
+export const __test = { defaultPlatformArgs };

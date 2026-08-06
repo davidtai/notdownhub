@@ -1,4 +1,4 @@
-import { parseArgs } from "node:util";
+import type { Command } from "commander";
 
 interface Agent {
   name?: string;
@@ -14,13 +14,19 @@ async function getJson<T>(base: string, path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+export function registerStatus(program: Command): void {
+  program
+    .command("status")
+    .description("show runners + recent runs")
+    .option("--server <url>", "hub base url", "http://localhost:4949")
+    .action(async (opts: { server: string }) => {
+      process.exitCode = await statusCmd(opts.server);
+    });
+}
+
 /** `ndh status --server <hub>` — quick text overview of runners and recent runs. */
-export async function statusCmd(argv: string[]): Promise<number> {
-  const { values } = parseArgs({
-    args: argv,
-    options: { server: { type: "string", default: "http://localhost:4949" } },
-  });
-  const base = values.server.endsWith("/") ? values.server : `${values.server}/`;
+export async function statusCmd(server: string): Promise<number> {
+  const base = server.endsWith("/") ? server : `${server}/`;
 
   const pools = await getJson<{ id?: number; value?: { id: number }[] } | { id: number }[]>(base, "_apis/v1/AgentPools");
   const poolList = Array.isArray(pools) ? pools : (pools.value ?? []);

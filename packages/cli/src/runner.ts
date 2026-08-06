@@ -1,4 +1,4 @@
-import { parseArgs } from "node:util";
+import type { Command } from "commander";
 import { cp, mkdir, readdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
@@ -15,54 +15,86 @@ function listenerExe(dir: string): string {
   return join(dir, "bin", process.platform === "win32" ? "Runner.Listener.exe" : "Runner.Listener");
 }
 
-export async function runnerCmd(argv: string[]): Promise<number> {
-  const sub = argv[0];
-  if (sub === "join") return join_(argv.slice(1));
-  if (sub === "start") return start(argv.slice(1));
-  if (sub === "list") return list();
-  console.error("usage: ndh runner join <hub-url> [--name n] [--labels a,b] [--token t]\n       ndh runner start [name]\n       ndh runner list");
-  return 2;
+const defaultName = () => `${hostname()}-ndh`;
+const defaultLabels = () =>
+  `self-hosted,${process.platform === "darwin" ? "macOS" : process.platform === "win32" ? "Windows" : "Linux"},${process.arch === "arm64" ? "ARM64" : "X64"}`;
+
+interface JoinOptions {
+  name: string;
+  labels: string;
+  token: string;
 }
 
-async function join_(argv: string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      name: { type: "string", default: `${hostname()}-ndh` },
-      labels: { type: "string", default: `self-hosted,${process.platform === "darwin" ? "macOS" : process.platform === "win32" ? "Windows" : "Linux"},${process.arch === "arm64" ? "ARM64" : "X64"}` },
-      token: { type: "string", default: "notdownhub" },
-    },
-  });
-  const hubUrl = positionals[0];
-  if (!hubUrl) fail("hub url required, e.g. ndh runner join http://hub.local:4949");
+export function registerRunner(program: Command): void {
+  const runner = program
+    .command("runner")
+    .description("register and run self-hosted runners against a hub")
+    .action(() => {
+      // `ndh runner` with no subcommand — matches the original usage error + exit code.
+      console.error(
+        "usage: ndh runner join <hub-url> [--name n] [--labels a,b] [--token t]\n       ndh runner start [name]\n       ndh runner list",
+      );
+      process.exitCode = 2;
+    });
+
+  runner
+    .command("join")
+    .description("register this machine as a runner (works across NAT)")
+    .argument("<hub-url>", "hub base url, e.g. http://hub.local:4949")
+    .option("--name <name>", "runner name", defaultName())
+    .option("--labels <labels>", "comma-separated runner labels", defaultLabels())
+    .option("--token <token>", "hub registration token", "notdownhub")
+    .action(async (hubUrl: string, opts: JoinOptions) => {
+      process.exitCode = await join_(hubUrl, opts);
+    });
+
+  runner
+    .command("start")
+    .description("start a joined runner (defaults to the only one if unambiguous)")
+    .argument("[name]", "runner name")
+    .action(async (name?: string) => {
+      process.exitCode = await start(name);
+    });
+
+  runner
+    .command("list")
+    .description("list joined runners")
+    .action(async () => {
+      process.exitCode = await list();
+    });
+}
+
+async function join_(hubUrl: string, opts: JoinOptions): Promise<number> {
   await ensureVendor();
 
   // Each runner needs its own directory: the listener stores .runner/.credentials beside its binary.
-  const dir = runnerDir(values.name);
+  const dir = runnerDir(opts.name);
   if (!(await exists(listenerExe(dir)))) {
     log(`preparing runner instance at ${dir} ...`);
     await mkdir(dir, { recursive: true });
     await cp(vendorDir(), join(dir, "bin"), { recursive: true });
   }
   const url = new URL("runner/server", hubUrl.endsWith("/") ? hubUrl : `${hubUrl}/`).toString();
-  const code = await run(listenerExe(dir), [
-    "configure", "--unattended",
-    "--url", url,
-    "--token", values.token,
-    "--name", values.name,
-    "--labels", values.labels,
-    "--work", "_work",
-    "--replace",
-  ], { cwd: dir });
+  const code = await run(
+    listenerExe(dir),
+    [
+      "configure", "--unattended",
+      "--url", url,
+      "--token", opts.token,
+      "--name", opts.name,
+      "--labels", opts.labels,
+      "--work", "_work",
+      "--replace",
+    ],
+    { cwd: dir },
+  );
   if (code !== 0) return code;
-  log(`runner '${values.name}' joined ${hubUrl}`);
-  log(`start it: ndh runner start ${values.name}`);
+  log(`runner '${opts.name}' joined ${hubUrl}`);
+  log(`start it: ndh runner start ${opts.name}`);
   return 0;
 }
 
-async function start(argv: string[]): Promise<number> {
-  let name = argv[0];
+async function start(name?: string): Promise<number> {
   if (!name) {
     const runners = await listNames();
     if (runners.length !== 1) fail(`specify which runner: ${runners.join(", ") || "(none joined yet)"}`);
