@@ -1,5 +1,8 @@
 name: Remote CI
-on: [push, workflow_dispatch]
+# Fleet-only workflow: its runs-on labels exist on ndh hubs, not on hosted CI.
+# workflow_dispatch-only so pushes to the code host don't queue a job that can never start.
+# Dispatch it with:  ndh dispatch --server <hub> -W .github/workflows/remote-ci.yml --event workflow_dispatch
+on: [workflow_dispatch]
 env:
   COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
 jobs:
