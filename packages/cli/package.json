@@ -1,0 +1,25 @@
+{
+  "name": "notdownhub",
+  "version": "0.1.0",
+  "description": "Run unmodified GitHub Actions CI on your own infrastructure — local repos, your own servers, remote runner fleets. No hub required.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "ndh": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "ui-dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test dist/test/"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

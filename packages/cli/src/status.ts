@@ -1,0 +1,49 @@
+import { parseArgs } from "node:util";
+
+interface Agent {
+  name?: string;
+  ephemeral?: boolean;
+  status?: number | string;
+  labels?: { name?: string }[];
+  [k: string]: unknown;
+}
+
+async function getJson<T>(base: string, path: string): Promise<T> {
+  const res = await fetch(new URL(path, base));
+  if (!res.ok) throw new Error(`${path}: ${res.status}`);
+  return (await res.json()) as T;
+}
+
+/** `ndh status --server <hub>` — quick text overview of runners and recent runs. */
+export async function statusCmd(argv: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: argv,
+    options: { server: { type: "string", default: "http://localhost:4949" } },
+  });
+  const base = values.server.endsWith("/") ? values.server : `${values.server}/`;
+
+  const pools = await getJson<{ id?: number; value?: { id: number }[] } | { id: number }[]>(base, "_apis/v1/AgentPools");
+  const poolList = Array.isArray(pools) ? pools : (pools.value ?? []);
+  console.log("runners:");
+  let any = false;
+  for (const pool of poolList) {
+    const agents = await getJson<Agent[] | { value: Agent[] }>(base, `_apis/v1/Agent/${pool.id}`);
+    for (const a of Array.isArray(agents) ? agents : (agents.value ?? [])) {
+      any = true;
+      const labels = (a.labels ?? []).map((l) => l.name).filter(Boolean).join(",");
+      console.log(`  ${a.name}  [${labels}]`);
+    }
+  }
+  if (!any) console.log("  (none registered)");
+
+  const runs = await getJson<{ id: number; fileName?: string; displayName?: string; status?: string; result?: string; eventName?: string }[]>(
+    base,
+    "_apis/v1/Message/workflow/runs?page=0",
+  );
+  console.log("recent runs:");
+  for (const r of runs.slice(0, 15)) {
+    console.log(`  #${r.id}  ${r.displayName ?? r.fileName ?? "?"}  ${r.status ?? ""}${r.result ? `/${r.result}` : ""}  (${r.eventName ?? "?"})`);
+  }
+  if (runs.length === 0) console.log("  (no runs yet)");
+  return 0;
+}
