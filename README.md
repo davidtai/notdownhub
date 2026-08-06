@@ -37,31 +37,23 @@ nothing pointing at github.com.
 
 ## 60-second quickstart
 
-**Requirements:** Node.js >= 22.13 to *run* and to build `ndh` (the CLI depends
-on commander 15, which needs Node >= 22.12; the repo pins pnpm 11).
-macOS / Linux / Windows on x64 or arm64.
+**Requirements:** Node.js >= 22.13 (macOS / Linux / Windows on x64 or arm64).
 
-notdownhub isn't published to npm yet, so today the way in is clone + build
-(the CLI's bin is `ndh`):
+Install the CLI (its bin is `ndh`):
 
 ```bash
-git clone https://github.com/davidtai/notdownhub
-cd notdownhub.com
-pnpm install && pnpm -r build
-node packages/cli/dist/index.js install   # one-time: downloads the pinned runner stack (~66 MB)
-node packages/cli/dist/index.js run       # run this repo's workflows locally, one-shot
+npm install -g notdownhub
+ndh install      # one-time: downloads the pinned runner stack (~66 MB)
+ndh run          # run this repo's workflows locally, one-shot
 ```
 
-`node packages/cli/dist/index.js` *is* `ndh`; symlink or alias it
-(`alias ndh="node $PWD/packages/cli/dist/index.js"`) and the rest of this
-README's `ndh …` commands work verbatim.
-
-**Once published to npm**, you'll also be able to run it with no clone:
+Prefer not to install globally? Run it one-shot with your package runner:
 
 ```bash
-pnpm dlx notdownhub install     # or: npx notdownhub install
-pnpm dlx notdownhub run         # or: npx notdownhub run
+pnpm dlx notdownhub run        # or: npx notdownhub run
 ```
+
+(Building from a clone instead? See [From source](#from-source).)
 
 `ndh install` downloads and pins `runner.server` **v3.14.0** into
 `~/.notdownhub`. `ndh run` starts an in-process hub + runner and executes the
@@ -85,6 +77,10 @@ if Docker is available, and on the host machine otherwise; `macos-latest`,
 `windows-latest`, and `self-hosted` always run on the host. Override any
 mapping with `-P`, e.g. `-P ubuntu-latest=-self-hosted`.
 
+> **Full install guide:** per-OS prerequisites, what `ndh install` downloads
+> and the `NDH_HOME` layout, the Docker fleet-runner image, air-gapped setup,
+> and how to verify — see **[docs/install.md](docs/install.md)**.
+
 ---
 
 ## Fleet quickstart
@@ -104,10 +100,11 @@ single port, prints a **runner registration token**, and stores it at
 `~/.notdownhub/hub/hub.db` across restarts.
 
 ```
-[ndh] hub up on http://localhost:4949  (ui: yes, auth: on, mirror: on)
+[ndh] hub up on http://localhost:4949  (ui: yes, local-only, auth: on, mirror: on @ http://192.168.1.5:4949/mirror)
+[ndh] logging to ~/.notdownhub/hub/logs/hub-2026-08-07.log (daily rotation)
 [ndh] runner registration token: 8f3c…
-[ndh] join a runner:   ndh runner join http://<this-host>:4949 --token 8f3c…
-[ndh] dispatch a repo: ndh dispatch --server http://<this-host>:4949
+[ndh] join a runner:   ndh runner join http://192.168.1.5:4949 --token 8f3c…
+[ndh] dispatch a repo: ndh dispatch --server http://192.168.1.5:4949
 ```
 
 Useful `hub up` flags:
@@ -119,6 +116,10 @@ Useful `hub up` flags:
   hub's `127.0.0.1`). Override it when the primary NIC guess is wrong or you
   want runners to use a stable name — e.g. a DNS name (`--host hub.internal`)
   or a tailnet address (`--host hub.tailnet`).
+- `--basic-auth <user:pass>` — the web UI and its pairing endpoint are
+  **loopback-only** by default; this admits a non-local operator over HTTP
+  Basic (env `NDH_BASIC_AUTH`). The API/runner protocol/mirror are open
+  regardless — see the security model in [docs/operations.md](docs/operations.md).
 - `--github-token <pat>` — give the server a PAT.
 - `--no-auth` — disable registration-token auth (open registration).
 - `--no-mirror-rewrite` — don't route `uses:` through the mirror.
@@ -148,6 +149,16 @@ ndh status  --server http://hub.tailnet:4949      # runners + recent runs
 > `notdownhub`, which will **not** match a hub's random registration token. On
 > an auth-on hub always pass the real `--token` the hub printed. The default is
 > only useful against a hub started with `--no-auth`.
+
+---
+
+## Operations
+
+Running a hub for real — as a launchd/systemd service, choosing `--host`,
+firewalling the ports, backing up `hub.db` and the token, restart &
+auto-reconnect behavior, warming the mirror for offline, upgrading the pinned
+runner, and a symptom→fix troubleshooting table — is covered in the runbook:
+**[docs/operations.md](docs/operations.md)**.
 
 ---
 
@@ -196,9 +207,12 @@ multi-machine fleet. Full details, request flows, and the security model:
 
 ## Honest caveats (v0.1)
 
-- **The hub API and UI are unauthenticated in v0.1.** Only *runner
-  registration* is token-gated. Treat the hub as a LAN / tailnet tool; don't
-  expose port 4949 to the public internet.
+- **The hub's API, runner protocol, and mirror are unauthenticated in v0.1.**
+  Runner *registration* is token-gated, and the web UI + pairing endpoint
+  (`/api/local/join-info`) are **loopback-only** by default (non-local requests
+  get `403`, or `401` with `--basic-auth user:pass`). The rest of the API is
+  open on port 4949 — treat the hub as a LAN / tailnet tool and don't expose it
+  to the public internet.
 - **Unmodified *official* `actions/runner` binaries can only join a hub on
   `:443` over TLS.** The official runner drops non-standard ports during
   registration (verified with `actions/runner` v2.336.0). The **bundled fork's**
@@ -232,11 +246,26 @@ A ready-to-run sample repo lives in [`examples/demo`](examples/demo) — a matri
 build with `actions/checkout@v4`, job outputs, and a `needs:` graph you can run
 with a single `ndh run`.
 
-## Developing notdownhub
+## From source
+
+Contributors (or anyone who wants to run an unreleased build) can clone and
+build — the CLI's bin is `ndh`:
+
+```bash
+git clone https://github.com/davidtai/notdownhub
+cd notdownhub
+pnpm install && pnpm -r build
+node packages/cli/dist/index.js --version
+```
+
+`node packages/cli/dist/index.js` *is* `ndh`; alias it
+(`alias ndh="node $PWD/packages/cli/dist/index.js"`) and every `ndh …` command
+in these docs works verbatim. Full per-OS build prerequisites are in
+[docs/install.md](docs/install.md#from-source).
 
 This repo eats its own dog food: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
-runs the same on github.com and locally with `ndh`. It runs locally with
-`ndh run`; on a machine without Docker, map `ubuntu-latest` to the host:
+runs the same on GitHub and locally with `ndh`. On a machine without Docker, map
+`ubuntu-latest` to the host:
 
 ```bash
 ndh run -W .github/workflows/ci.yml -P ubuntu-latest=-self-hosted
