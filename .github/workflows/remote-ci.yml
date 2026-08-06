@@ -1,0 +1,24 @@
+name: Remote CI
+on: [push, workflow_dispatch]
+env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+jobs:
+  build-and-test:
+    runs-on: [self-hosted, docker]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prove where we are
+        run: |
+          echo "host: $(hostname)  os: $(uname -a)"
+          head -2 /etc/os-release
+      - name: Install deps
+        run: pnpm --version && pnpm install --frozen-lockfile=false
+      - name: Build
+        run: pnpm -r build
+      - name: Test
+        run: pnpm -r test
+      - name: Recurse — dogfood the freshly built ndh inside this job
+        run: |
+          V=~/.notdownhub/vendor/runner.server-3.14.0
+          mkdir -p "$V" && cp -R /home/runner/ndh/bin/. "$V/" && touch "$V/.ndh-complete"
+          node packages/cli/dist/index.js run -W .github/workflows/inner-smoke.yml --event push
