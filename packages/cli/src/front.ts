@@ -1,4 +1,5 @@
 import http from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, stat, readFile } from "node:fs/promises";
 import { dirname, extname, join, normalize } from "node:path";
@@ -22,6 +23,40 @@ export interface FrontOptions {
   uiDir: string | null;
   /** Hub registration token; lets the proxy mint read-only management JWTs for the agent-status APIs. */
   runnerToken?: string;
+  /** Fleet-reachable host for join commands shown in the UI (mirror URLs use the same value). */
+  host?: string;
+  /** "user:pass" — when set, non-loopback clients may access the UI/join-info with Basic auth. */
+  basicAuth?: string;
+}
+
+/** The UI (and its join-info endpoint) is local-only: the operator at the hub machine. */
+function isLoopback(req: http.IncomingMessage): boolean {
+  const a = req.socket.remoteAddress ?? "";
+  return a === "127.0.0.1" || a === "::1" || a === "::ffff:127.0.0.1";
+}
+
+function basicAuthOk(req: http.IncomingMessage, expected: string): boolean {
+  const header = req.headers.authorization ?? "";
+  if (!header.startsWith("Basic ")) return false;
+  const given = Buffer.from(header.slice(6), "base64");
+  const want = Buffer.from(expected);
+  return given.length === want.length && timingSafeEqual(given, want);
+}
+
+/** Loopback always; otherwise Basic auth when configured. Gates UI + join-info only. */
+function uiAccessAllowed(req: http.IncomingMessage, opts: FrontOptions): boolean {
+  if (isLoopback(req)) return true;
+  return Boolean(opts.basicAuth) && basicAuthOk(req, opts.basicAuth!);
+}
+
+function denyUi(res: http.ServerResponse, opts: FrontOptions): void {
+  if (opts.basicAuth) {
+    res.writeHead(401, { "www-authenticate": 'Basic realm="notdownhub"' });
+    res.end("authentication required");
+  } else {
+    res.writeHead(403);
+    res.end("the notdownhub UI is local-only; API and runner protocol remain available on this port");
+  }
 }
 
 /** The hub's Agent* endpoints require a management JWT even for reads; mint one via the registration route. */
@@ -56,6 +91,24 @@ export function startFront(opts: FrontOptions): http.Server {
       const url = new URL(req.url ?? "/", "http://localhost");
       if (url.pathname.startsWith("/mirror/")) {
         await serveMirror(url.pathname, res);
+      } else if (url.pathname === "/api/local/join-info") {
+        // Pairing info for the UI. The token must not leak to arbitrary readers — a remote
+        // reader could register rogue runners with it. Loopback always; basic auth if configured.
+        if (!uiAccessAllowed(req, opts)) {
+          denyUi(res, opts);
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            host: opts.host ?? "localhost",
+            port: opts.port,
+            token: opts.runnerToken ?? null,
+            authEnabled: Boolean(opts.runnerToken),
+          }),
+        );
+      } else if (opts.uiDir && !uiAccessAllowed(req, opts) && isUiPath(url.pathname)) {
+        denyUi(res, opts);
       } else if (opts.uiDir && (await serveUi(opts.uiDir, url.pathname, res))) {
         // served static UI
       } else {
@@ -97,9 +150,19 @@ function proxy(req: http.IncomingMessage, res: http.ServerResponse, hubPort: num
   req.pipe(upstream);
 }
 
+/** Paths the static UI would serve — everything except the hub-proxy and mirror prefixes. */
+function isUiPath(pathname: string): boolean {
+  return !(
+    pathname.startsWith("/_apis/") ||
+    pathname.startsWith("/runner/") ||
+    pathname.startsWith("/api/") ||
+    pathname.startsWith("/mirror/")
+  );
+}
+
 async function serveUi(uiDir: string, pathname: string, res: http.ServerResponse): Promise<boolean> {
   // Reserve API-ish prefixes for the hub proxy.
-  if (pathname.startsWith("/_apis/") || pathname.startsWith("/runner/") || pathname.startsWith("/api/")) return false;
+  if (!isUiPath(pathname)) return false;
   const clean = normalize(pathname).replace(/^([/\\])+/, "");
   let file = join(uiDir, clean === "" ? "index.html" : clean);
   if (!file.startsWith(uiDir)) return false;

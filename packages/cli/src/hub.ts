@@ -16,6 +16,7 @@ interface HubUpOptions {
   ui: boolean;
   githubToken?: string;
   host?: string;
+  basicAuth?: string;
 }
 
 /** First non-internal IPv4 address, used so mirror URLs are reachable from the fleet. */
@@ -45,6 +46,10 @@ export function registerHub(program: Command): void {
     .option("--no-mirror-rewrite", "do not route action downloads through the caching mirror")
     .option("--no-ui", "do not serve the bundled web UI")
     .option("--github-token <token>", "GitHub token for the action mirror / private repos")
+    .option(
+      "--basic-auth <user:pass>",
+      "allow non-local UI access with HTTP Basic auth (default: UI is loopback-only); env NDH_BASIC_AUTH",
+    )
     .action(async (opts: HubUpOptions) => {
       process.exitCode = await hubUp(opts);
     });
@@ -94,9 +99,14 @@ async function hubUp(opts: HubUpOptions): Promise<number> {
 
   const uiDir = opts.ui ? uiDistDir() : null;
   const ui = uiDir && (await exists(join(uiDir, "index.html"))) ? uiDir : null;
-  startFront({ port, hubPort, uiDir: ui, runnerToken: token || undefined });
+  const basicAuth = opts.basicAuth ?? process.env.NDH_BASIC_AUTH;
+  if (basicAuth && !basicAuth.includes(":")) {
+    log("--basic-auth must be user:pass — ignoring");
+  }
+  const basic = basicAuth?.includes(":") ? basicAuth : undefined;
+  startFront({ port, hubPort, uiDir: ui, runnerToken: token || undefined, host, basicAuth: basic });
 
-  log(`hub up on http://localhost:${port}  (ui: ${ui ? "yes" : "no"}, auth: ${token ? "on" : "OFF"}, mirror: ${opts.mirrorRewrite ? `on @ http://${host}:${port}/mirror` : "off"})`);
+  log(`hub up on http://localhost:${port}  (ui: ${ui ? (basic ? "yes, basic-auth" : "yes, local-only") : "no"}, auth: ${token ? "on" : "OFF"}, mirror: ${opts.mirrorRewrite ? `on @ http://${host}:${port}/mirror` : "off"})`);
   if (token) log(`runner registration token: ${token}`);
   log(`join a runner:   ndh runner join http://${host}:${port}${token ? ` --token ${token}` : ""}`);
   log(`dispatch a repo: ndh dispatch --server http://${host}:${port}`);
