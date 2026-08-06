@@ -4,8 +4,11 @@ name: ci
 # are recursive, so this stays correct as packages (e.g. a future web app) are
 # added — no per-package edits needed.
 #
-# It uses only checkout + pnpm/setup-node, so it is also runnable locally with
-# the tool this repo ships:  `ndh run -W .github/workflows/ci.yml`
+# It uses only checkout + pnpm/setup-node, so it also runs locally with the
+# tool this repo ships. On a machine without Docker, map ubuntu-latest to the
+# host:
+#   ndh run -W .github/workflows/ci.yml -P ubuntu-latest=-self-hosted
+# (Verified end-to-end on macOS/arm64 host: install -> build -> test all pass.)
 
 on:
   push:
@@ -28,7 +31,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22          # pnpm 11 requires Node >= 22.13
           cache: pnpm
 
       - name: Install dependencies

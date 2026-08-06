@@ -37,27 +37,29 @@ nothing pointing at github.com.
 
 ## 60-second quickstart
 
-**Requirements:** Node.js >= 20. macOS / Linux / Windows on x64 or arm64.
+**Requirements:** Node.js >= 20 to *run* `ndh`. Building from source needs
+Node >= 22.13 (the repo pins pnpm 11). macOS / Linux / Windows on x64 or arm64.
 
-Run it without installing anything global:
-
-```bash
-# via pnpm
-pnpm dlx notdownhub install     # one-time: downloads the pinned runner stack (~66 MB)
-pnpm dlx notdownhub run         # run this repo's workflows locally, one-shot
-
-# or via npx
-npx notdownhub install
-npx notdownhub run
-```
-
-Or clone and build (the CLI's bin is `ndh`):
+notdownhub isn't published to npm yet, so today the way in is clone + build
+(the CLI's bin is `ndh`):
 
 ```bash
 git clone https://github.com/OpenSourceWTF/notdownhub.com
 cd notdownhub.com
 pnpm install && pnpm -r build
-node packages/cli/dist/index.js run     # this is `ndh`
+node packages/cli/dist/index.js install   # one-time: downloads the pinned runner stack (~66 MB)
+node packages/cli/dist/index.js run       # run this repo's workflows locally, one-shot
+```
+
+`node packages/cli/dist/index.js` *is* `ndh`; symlink or alias it
+(`alias ndh="node $PWD/packages/cli/dist/index.js"`) and the rest of this
+README's `ndh …` commands work verbatim.
+
+**Once published to npm**, you'll also be able to run it with no clone:
+
+```bash
+pnpm dlx notdownhub install     # or: npx notdownhub install
+pnpm dlx notdownhub run         # or: npx notdownhub run
 ```
 
 `ndh install` downloads and pins `runner.server` **v3.14.0** into
@@ -107,10 +109,19 @@ single port, prints a **runner registration token**, and stores it at
 [ndh] dispatch a repo: ndh dispatch --server http://<this-host>:4949
 ```
 
-Useful `hub up` flags: `--port <n>` (public port, default 4949),
-`--github-token <pat>` (give the server a PAT), `--no-auth` (disable
-registration-token auth), `--no-mirror-rewrite` (don't route `uses:` through
-the mirror), `--no-ui` (API only).
+Useful `hub up` flags:
+
+- `--port <n>` — public port (default 4949).
+- `--host <name-or-ip>` — the address the hub advertises to runners for the
+  action mirror. Defaults to the machine's auto-detected primary LAN IPv4 so
+  that *remote* runners can actually reach the mirror (they can't reach the
+  hub's `127.0.0.1`). Override it when the primary NIC guess is wrong or you
+  want runners to use a stable name — e.g. a DNS name (`--host hub.internal`)
+  or a tailnet address (`--host hub.tailnet`).
+- `--github-token <pat>` — give the server a PAT.
+- `--no-auth` — disable registration-token auth (open registration).
+- `--no-mirror-rewrite` — don't route `uses:` through the mirror.
+- `--no-ui` — API only.
 
 **On each runner machine:**
 
@@ -219,3 +230,17 @@ independent project and is not affiliated with or endorsed by GitHub, Inc.
 A ready-to-run sample repo lives in [`examples/demo`](examples/demo) — a matrix
 build with `actions/checkout@v4`, job outputs, and a `needs:` graph you can run
 with a single `ndh run`.
+
+## Developing notdownhub
+
+This repo eats its own dog food: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+runs the same on github.com and locally with `ndh`. It runs locally with
+`ndh run`; on a machine without Docker, map `ubuntu-latest` to the host:
+
+```bash
+ndh run -W .github/workflows/ci.yml -P ubuntu-latest=-self-hosted
+```
+
+Verified end-to-end on a macOS/arm64 host (no Docker): checkout → pnpm/Node 22
+setup → `pnpm install --frozen-lockfile` → `pnpm -r build` → `pnpm -r test` all
+pass.

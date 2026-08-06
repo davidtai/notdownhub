@@ -91,9 +91,19 @@ To make `uses:` resolvable offline, `hub up` sets (unless
 `--no-mirror-rewrite`):
 
 ```
-Runner.Server__ActionDownloadUrls__0__TarballUrl = http://127.0.0.1:<port>/mirror/{0}/tarball/{1}
-Runner.Server__ActionDownloadUrls__0__ZipballUrl = http://127.0.0.1:<port>/mirror/{0}/zipball/{1}
+Runner.Server__ActionDownloadUrls__0__TarballUrl = http://<host>:<port>/mirror/{0}/tarball/{1}
+Runner.Server__ActionDownloadUrls__0__ZipballUrl = http://<host>:<port>/mirror/{0}/zipball/{1}
 ```
+
+`<host>` is the address the hub advertises to runners. It defaults to the
+machine's **auto-detected primary LAN IPv4** (override with
+`ndh hub up --host <name-or-ip>`). This matters because the runner that
+executes a job resolves `uses:` by dialing these URLs itself — a **remote**
+runner cannot reach the hub's loopback (`127.0.0.1`), so the mirror URL must
+point at an address the runner can actually connect to. Set `--host` to a DNS
+name or tailnet address when the primary-NIC guess is wrong or you want a
+stable name (e.g. `--host hub.tailnet`). `<port>` is the public port
+(`--port`, default 4949).
 
 `{0}` is `<owner>/<repo>`, `{1}` is the ref. So when a job needs
 `actions/checkout@v4`, the server asks the front's `/mirror/...` endpoint
