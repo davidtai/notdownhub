@@ -1,12 +1,12 @@
 import type { Command } from "commander";
-import { spawn } from "node:child_process";
+import { spawn, type SpawnOptions } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import { ensureVendor } from "./vendor.js";
 import { exists, log, ndhHome, randomToken, vendorExe } from "./lib.js";
 import { fileLogWrite, initFileLog } from "./filelog.js";
-import { startFront, uiDistDir } from "./front.js";
+import { startFront, uiDistDir, type FrontOptions } from "./front.js";
 
 interface HubUpOptions {
   port: string;
@@ -56,8 +56,55 @@ export function registerHub(program: Command): void {
     });
 }
 
-async function hubUp(opts: HubUpOptions): Promise<number> {
-  await ensureVendor();
+/** Minimal shape of the spawned child we depend on (kept tiny so tests can fake it). */
+interface ChildLike {
+  on(event: "exit", cb: (code: number | null) => void): unknown;
+  kill(sig: NodeJS.Signals): unknown;
+  stdout?: { on(event: "data", cb: (d: Buffer) => void): unknown } | null;
+  stderr?: { on(event: "data", cb: (d: Buffer) => void): unknown } | null;
+}
+
+/**
+ * Injectable seams: the real CLI uses node's spawn + the real front + process signals/exit and
+ * blocks forever; tests swap these to observe the assembled env/argv without the 200MB bundle.
+ */
+export interface HubDeps {
+  ensure?: () => Promise<unknown>;
+  spawn?: (cmd: string, args: string[], opts: SpawnOptions) => ChildLike;
+  startFront?: (opts: FrontOptions) => unknown;
+  onSignal?: (sig: NodeJS.Signals, fn: () => void) => void;
+  exit?: (code: number) => void;
+  block?: () => Promise<number>;
+}
+
+export interface HubPlan {
+  port: number;
+  hubPort: number;
+  host: string;
+  hubHome: string;
+  token: string;
+  env: NodeJS.ProcessEnv;
+  uiDir: string | null;
+  /** Resolved, validated "user:pass" for non-loopback UI access, or undefined (loopback-only). */
+  basicAuth: string | undefined;
+}
+
+/** Resolve + validate --basic-auth / NDH_BASIC_AUTH. Malformed (no colon) is ignored with a warning. */
+export function resolveBasicAuth(raw: string | undefined): string | undefined {
+  const value = raw ?? process.env.NDH_BASIC_AUTH;
+  if (value && !value.includes(":")) {
+    log("--basic-auth must be user:pass — ignoring");
+    return undefined;
+  }
+  return value?.includes(":") ? value : undefined;
+}
+
+/**
+ * Pure(ish) hub setup: resolves host/ports, persists (or reuses) the registration token, assembles
+ * the Runner.Server env (incl. fleet-reachable mirror URLs), and resolves the UI dir. No process is
+ * spawned here — that's the untestable boundary hubUp handles — so this is exercised directly in tests.
+ */
+export async function prepareHub(opts: HubUpOptions): Promise<HubPlan> {
   const port = Number(opts.port);
   // Mirror URLs are handed to runners verbatim — they must be reachable from the fleet,
   // not just this machine. Default to our LAN address; --host overrides (DNS, tailnet, etc).
@@ -90,9 +137,26 @@ async function hubUp(opts: HubUpOptions): Promise<number> {
     env["Runner.Server__ActionDownloadUrls__0__ZipballUrl"] = `http://${host}:${port}/mirror/{0}/zipball/{1}`;
   }
 
+  const candidate = opts.ui ? uiDistDir() : null;
+  const uiDir = candidate && (await exists(join(candidate, "index.html"))) ? candidate : null;
+  const basicAuth = resolveBasicAuth(opts.basicAuth);
+
+  return { port, hubPort, host, hubHome, token, env, uiDir, basicAuth };
+}
+
+async function hubUp(opts: HubUpOptions, deps: HubDeps = {}): Promise<number> {
+  await (deps.ensure ?? ensureVendor)();
+  const plan = await prepareHub(opts);
+  const { port, hubPort, host, hubHome, token, env, uiDir, basicAuth } = plan;
+
+  const spawnFn = deps.spawn ?? spawn;
+  const startFrontFn = deps.startFront ?? startFront;
+  const onSignal = deps.onSignal ?? ((sig, fn) => process.on(sig, fn));
+  const exit = deps.exit ?? ((code: number) => process.exit(code));
+
   const logPath = initFileLog(join(hubHome, "logs"), "hub");
 
-  const child = spawn(vendorExe("Runner.Server"), ["--urls", `http://*:${hubPort}`], {
+  const child = spawnFn(vendorExe("Runner.Server"), ["--urls", `http://*:${hubPort}`], {
     env,
     cwd: hubHome,
     stdio: ["ignore", "pipe", "pipe"],
@@ -105,22 +169,18 @@ async function hubUp(opts: HubUpOptions): Promise<number> {
     process.stderr.write(d);
     fileLogWrite(d);
   });
-  child.on("exit", (code) => process.exit(code ?? 1));
-  for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => child.kill(sig));
+  child.on("exit", (code) => exit(code ?? 1));
+  for (const sig of ["SIGINT", "SIGTERM"] as const) onSignal(sig, () => child.kill(sig));
 
-  const uiDir = opts.ui ? uiDistDir() : null;
-  const ui = uiDir && (await exists(join(uiDir, "index.html"))) ? uiDir : null;
-  const basicAuth = opts.basicAuth ?? process.env.NDH_BASIC_AUTH;
-  if (basicAuth && !basicAuth.includes(":")) {
-    log("--basic-auth must be user:pass — ignoring");
-  }
-  const basic = basicAuth?.includes(":") ? basicAuth : undefined;
-  startFront({ port, hubPort, uiDir: ui, runnerToken: token || undefined, host, basicAuth: basic });
+  startFrontFn({ port, hubPort, uiDir, runnerToken: token || undefined, host, basicAuth });
 
-  log(`hub up on http://localhost:${port}  (ui: ${ui ? (basic ? "yes, basic-auth" : "yes, local-only") : "no"}, auth: ${token ? "on" : "OFF"}, mirror: ${opts.mirrorRewrite ? `on @ http://${host}:${port}/mirror` : "off"})`);
+  log(`hub up on http://localhost:${port}  (ui: ${uiDir ? (basicAuth ? "yes, basic-auth" : "yes, local-only") : "no"}, auth: ${token ? "on" : "OFF"}, mirror: ${opts.mirrorRewrite ? `on @ http://${host}:${port}/mirror` : "off"})`);
   log(`logging to ${logPath} (daily rotation)`);
   if (token) log(`runner registration token: ${token}`);
   log(`join a runner:   ndh runner join http://${host}:${port}${token ? ` --token ${token}` : ""}`);
   log(`dispatch a repo: ndh dispatch --server http://${host}:${port}`);
-  return await new Promise(() => {});
+  return await (deps.block ?? (() => new Promise<number>(() => {})))();
 }
+
+/** Exposed for tests. */
+export const __test = { prepareHub, hubUp, detectLanIp };
