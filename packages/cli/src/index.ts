@@ -9,6 +9,7 @@ import { runCancelCmd, runDeleteCmd } from "./run-actions.js";
 import { rerunCmd } from "./rerun.js";
 import { registerStatus } from "./status.js";
 import { registerProjects } from "./projects.js";
+import { registerProjectAdd } from "./project-add.js";
 import { registerSecrets } from "./secrets.js";
 import { registerVars } from "./vars.js";
 import { registerHook } from "./hook.js";
@@ -89,6 +90,7 @@ async function buildProgram(): Promise<Command> {
   registerRunner(program);
   registerStatus(program);
   registerProjects(program);
+  registerProjectAdd(program);
   registerSecrets(program);
   registerVars(program);
   registerHook(program);

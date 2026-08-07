@@ -44,7 +44,7 @@ describe("deriveProjects", () => {
     expect(projects.map((p) => p.name)).toEqual(["acme/alpha", "globex/beta"]);
     const alpha = projects[0];
     expect(alpha.runCount).toBe(2);
-    expect(alpha.lastRun.id).toBe(3);
+    expect(alpha.lastRun?.id).toBe(3);
     expect(alpha.lastRunId).toBe(3);
   });
 

@@ -209,7 +209,9 @@ test("projectsCmd: derives from the unpaged full history and prints every projec
     const code = await projectsCmd(srv.url);
     assert.equal(code, 0);
     const out = cap.logs.join("\n");
-    assert.deepEqual(seen, ["/_apis/v1/Message/workflow/runs"]); // no ?page= — full history
+    // The merged hub aggregate is tried first (#113 planned rows); this older hub 404s it,
+    // so the fallback reads the UNPAGED runs list — no ?page=, the full history.
+    assert.deepEqual(seen, ["/api/local/projects", "/_apis/v1/Message/workflow/runs"]);
     assert.match(out, /acme\/alpha\s+40 runs\s+last: #51 Lint completed\/succeeded \(\?\)/);
     assert.match(out, /globex\/beta\s+5 runs/);
     assert.match(out, /initech\/gamma\s+3 runs/);

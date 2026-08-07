@@ -12,6 +12,7 @@ import { getConfigInfo } from "./config-info.js";
 import { listArtifacts, parseArtifactApiPath, parseArtifactPrettyUrl, serveArtifactDownload } from "./artifacts.js";
 import { serveRunCancel, serveRunDelete, serveFilteredRuns, serveProjectDelete } from "./runctl.js";
 import { serveProjects } from "./projects.js";
+import { servePlaceholderCrud } from "./frontstore.js";
 import { appendDefaultPlatform, serveRerun } from "./rerunmap.js";
 import { serveRunsMeta } from "./runs-meta.js";
 import { serveLocalcheckout } from "./localcheckout.js";
@@ -152,12 +153,21 @@ async function handleRequest(
       res.end(JSON.stringify(config));
     } else if (url.pathname === "/api/local/projects") {
       // Distinct projects across the FULL run history (issue #90), aggregated hub-side so the
-      // Projects page never derives its list from one runs page. Same gate as the other reads.
+      // Projects page never derives its list from one runs page. Planned placeholders (#113)
+      // are merged in and pruned on absorption. Same gate as the other reads.
       if (!uiAccessAllowed(req, opts)) {
         denyUi(res, opts);
         return;
       }
       await serveProjects(opts.hubPort, res);
+    } else if (url.pathname === "/api/local/projects/placeholder") {
+      // CRUD for #113 planned-project placeholders — front-owned state (the engine has no
+      // registry). Mutating + UI/CLI-operator-originated, so it rides the same gate.
+      if (!uiAccessAllowed(req, opts)) {
+        denyUi(res, opts);
+        return;
+      }
+      await servePlaceholderCrud(req, url, res);
     } else if (url.pathname === "/api/local/runs-meta") {
       // Batch per-run timing for the runs list/detail (issue #96): startedAt/finishedAt/
       // durationMs keyed by run id, from the hub DB's Job timeline records — the same

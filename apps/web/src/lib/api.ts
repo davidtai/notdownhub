@@ -270,6 +270,54 @@ export async function getProjects(): Promise<Project[] | null> {
   }
 }
 
+// ── Planned-project placeholders (#113) ─────────────────────────────────────
+
+/** What the wizard sends to create a placeholder — the facts parsed from the workflow YAML. */
+export interface PlaceholderInput {
+  slug: string;
+  workflowFileName: string | null;
+  workflowName: string | null;
+  events: string[];
+  branches: string[];
+  runsOn: string[];
+}
+
+export interface PlaceholderResult {
+  ok: boolean;
+  status: number;
+}
+
+/**
+ * Create (or replace) a planned-project placeholder via the front's gated
+ * store — POST /api/local/projects/placeholder. The project then shows as
+ * `planned` on the Projects surface until its first real run absorbs it.
+ */
+export async function createProjectPlaceholder(input: PlaceholderInput): Promise<PlaceholderResult> {
+  try {
+    const res = await fetch(`/api/local/projects/placeholder`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(input),
+    });
+    return { ok: res.ok, status: res.status };
+  } catch {
+    return { ok: false, status: 0 };
+  }
+}
+
+/** Remove a planned-project placeholder (the "Remove" action on a planned card). */
+export async function deleteProjectPlaceholder(slug: string): Promise<PlaceholderResult> {
+  try {
+    const res = await fetch(`/api/local/projects/placeholder?slug=${encodeURIComponent(slug)}`, {
+      method: "DELETE",
+      headers: { accept: "application/json" },
+    });
+    return { ok: res.ok, status: res.status };
+  } catch {
+    return { ok: false, status: 0 };
+  }
+}
+
 /** The workflow definition recorded with a run: its YAML plus the attempt's timeline id. */
 export interface WorkflowDefinition {
   /** Full workflow YAML the hub retained for the run's latest attempt, or null if none. */

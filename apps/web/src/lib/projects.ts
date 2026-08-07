@@ -23,8 +23,8 @@
 import type { WorkflowRun } from "./api";
 import { projectLabel } from "./format";
 
-/** How honestly to present a derived project row. */
-export type ProjectKind = "repo" | "local" | "unattributed";
+/** How honestly to present a derived project row. `planned` = a #113 placeholder with no runs yet. */
+export type ProjectKind = "repo" | "local" | "unattributed" | "planned";
 
 /**
  * Classify a run's attribution. `local` is #59's `local/<dir>` fallback slug
@@ -65,15 +65,27 @@ export interface ProjectWorkflow {
   latestRunId: number;
 }
 
+/** What the wizard/CLI parsed out of the workflow YAML when a placeholder was created (#113). */
+export interface PlannedInfo {
+  workflowFileName: string | null;
+  workflowName: string | null;
+  events: string[];
+  branches: string[];
+  runsOn: string[];
+  createdAt: number;
+}
+
 export interface Project {
   /** The exact recorded label — never a merged or invented name. */
   name: string;
   kind: ProjectKind;
   runCount: number;
-  /** The project's most recent run overall (max id). */
-  lastRun: WorkflowRun;
-  lastRunId: number;
+  /** The project's most recent run overall (max id) — null on a `planned` row (no runs yet). */
+  lastRun: WorkflowRun | null;
+  lastRunId: number | null;
   workflows: ProjectWorkflow[];
+  /** Present only on `planned` rows: the placeholder's parsed workflow facts. */
+  planned?: PlannedInfo;
 }
 
 function pushInto<T>(map: Map<string, T[]>, key: string, value: T): void {
@@ -87,7 +99,7 @@ function pushInto<T>(map: Map<string, T[]>, key: string, value: T): void {
 
 const latestById = (runs: WorkflowRun[]): WorkflowRun => runs.reduce((a, b) => (b.id > a.id ? b : a));
 
-const KIND_ORDER: Record<ProjectKind, number> = { repo: 0, local: 1, unattributed: 2 };
+const KIND_ORDER: Record<ProjectKind, number> = { repo: 0, planned: 1, local: 2, unattributed: 3 };
 
 /**
  * Group runs into projects, and within each project into its distinct
