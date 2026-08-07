@@ -49,6 +49,18 @@ export async function openFrontDb(path = frontStateDbPath(), readOnly = false): 
          created_at INTEGER NOT NULL
        )`,
     );
+    // #114 job display aliases: ALIAS, NEVER OVERRIDE. The engine's job records are
+    // never touched; this maps project + original job key → the display name the
+    // operator chose. Clearing the row restores the original everywhere.
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS job_aliases (
+         project TEXT NOT NULL,
+         job_key TEXT NOT NULL,
+         alias TEXT NOT NULL,
+         updated_at INTEGER NOT NULL,
+         PRIMARY KEY (project, job_key)
+       )`,
+    );
     try {
       chmodSync(path, 0o600);
     } catch {
@@ -200,6 +212,76 @@ export async function deletePlaceholders(slugs: string[], dbPath = frontStateDbP
   }
 }
 
+// ── job display aliases (#114) ──────────────────────────────────────────────
+
+/** One display alias: for `project`, the job keyed `jobKey` renders as `alias`. */
+export interface JobAlias {
+  /** Project slug the alias belongs to (`owner/repo`). */
+  project: string;
+  /** The ORIGINAL job identity — the stable YAML job key (engine `workflowIdentifier`). */
+  jobKey: string;
+  /** The display name the operator chose. Never replaces the stored job name. */
+  alias: string;
+  updatedAt: number;
+}
+
+/** A usable alias/job key: non-empty after trimming. */
+function nonEmpty(v: unknown): v is string {
+  return typeof v === "string" && v.trim().length > 0;
+}
+
+/** Set (or replace) the display alias for project + job key. */
+export async function setJobAlias(
+  project: string,
+  jobKey: string,
+  alias: string,
+  dbPath = frontStateDbPath(),
+  now = Date.now,
+): Promise<void> {
+  const db = await openFrontDb(dbPath);
+  try {
+    db.prepare(
+      `INSERT INTO job_aliases(project,job_key,alias,updated_at) VALUES(?,?,?,?)
+       ON CONFLICT(project,job_key) DO UPDATE SET alias=excluded.alias, updated_at=excluded.updated_at`,
+    ).run(project, jobKey, alias.trim(), now());
+  } finally {
+    db.close();
+  }
+}
+
+/** Clear one alias — the original job name is the display again. Returns whether a row existed. */
+export async function clearJobAlias(project: string, jobKey: string, dbPath = frontStateDbPath()): Promise<boolean> {
+  const db = await openFrontDb(dbPath);
+  try {
+    const info = db.prepare("DELETE FROM job_aliases WHERE project=? AND job_key=?").run(project, jobKey);
+    return Number(info.changes ?? 0) > 0;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Stored aliases, optionally scoped to one project. Tolerant: an unreadable or
+ * absent database means "no aliases" — every surface then shows original names.
+ */
+export async function listJobAliases(project?: string, dbPath = frontStateDbPath()): Promise<JobAlias[]> {
+  try {
+    const db = await openFrontDb(dbPath, true);
+    try {
+      const rows = (
+        project
+          ? db.prepare("SELECT project, job_key AS k, alias, updated_at AS u FROM job_aliases WHERE project=? ORDER BY job_key").all(project)
+          : db.prepare("SELECT project, job_key AS k, alias, updated_at AS u FROM job_aliases ORDER BY project, job_key").all()
+      ) as { project: string; k: string; alias: string; u: number }[];
+      return rows.map((r) => ({ project: r.project, jobKey: r.k, alias: r.alias, updatedAt: r.u }));
+    } finally {
+      db.close();
+    }
+  } catch {
+    return [];
+  }
+}
+
 // ── HTTP surface ─────────────────────────────────────────────────────────────
 
 const JSON_HEADERS = { "content-type": "application/json" } as const;
@@ -284,6 +366,58 @@ export async function servePlaceholderCrud(
         return;
       }
       json(res, 200, { ok: true, slug, removed: await deletePlaceholder(slug, dbPath) });
+      return;
+    }
+    res.writeHead(405, { ...JSON_HEADERS, allow: "GET, POST, DELETE" });
+    res.end(JSON.stringify({ ok: false, error: "method not allowed" }));
+  } catch (err) {
+    json(res, 500, { ok: false, error: String(err) });
+  }
+}
+
+/**
+ * /api/local/job-aliases — CRUD for #114 job display aliases. Gated by the
+ * caller (front.ts) like every other /api/local surface:
+ *   GET     → stored aliases (?project=owner/repo scopes to one project)
+ *   POST    → set one ({ project, jobKey, alias }) — alias must be non-empty
+ *   DELETE  → clear one (?project=…&jobKey=…) — the original name returns
+ */
+export async function serveJobAliasCrud(
+  req: IncomingMessage,
+  url: URL,
+  res: ServerResponse,
+  dbPath = frontStateDbPath(),
+): Promise<void> {
+  try {
+    if (req.method === "GET") {
+      json(res, 200, await listJobAliases(url.searchParams.get("project") ?? undefined, dbPath));
+      return;
+    }
+    if (req.method === "POST") {
+      let body: unknown;
+      try {
+        body = await readJsonBody(req);
+      } catch (err) {
+        json(res, 400, { ok: false, error: String((err as Error).message ?? err) });
+        return;
+      }
+      const o = (body ?? {}) as Record<string, unknown>;
+      if (!isValidSlug(o.project) || !nonEmpty(o.jobKey) || !nonEmpty(o.alias)) {
+        json(res, 400, { ok: false, error: "need project (owner/repo), jobKey, and a non-empty alias" });
+        return;
+      }
+      await setJobAlias(o.project, o.jobKey.trim(), o.alias, dbPath);
+      json(res, 200, { ok: true, project: o.project, jobKey: o.jobKey.trim(), alias: (o.alias as string).trim() });
+      return;
+    }
+    if (req.method === "DELETE") {
+      const project = url.searchParams.get("project");
+      const jobKey = url.searchParams.get("jobKey");
+      if (!isValidSlug(project) || !nonEmpty(jobKey)) {
+        json(res, 400, { ok: false, error: "need ?project=owner/repo&jobKey=<job key>" });
+        return;
+      }
+      json(res, 200, { ok: true, project, jobKey, removed: await clearJobAlias(project, jobKey, dbPath) });
       return;
     }
     res.writeHead(405, { ...JSON_HEADERS, allow: "GET, POST, DELETE" });

@@ -5,14 +5,18 @@ import { join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
+  clearJobAlias,
   deletePlaceholder,
   deletePlaceholders,
   frontStateDbPath,
   isValidSlug,
+  listJobAliases,
   listPlaceholders,
   placeholderFromBody,
   readJsonBody,
+  serveJobAliasCrud,
   servePlaceholderCrud,
+  setJobAlias,
   upsertPlaceholder,
   type ProjectPlaceholder,
 } from "../frontstore.js";
@@ -184,6 +188,67 @@ test("readJsonBody: rejects oversized bodies", async () => {
     const r = await req(s.port, "/", "POST", JSON.stringify({ big: "x".repeat(100) }));
     assert.equal(r.status, 413);
     assert.match(r.body, /body too large/);
+  } finally {
+    await s.close();
+  }
+});
+
+// ── #114 job display aliases ────────────────────────────────────────────────
+test("job aliases: set + list (scoped and all) + replace + clear — original identity untouched", async () => {
+  const db = tempDb();
+  await setJobAlias("acme/app", "build", "  Compile  ", db, () => 5);
+  await setJobAlias("acme/app", "test", "Unit tests", db, () => 6);
+  await setJobAlias("other/x", "build", "B", db, () => 7);
+
+  const scoped = await listJobAliases("acme/app", db);
+  assert.deepEqual(scoped.map((a) => `${a.jobKey}=${a.alias}`), ["build=Compile", "test=Unit tests"]); // trimmed
+  assert.equal((await listJobAliases(undefined, db)).length, 3);
+
+  // Replace, not duplicate: the key is (project, job_key).
+  await setJobAlias("acme/app", "build", "Compile v2", db, () => 8);
+  assert.equal((await listJobAliases("acme/app", db)).find((a) => a.jobKey === "build")?.alias, "Compile v2");
+
+  assert.equal(await clearJobAlias("acme/app", "build", db), true);
+  assert.equal(await clearJobAlias("acme/app", "build", db), false); // idempotent
+  assert.deepEqual((await listJobAliases("acme/app", db)).map((a) => a.jobKey), ["test"]);
+  // Tolerant read on an unreadable store: no aliases, never an error.
+  assert.deepEqual(await listJobAliases(undefined, join(tmpdir(), "missing-dir-xyz", "no.db")), []);
+});
+
+async function aliasServer(dbPath: string): Promise<Fixture> {
+  return startServer((rq, res) => {
+    const url = new URL(rq.url ?? "/", "http://x");
+    void serveJobAliasCrud(rq, url, res, dbPath);
+  });
+}
+
+test("alias CRUD route: POST sets, GET lists (project-scoped), DELETE clears", async () => {
+  const db = tempDb();
+  const s = await aliasServer(db);
+  try {
+    const post = await req(s.port, "/api/local/job-aliases", "POST", JSON.stringify({ project: "acme/app", jobKey: "build", alias: "Compile" }));
+    assert.equal(post.status, 200);
+
+    const list = await req(s.port, "/api/local/job-aliases?project=acme%2Fapp");
+    assert.deepEqual(JSON.parse(list.body).map((a: { alias: string }) => a.alias), ["Compile"]);
+
+    const del = await req(s.port, "/api/local/job-aliases?project=acme%2Fapp&jobKey=build", "DELETE");
+    assert.equal(JSON.parse(del.body).removed, true);
+    assert.deepEqual(await listJobAliases("acme/app", db), []);
+  } finally {
+    await s.close();
+  }
+});
+
+test("alias CRUD route: rejects bad project, empty alias/jobKey, bad JSON, wrong method", async () => {
+  const s = await aliasServer(tempDb());
+  try {
+    assert.equal((await req(s.port, "/api/local/job-aliases", "POST", JSON.stringify({ project: "nope", jobKey: "b", alias: "x" }))).status, 400);
+    assert.equal((await req(s.port, "/api/local/job-aliases", "POST", JSON.stringify({ project: "a/b", jobKey: "b", alias: "   " }))).status, 400);
+    assert.equal((await req(s.port, "/api/local/job-aliases", "POST", JSON.stringify({ project: "a/b", alias: "x" }))).status, 400);
+    assert.equal((await req(s.port, "/api/local/job-aliases", "POST", "{broken")).status, 400);
+    assert.equal((await req(s.port, "/api/local/job-aliases?project=a%2Fb", "DELETE")).status, 400); // no jobKey
+    assert.equal((await req(s.port, "/api/local/job-aliases", "PUT")).status, 405);
   } finally {
     await s.close();
   }

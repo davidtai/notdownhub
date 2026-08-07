@@ -111,3 +111,44 @@ describe("JobList", () => {
     expect(screen.queryByLabelText(/warning/)).toBeNull();
   });
 });
+
+// ── #114 display aliases ────────────────────────────────────────────────────
+describe("JobList aliases (#114)", () => {
+  const aliases = { build: "Compile", test: "Matrix suite" };
+
+  it("renders the alias instead of the job name, with the original in a tooltip", () => {
+    render(
+      <JobList jobs={jobs} durations={durations} aliases={aliases} selectedJobId={null} onSelect={vi.fn()} />,
+    );
+    // Plain job: alias shown, original gone from the visible label.
+    expect(screen.getByText("Compile")).toBeTruthy();
+    expect(screen.queryByText("build")).toBeNull();
+    // Matrix group header aliased too; legs keep their matrix labels.
+    expect(screen.getByText("Matrix suite")).toBeTruthy();
+    expect(screen.getByText("os: linux")).toBeTruthy();
+
+    // Hovering reveals the original name — never lost, only layered over.
+    fireEvent.mouseEnter(screen.getByText("Compile").parentElement!);
+    expect(screen.getByRole("tooltip").textContent).toContain("Original: build");
+  });
+
+  it("shows a rename pencil per job and group when onRename is wired, reporting key + current alias", () => {
+    const onRename = vi.fn();
+    render(
+      <JobList jobs={jobs} durations={durations} aliases={aliases} selectedJobId={null} onSelect={vi.fn()} onRename={onRename} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Rename job build" }));
+    expect(onRename).toHaveBeenCalledWith({ jobKey: "build", original: "build", alias: "Compile" });
+    // The matrix group's pencil hands over the group identity.
+    fireEvent.click(screen.getByRole("button", { name: "Rename job test" }));
+    expect(onRename).toHaveBeenCalledWith({ jobKey: "test", original: "test", alias: "Matrix suite" });
+    // A job without an alias reports alias: null (dialog starts empty).
+    fireEvent.click(screen.getByRole("button", { name: "Rename job empty-key" }));
+    expect(onRename).toHaveBeenCalledWith({ jobKey: "empty-key", original: "empty-key", alias: null });
+  });
+
+  it("renders no pencil when onRename is absent (read-only surfaces stay untouched)", () => {
+    render(<JobList jobs={jobs} durations={durations} selectedJobId={null} onSelect={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: /Rename job/ })).toBeNull();
+  });
+});

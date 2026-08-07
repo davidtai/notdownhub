@@ -188,3 +188,29 @@ function capRes(): { res: http.ServerResponse; rec: { code: number; body: string
   } as unknown as http.ServerResponse;
   return { res, rec };
 }
+
+// ── #114 alias route at the front boundary ──────────────────────────────────
+test("alias route: non-loopback without basic auth is denied (403)", async () => {
+  const c = capRes();
+  await gate.handleRequest(synthReq("10.0.0.9", "/api/local/job-aliases", "POST"), c.res, {
+    basicAuth: undefined,
+  } as never, noMint);
+  assert.equal(c.rec.code, 403);
+});
+
+test("alias route: loopback POST → GET → DELETE roundtrip through the real front", async () => {
+  freshHome();
+  const hub = await fakeEngine([]);
+  const f = await front(hub.port);
+  try {
+    const post = await req(f.port, "/api/local/job-aliases", "POST", JSON.stringify({ project: "acme/app", jobKey: "build", alias: "Compile" }));
+    assert.equal(post.status, 200);
+    const list = await req(f.port, "/api/local/job-aliases");
+    assert.equal(JSON.parse(list.body)[0].alias, "Compile");
+    const del = await req(f.port, "/api/local/job-aliases?project=acme%2Fapp&jobKey=build", "DELETE");
+    assert.equal(JSON.parse(del.body).removed, true);
+  } finally {
+    await f.close();
+    await hub.close();
+  }
+});

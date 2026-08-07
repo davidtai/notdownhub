@@ -237,6 +237,35 @@ export function labelMatch(label: string, fleetLabels: Iterable<string>): LabelM
   return "none";
 }
 
+/** One job as declared in a workflow YAML: its stable key and its display `name:` (if any). */
+export interface WorkflowJob {
+  /** The `jobs.<key>` — the identity #114 display aliases are stored under. */
+  key: string;
+  /** The declared `name:`, else the key. Matrix `${{ … }}` names are kept verbatim. */
+  name: string;
+}
+
+/**
+ * The jobs a workflow YAML declares, in file order — the rename surface on the
+ * Projects breakdown (#114). Returns [] when the YAML doesn't parse or has no
+ * jobs map; never throws.
+ */
+export function workflowJobs(yamlText: string): WorkflowJob[] {
+  let doc: unknown;
+  try {
+    doc = parseYaml(yamlText);
+  } catch {
+    return [];
+  }
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) return [];
+  const jobs = (doc as Record<string, unknown>).jobs;
+  if (!jobs || typeof jobs !== "object" || Array.isArray(jobs)) return [];
+  return Object.entries(jobs as Record<string, unknown>).map(([key, job]) => {
+    const name = job && typeof job === "object" ? (job as Record<string, unknown>).name : undefined;
+    return { key, name: typeof name === "string" ? name : key };
+  });
+}
+
 /**
  * A best-effort `owner/repo` hint scraped from the YAML text (a github.com URL
  * or an explicit `repository:` value) to prefill the wizard's slug field.

@@ -453,4 +453,55 @@ describe("Projects", () => {
     await waitFor(() => expect(screen.getByRole("tooltip").textContent).toMatch(/source tree is not on the hub/));
     expect(screen.queryByText("run-detail-page")).toBeNull();
   });
+
+  // ── #114 job display aliases on the workflow breakdown ─────────────────────
+  const JOBS_YAML = [
+    "name: CI",
+    "on: push",
+    "jobs:",
+    "  build:",
+    "    name: Build it",
+    "    runs-on: x",
+    "  test:",
+    "    runs-on: y",
+  ].join("\n");
+
+  function aliasProjectsRouter(aliases: unknown[], mutations: string[] = []) {
+    return (url: string, init?: { method?: string }) => {
+      const method = init?.method ?? "GET";
+      if (url.includes("/api/local/job-aliases")) {
+        if (method !== "GET") {
+          mutations.push(`${method} ${url}`);
+          return { body: { ok: true } };
+        }
+        return { body: aliases };
+      }
+      if (url.includes("/api/local/projects")) return { body: [summary("acme/alpha", "repo", 2, 3)] };
+      if (url.includes("/run/3/attempts")) return { body: [{ id: 3, attempt: 1, workflow: JOBS_YAML, timeLineId: "tl-3" }] };
+      return hubRouter()(url);
+    };
+  }
+
+  it("lists the workflow's jobs from the retained YAML, aliased where an alias exists (original in the title)", async () => {
+    mockFetchWithMethod(aliasProjectsRouter([{ project: "acme/alpha", jobKey: "build", alias: "Compile" }]));
+    renderProjects();
+    await waitFor(() => expect(screen.getByText("Compile")).toBeTruthy());
+    // The un-aliased job keeps its declared name; the aliased one's original is not a visible label.
+    expect(screen.getByText("test")).toBeTruthy();
+    expect(screen.queryByText("Build it")).toBeNull();
+    // The chip's title carries the original name + key — recoverable, never lost.
+    expect(screen.getByText("Compile").parentElement!.getAttribute("title")).toContain("Original: Build it (build)");
+  });
+
+  it("the pencil on a job chip opens the rename dialog and saving POSTs to the alias store", async () => {
+    const mutations: string[] = [];
+    mockFetchWithMethod(aliasProjectsRouter([], mutations));
+    renderProjects();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Rename job Build it in acme/alpha" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Rename job Build it in acme/alpha" }));
+    const dialog = screen.getByRole("dialog", { name: "Rename job Build it" });
+    fireEvent.change(within(dialog).getByLabelText("Job display alias"), { target: { value: "Compile" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mutations.some((m) => m.startsWith("POST"))).toBe(true));
+  });
 });

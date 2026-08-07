@@ -435,3 +435,85 @@ describe("RunDetail header timing (#96)", () => {
     expect(screen.queryByText(/^took /)).toBeNull();
   });
 });
+
+// ── #114 job display aliases on the run detail ──────────────────────────────
+describe("RunDetail job aliases (#114)", () => {
+  function aliasRouter(overrides: { aliases?: unknown; postStatus?: number } = {}) {
+    const mutations: string[] = [];
+    const router = (url: string, init?: { method?: string }) => {
+      const method = init?.method ?? "GET";
+      if (url.includes("/api/local/job-aliases")) {
+        if (method !== "GET") {
+          mutations.push(`${method} ${url}`);
+          return { status: overrides.postStatus ?? 200, body: { ok: true } };
+        }
+        return { body: overrides.aliases ?? [{ project: "acme/widget", jobKey: "build", alias: "Compile" }] };
+      }
+      if (url.includes("/workflow/runs"))
+        return { body: [{ id: 5, displayName: "Deploy", status: "completed", result: "succeeded", owner: "acme", repo: "widget" }] };
+      if (url.includes("/run/5/attempts")) return { body: [{ id: 1, attempt: 1, timeLineId: "at1" }] };
+      if (url.includes("/attempt/1/jobs"))
+        return {
+          body: [
+            { jobId: "jA", timeLineId: "tlA", name: "build", matrix: null, workflowIdentifier: "build", status: "completed", result: "succeeded", requestId: 1, runid: 5, attempt: 1 },
+          ],
+        };
+      if (url.includes("/Timeline/tlA")) return { body: [taskRec] };
+      if (url.includes("/api/local/joblogs/")) return { body: { retained: true, lines: ["log line"] } };
+      return { status: 404 };
+    };
+    return { router, mutations };
+  }
+
+  function mockFetchWithInit(router: (url: string, init?: { method?: string }) => { status?: number; body?: unknown } | undefined) {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const r = router(url, init as { method?: string }) ?? { status: 404 };
+      const status = r.status ?? 200;
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        statusText: `HTTP ${status}`,
+        json: async () => r.body ?? null,
+        text: async () => JSON.stringify(r.body ?? null),
+        headers: new Headers(),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+  }
+
+  it("renders the alias in the job list AND the log pane title, original on hover", async () => {
+    mockFetchWithInit(aliasRouter().router);
+    renderDetail();
+    // Both surfaces show the alias (job row + selected-job pane title)…
+    await waitFor(() => expect(screen.getAllByText("Compile").length).toBe(2));
+    // …and the original name is not shown as a visible label anywhere.
+    expect(screen.queryByText("build")).toBeNull();
+    // The job row keeps the original in its tooltip.
+    fireEvent.mouseEnter(screen.getAllByText("Compile")[0].parentElement!);
+    await waitFor(() => expect(screen.getByRole("tooltip").textContent).toContain("Original: build"));
+  });
+
+  it("pencil opens the rename dialog scoped to the run's project, and saving POSTs the alias", async () => {
+    const { router, mutations } = aliasRouter({ aliases: [] });
+    mockFetchWithInit(router);
+    renderDetail();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Rename job build" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Rename job build" }));
+    const dialog = screen.getByRole("dialog", { name: "Rename job build" });
+    expect(within(dialog).getByText(/Display alias only/)).toBeTruthy();
+    fireEvent.change(within(dialog).getByLabelText("Job display alias"), { target: { value: "Compile" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mutations.some((m) => m.startsWith("POST"))).toBe(true));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Rename job build" })).toBeNull());
+  });
+
+  it("clearing the alias from the dialog DELETEs it (original restored server-side)", async () => {
+    const { router, mutations } = aliasRouter();
+    mockFetchWithInit(router);
+    renderDetail();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Rename job build" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Rename job build" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear alias" }));
+    await waitFor(() => expect(mutations.some((m) => m.startsWith("DELETE") && m.includes("jobKey=build"))).toBe(true));
+  });
+});

@@ -21,6 +21,10 @@ import { createSseParser, stripAnsi, type SseEvent } from "./joblogs.js";
 interface Job {
   timeLineId: string;
   name?: string;
+  /** Stable YAML job key — the identity #114 display aliases are stored under. */
+  workflowIdentifier?: string;
+  /** Project slug the job ran under (`owner/repo`), when the engine recorded one. */
+  repo?: string;
 }
 interface Attempt {
   attempt: number;
@@ -68,6 +72,32 @@ export async function resolveRun(base: string, runId: number, getJson: (u: strin
 export interface LogsDeps {
   getJson?: (url: string) => Promise<unknown>;
   getJoblogs?: (base: string, runId: number, timelineId: string) => Promise<{ retained: boolean; lines: string[]; status?: number }>;
+  /** #114 display aliases for a project (jobKey → alias); tolerant of a gated/older hub. */
+  getAliases?: (base: string, project: string) => Promise<Map<string, string>>;
+}
+
+/* c8 ignore start — fetch glue for the gated alias route; the display logic it feeds is unit-tested */
+async function httpGetAliases(base: string, project: string): Promise<Map<string, string>> {
+  try {
+    const res = await fetch(new URL(`api/local/job-aliases?project=${encodeURIComponent(project)}`, base).toString());
+    if (!res.ok) return new Map();
+    const rows = (await res.json()) as { jobKey?: string; alias?: string }[];
+    return new Map(rows.filter((r) => r.jobKey && r.alias).map((r) => [r.jobKey!, r.alias!]));
+  } catch {
+    return new Map();
+  }
+}
+/* c8 ignore stop */
+
+/**
+ * #114 display form of a job name: `alias (original)` when an alias exists for
+ * the job's key, else the original name unchanged. Alias, never override.
+ */
+export function aliasedJobName(job: { name?: string; workflowIdentifier?: string }, aliases: Map<string, string>): string | undefined {
+  const key = job.workflowIdentifier || job.name;
+  const alias = key ? aliases.get(key) : undefined;
+  if (!alias) return job.name;
+  return `${alias} (${job.name ?? key})`;
 }
 
 /* c8 ignore start — fetch glue for the loopback-gated joblogs endpoint; exercised by the live verify */
@@ -123,13 +153,16 @@ export async function logsCmd(runId: number, server: string, deps: LogsDeps = {}
       for (const line of formatRunLogs(runId, [])) console.log(line);
       return run ? 0 : 1;
     }
+    // #114: job headers show `alias (original)` when the project has aliases stored.
+    const project = run.jobs.find((j) => j.repo)?.repo;
+    const aliases = project ? await (deps.getAliases ?? httpGetAliases)(base, project) : new Map<string, string>();
     const jobs = await Promise.all(
       run.jobs.map(async (j) => {
         const r = await getJoblogs(base, runId, j.timeLineId);
         // 403 = loopback-only hub; 401 = --basic-auth hub (#100). Both are an auth gate, not
         // missing logs — carry the status through so the message names the actual gate.
         const denied = r.status === 401 || r.status === 403 ? r.status : undefined;
-        return { name: j.name, retained: r.retained, lines: r.lines, denied };
+        return { name: aliasedJobName(j, aliases), retained: r.retained, lines: r.lines, denied };
       }),
     );
     for (const line of formatRunLogs(runId, jobs)) console.log(line);

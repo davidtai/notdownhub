@@ -135,6 +135,73 @@ export async function projectAddCmd(opts: ProjectAddOptions): Promise<number> {
   return 0;
 }
 
+// ── ndh project alias (#114) ────────────────────────────────────────────────
+
+export interface ProjectAliasOptions {
+  project: string;
+  jobKey: string;
+  /** The display alias to set; ignored with --clear. */
+  alias?: string;
+  clear?: boolean;
+  server: string;
+}
+
+/**
+ * `ndh project alias <owner/repo> <job-key> <alias>` — set a job DISPLAY alias
+ * through the hub's gated alias route (the same store the UI pencil writes).
+ * The engine's job records are never touched: the alias is a display layer,
+ * and `--clear` restores the original name everywhere. Returns the exit code.
+ */
+export async function projectAliasCmd(opts: ProjectAliasOptions): Promise<number> {
+  if (!isValidSlug(opts.project)) {
+    console.error(`invalid project slug '${opts.project}' — expected owner/repo`);
+    return 1;
+  }
+  if (!opts.clear && !opts.alias?.trim()) {
+    console.error("pass the alias to set, or --clear to restore the original name");
+    return 1;
+  }
+  const base = opts.server.endsWith("/") ? opts.server : `${opts.server}/`;
+  let res: Response;
+  try {
+    res = opts.clear
+      ? await fetch(
+          new URL(
+            `api/local/job-aliases?project=${encodeURIComponent(opts.project)}&jobKey=${encodeURIComponent(opts.jobKey)}`,
+            base,
+          ),
+          { method: "DELETE" },
+        )
+      : await fetch(new URL("api/local/job-aliases", base), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ project: opts.project, jobKey: opts.jobKey, alias: opts.alias }),
+        });
+  } catch (err) {
+    console.error(`hub unreachable at ${opts.server}: ${err}`);
+    return 1;
+  }
+  if (res.status === 403 || res.status === 401) {
+    console.error("the hub refused: its local API is loopback-only. Run this on the hub machine.");
+    return 1;
+  }
+  if (!res.ok) {
+    console.error(`hub returned ${res.status} ${await res.text().catch(() => "")}`);
+    return 1;
+  }
+  if (opts.clear) {
+    const body = (await res.json().catch(() => ({}))) as { removed?: boolean };
+    console.log(
+      body.removed
+        ? `alias cleared — '${opts.jobKey}' shows its original name again in ${opts.project}`
+        : `no alias was set for '${opts.jobKey}' in ${opts.project}`,
+    );
+  } else {
+    console.log(`job '${opts.jobKey}' in ${opts.project} now displays as '${opts.alias!.trim()}' (original kept, shown on hover)`);
+  }
+  return 0;
+}
+
 export function registerProjectAdd(program: Command): void {
   const project = program.command("project").description("manage a single project on the hub");
   project
@@ -145,5 +212,16 @@ export function registerProjectAdd(program: Command): void {
     .option("--server <url>", "hub base url", "http://localhost:4949")
     .action(async (opts: { workflow: string; repository?: string; server: string }) => {
       process.exitCode = await projectAddCmd(opts);
+    });
+  project
+    .command("alias")
+    .description("set a job display alias (the original job name is kept, never overridden)")
+    .argument("<owner/repo>", "project the job belongs to")
+    .argument("<job-key>", "the original job key from the workflow YAML (jobs.<key>)")
+    .argument("[alias]", "display name to show; omit with --clear")
+    .option("--clear", "remove the alias so the original name shows again")
+    .option("--server <url>", "hub base url", "http://localhost:4949")
+    .action(async (project_: string, jobKey: string, alias: string | undefined, opts: { clear?: boolean; server: string }) => {
+      process.exitCode = await projectAliasCmd({ project: project_, jobKey, alias, clear: opts.clear, server: opts.server });
     });
 }
