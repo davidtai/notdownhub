@@ -36,8 +36,15 @@ test("formatRunLogs: single job prints lines; multi-job adds headers; empty/deni
     { name: "test", retained: false, lines: [] },
   ]);
   assert.match(multi.join("\n"), /=== build ===\nx\n=== test ===\n\[ndh\] no retained logs for job 'test'/);
-  assert.match(formatRunLogs(5, [{ name: "build", retained: false, lines: [], denied: true }]).join("\n"), /loopback-gated/);
+  assert.match(formatRunLogs(5, [{ name: "build", retained: false, lines: [] }]).join("\n"), /no retained logs for run #5/);
+  assert.match(formatRunLogs(5, [{ name: "build", retained: false, lines: [], denied: 403 }]).join("\n"), /loopback-gated/);
   assert.match(formatRunLogs(5, []).join("\n"), /run #5 has no jobs/);
+});
+
+test("formatRunLogs: a 401-denied job names the basic-auth gate, never 'no retained logs' (#100)", () => {
+  const out = formatRunLogs(5, [{ name: "build", retained: false, lines: [], denied: 401 }]).join("\n");
+  assert.match(out, /requires basic auth for logs — run on the hub host, tunnel the port, or open the UI with credentials/);
+  assert.doesNotMatch(out, /no retained logs/);
 });
 
 test("resolveRun: unwraps attempts + jobs, marks completed, drops job entries without a timeline", async () => {
@@ -94,7 +101,7 @@ test("logsCmd: an unknown run id reports no jobs, exit 1", async () => {
   }
 });
 
-test("logsCmd: a loopback-gated (403) joblogs response prints the tunnel hint, exit 0", async () => {
+test("logsCmd: a loopback-gated (403) joblogs response prints the tunnel hint, exit 1", async () => {
   const cap = captureOut();
   try {
     const code = await logsCmd(2, "http://192.168.1.5:6099", {
@@ -104,8 +111,44 @@ test("logsCmd: a loopback-gated (403) joblogs response prints the tunnel hint, e
       }),
       getJoblogs: async () => ({ retained: false, lines: [], status: 403 }),
     });
-    assert.equal(code, 0);
+    assert.equal(code, 1);
     assert.match(cap.logs.join("\n"), /loopback-gated/);
+    assert.doesNotMatch(cap.logs.join("\n"), /no retained logs/);
+  } finally {
+    cap.restore();
+  }
+});
+
+test("logsCmd: a basic-auth hub's 401 surfaces the auth gate, not 'no retained logs', exit 1 (#100)", async () => {
+  const cap = captureOut();
+  try {
+    const code = await logsCmd(5, "http://192.168.1.5:6099", {
+      getJson: jsonRoutes({
+        "/_apis/v1/Message/workflow/run/5/attempts": [{ attempt: 1, status: "completed" }],
+        "/_apis/v1/Message/workflow/run/5/attempt/1/jobs": [{ timeLineId: "TLb", name: "build" }],
+      }),
+      getJoblogs: async () => ({ retained: false, lines: [], status: 401 }),
+    });
+    assert.equal(code, 1);
+    assert.match(cap.logs.join("\n"), /requires basic auth for logs/);
+    assert.doesNotMatch(cap.logs.join("\n"), /no retained logs/);
+  } finally {
+    cap.restore();
+  }
+});
+
+test("logsCmd: a genuinely empty (200, unretained) run still reads 'no retained logs', exit 0", async () => {
+  const cap = captureOut();
+  try {
+    const code = await logsCmd(6, "http://127.0.0.1:6099", {
+      getJson: jsonRoutes({
+        "/_apis/v1/Message/workflow/run/6/attempts": [{ attempt: 1, status: "completed" }],
+        "/_apis/v1/Message/workflow/run/6/attempt/1/jobs": [{ timeLineId: "TLb", name: "build" }],
+      }),
+      getJoblogs: async () => ({ retained: false, lines: [] }),
+    });
+    assert.equal(code, 0);
+    assert.match(cap.logs.join("\n"), /no retained logs for run #6/);
   } finally {
     cap.restore();
   }

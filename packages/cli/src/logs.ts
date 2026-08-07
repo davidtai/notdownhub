@@ -79,10 +79,13 @@ async function httpGetJoblogs(base: string, runId: number, timelineId: string): 
 }
 /* c8 ignore stop */
 
-/** Render a run's job logs to stdout lines. Pure so the formatting is unit-testable. */
+/** Render a run's job logs to stdout lines. Pure so the formatting is unit-testable.
+ * `denied` is the HTTP status the gated joblogs endpoint answered with: 403 when the hub is
+ * loopback-only, 401 when it runs with --basic-auth (#100). Either way the logs exist — never
+ * report an auth denial as "no retained logs". */
 export function formatRunLogs(
   runId: number,
-  jobs: { name?: string; retained: boolean; lines: string[]; denied?: boolean }[],
+  jobs: { name?: string; retained: boolean; lines: string[]; denied?: number }[],
 ): string[] {
   const out: string[] = [];
   const many = jobs.length > 1;
@@ -90,7 +93,11 @@ export function formatRunLogs(
   for (const j of jobs) {
     if (many) out.push(`=== ${j.name ?? "job"} ===`);
     if (j.denied) {
-      out.push(`[ndh] run #${runId} logs are loopback-gated on the hub — run this on the hub host, or tunnel the hub port`);
+      out.push(
+        j.denied === 401
+          ? `[ndh] run #${runId}: this hub requires basic auth for logs — run on the hub host, tunnel the port, or open the UI with credentials`
+          : `[ndh] run #${runId} logs are loopback-gated on the hub — run this on the hub host, or tunnel the hub port`,
+      );
       continue;
     }
     if (j.retained && j.lines.length) {
@@ -119,11 +126,14 @@ export async function logsCmd(runId: number, server: string, deps: LogsDeps = {}
     const jobs = await Promise.all(
       run.jobs.map(async (j) => {
         const r = await getJoblogs(base, runId, j.timeLineId);
-        return { name: j.name, retained: r.retained, lines: r.lines, denied: r.status === 403 };
+        // 403 = loopback-only hub; 401 = --basic-auth hub (#100). Both are an auth gate, not
+        // missing logs — carry the status through so the message names the actual gate.
+        const denied = r.status === 401 || r.status === 403 ? r.status : undefined;
+        return { name: j.name, retained: r.retained, lines: r.lines, denied };
       }),
     );
     for (const line of formatRunLogs(runId, jobs)) console.log(line);
-    return 0;
+    return jobs.some((j) => j.denied) ? 1 : 0;
   } catch (err) {
     if (!connErrorCode(err)) throw err;
     log(hubUnreachableMessage(server));
