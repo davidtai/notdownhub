@@ -242,7 +242,12 @@ describe("Runs", () => {
       "/runs/902",
     ]);
     // History is exhausted (page 4 empty) → the search ended, nothing spins on.
-    expect(screen.queryByText("Searching older runs…")).toBeNull();
+    // In a waitFor: the 3 matches render while page 4 is still in flight (3 < target),
+    // so the searching state clears only after that final fetch resolves.
+    await waitFor(
+      () => expect(screen.queryByText("Searching older runs…")).toBeNull(),
+      { timeout: 10_000 },
+    );
   });
 
   it("shows a searching affordance while older pages are being fetched", async () => {
@@ -279,9 +284,16 @@ describe("Runs", () => {
     type("nonesuch");
     enter();
     // The search drains every page, finds nothing, and settles on the empty state.
-    await waitFor(() => expect(screen.getByText("No runs match these filters.")).toBeTruthy(), { timeout: 10_000 });
-    expect(screen.queryByText("Searching older runs…")).toBeNull();
-    expect(screen.queryByText("Search older runs")).toBeNull();
+    // One waitFor asserts the whole settled state, so a slow final fetch can
+    // never race an immediate assertion.
+    await waitFor(
+      () => {
+        expect(screen.getByText("No runs match these filters.")).toBeTruthy();
+        expect(screen.queryByText("Searching older runs…")).toBeNull();
+        expect(screen.queryByText("Search older runs")).toBeNull();
+      },
+      { timeout: 10_000 },
+    );
   });
 
   it("pauses at the page bound with a 'Search older runs' control that resumes", async () => {
