@@ -43,6 +43,12 @@ jobs:
       - name: Build all packages
         run: pnpm -r build
 
+      # Recursive like build/test: runs in every package that defines a
+      # `typecheck` script (apps/web today; packages/cli type-checks in its
+      # build). Keeps `tsc --noEmit` debt from rotting silently (#127).
+      - name: Typecheck all packages
+        run: pnpm -r typecheck
+
       - name: Test all packages
         run: pnpm -r test
 

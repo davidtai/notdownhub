@@ -296,7 +296,7 @@ describe("RunDetail", () => {
     fireEvent.click(btn);
     await waitFor(() => expect(rerunPosts).toBe(1));
     const call = fn.mock.calls.find((c) => String(c[0]).includes("/rerunworkflow/5"));
-    expect((call?.[1] as { method?: string })?.method).toBe("POST");
+    expect(call?.[1]?.method).toBe("POST");
   });
 
   it("auto-advances to the new attempt when a re-run adds one", async () => {

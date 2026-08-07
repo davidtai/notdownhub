@@ -24,7 +24,7 @@ describe("RerunButton", () => {
     render(<RerunButton runId={7} onDone={onDone} />);
     fireEvent.click(screen.getByLabelText("Re-run run 7"));
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
-    const [url, init] = fn.mock.calls[0] as [string, { method?: string }];
+    const [url, init] = fn.mock.calls[0];
     expect(url).toBe("/_apis/v1/Message/rerunworkflow/7");
     expect(init?.method).toBe("POST");
   });

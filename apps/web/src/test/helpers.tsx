@@ -197,7 +197,7 @@ function jsonResponse(status: number, body: unknown): Response {
  * undefined for an unmatched URL (served as a 404). No network, no msw.
  */
 export function mockFetch(router: Router) {
-  const fn = vi.fn(async (input: RequestInfo | URL) => {
+  const fn = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     const r = router(url) ?? { status: 404, body: { error: "unmatched", url } };
     if (r.throw) throw new Error(`network error: ${url}`);

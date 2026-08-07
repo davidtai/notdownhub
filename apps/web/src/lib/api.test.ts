@@ -328,7 +328,7 @@ describe("rerunWorkflow", () => {
   it("POSTs the whole-workflow re-run by default", async () => {
     const fn = mockFetch(() => ({ status: 200, body: {} }));
     await rerunWorkflow(5);
-    const [url, init] = fn.mock.calls[0] as [string, { method?: string }];
+    const [url, init] = fn.mock.calls[0];
     expect(url).toBe("/_apis/v1/Message/rerunworkflow/5");
     expect(init?.method).toBe("POST");
   });
