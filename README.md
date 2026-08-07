@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-dark.svg">
+    <img src="assets/brand/logo-light.svg" alt="notdownhub — a computer carried by balloons" width="112" height="144">
+  </picture>
+</p>
+
 # notdownhub
 
 **GitHub can be down; your CI is not.**

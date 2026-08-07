@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 82" fill="none" role="img" aria-label="notdownhub">
+  <!-- Explicit light fill for use on DARK backgrounds, e.g. a README <img> tag where currentColor cannot inherit. -->
+  <g stroke="#e8ebf2" stroke-width="1.7" stroke-linecap="round">
+    <path d="M14.5 24 Q 15 37 17 48" />
+    <path d="M32 22.5 L 32 48" />
+    <path d="M49.5 24 Q 49 37 47 48" />
+  </g>
+  <g fill="#e8ebf2">
+    <ellipse cx="14.5" cy="16" rx="7.7" ry="8.4" />
+    <path d="M13 22.6 L 16 22.6 L 14.5 25.2 Z" />
+    <ellipse cx="49.5" cy="16" rx="7.7" ry="8.4" />
+    <path d="M48 22.6 L 51 22.6 L 49.5 25.2 Z" />
+    <ellipse cx="32" cy="11" rx="8.6" ry="9.4" />
+    <path d="M30.1 20.4 L 33.9 20.4 L 32 23.4 Z" />
+    <rect x="14.5" y="48" width="35" height="23" rx="3.4" />
+    <rect x="29.6" y="71" width="4.8" height="4.4" />
+    <rect x="22.5" y="75" width="19" height="3.6" rx="1.8" />
+  </g>
+</svg>
