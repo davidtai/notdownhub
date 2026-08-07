@@ -172,11 +172,21 @@ async function hubUp(opts: HubUpOptions, deps: HubDeps = {}): Promise<number> {
     fileLogWrite(d);
   });
   child.on("exit", (code) => exit(code ?? 1));
-  for (const sig of ["SIGINT", "SIGTERM"] as const) onSignal(sig, () => child.kill(sig));
+
+  // Persist job console output so completed runs stay readable after a restart.
+  const tee = (deps.startTee ?? startJobLogTee)(hubPort);
+  for (const sig of ["SIGINT", "SIGTERM"] as const)
+    onSignal(sig, () => {
+      // Flush + close the job-log writer before the process exits, so the last batch is durable.
+      try {
+        tee.stop();
+      } catch {
+        /* best effort */
+      }
+      child.kill(sig);
+    });
 
   startFrontFn({ port, hubPort, uiDir, runnerToken: token || undefined, host, basicAuth });
-  // Persist job console output so completed runs stay readable after a restart.
-  (deps.startTee ?? startJobLogTee)(hubPort);
 
   log(`hub up on http://localhost:${port}  (ui: ${uiDir ? (basicAuth ? "yes, basic-auth" : "yes, local-only") : "no"}, auth: ${token ? "on" : "OFF"}, mirror: ${opts.mirrorRewrite ? `on @ http://${host}:${port}/mirror` : "off"})`);
   log(`logging to ${logPath} (daily rotation)`);

@@ -93,7 +93,9 @@ export function createSseParser(onEvent: (ev: SseEvent) => void): (chunk: string
 }
 
 // eslint-disable-next-line no-control-regex
-const ANSI = /\x1b?\[[0-9;]*m/g;
+// Strip all CSI escape sequences (require the ESC so literal "[0m" in log text survives,
+// and match any final byte so cursor/erase sequences don't leave raw escape bytes behind).
+const ANSI = /\x1b\[[0-9;]*[a-zA-Z]/g;
 
 export interface PendingLine {
   runId: number | null;

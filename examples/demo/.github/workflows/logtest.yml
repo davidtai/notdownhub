@@ -1,0 +1,7 @@
+name: logtest
+on: [push]
+jobs:
+  logjob:
+    runs-on: self-hosted
+    steps:
+      - run: echo "LOGLINE-ALPHA"; sleep 3; echo "LOGLINE-OMEGA"
