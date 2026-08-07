@@ -5,17 +5,24 @@ import type { ServerResponse } from "node:http";
 import { ndhHome, hubDbPath } from "./lib.js";
 
 /**
- * Persistent job console logs. The hub keeps step console output only in memory and
- * drops it once a run finishes, so a completed run's logs vanish on restart. This
- * module tees the hub's live console feed into a SQLite database we own
- * (NDH_HOME/hub/joblogs.db, WAL) so a run stays fully restorable: metadata from the
- * hub's own DB + console output from ours. We never write the hub's database.
+ * Persistent job console logs, in a SQLite database we own (NDH_HOME/hub/joblogs.db,
+ * WAL) so a completed run stays fully restorable: metadata from the hub's own DB +
+ * console output from ours. We never write the hub's database. Two sources feed it:
  *
- * Flow: a long-lived reader consumes the hub's global TimeLineWebConsoleLog SSE feed,
- * batches lines, and commits them per flush interval. Retrieval reconstructs the
- * ordered lines for a job's timeline and enforces the run/timeline pairing (a wrong
- * run id 404s, issue #81). Retention deletes timelines older than 14 days
- * (matching the file-log default).
+ *  1. Live tee: a long-lived reader consumes the hub's global TimeLineWebConsoleLog
+ *     SSE feed, batches lines, and commits them per flush interval. The RUNNER
+ *     throttles this feed — a high-volume step surfaces only about its first
+ *     thousand lines (issue #80) — so the tee is a live preview, not the record.
+ *  2. Completion backfill: when a job finishes, the runner uploads the complete job
+ *     log, which the hub persists in its DB (TimeLineRecords.LogId → Logs.Content).
+ *     The tee polls for those (backfillCompletedJobs) and REPLACES the timeline's
+ *     teed lines with the full log, so the persisted console is complete no matter
+ *     how fast the step printed. There is no size cap: the backfill stores the whole
+ *     job log the hub has.
+ *
+ * Retrieval reconstructs the ordered lines for a job's timeline and enforces the
+ * run/timeline pairing (a wrong run id 404s, issue #81). Retention deletes timelines
+ * older than 14 days (matching the file-log default).
  */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -56,9 +63,16 @@ export async function openDb(path: string, readOnly = false): Promise<Db> {
       `CREATE TABLE IF NOT EXISTS streams (
          timeline_id TEXT PRIMARY KEY,
          run_id INTEGER,
-         updated_at INTEGER NOT NULL
+         updated_at INTEGER NOT NULL,
+         backfilled INTEGER NOT NULL DEFAULT 0
        )`,
     );
+    // Migration for databases created before the completion backfill (#80).
+    try {
+      db.exec("ALTER TABLE streams ADD COLUMN backfilled INTEGER NOT NULL DEFAULT 0");
+    } catch {
+      /* column already exists */
+    }
     // Tombstones for truly-deleted runs. The engine (Runner.Server) exposes no run-deletion
     // endpoint and we never write its database, so a deleted run is recorded here — the DB we
     // own — and the front enforces it (filtered from the runs list, 404 on detail). Because this
@@ -402,6 +416,100 @@ export function makeRunIdResolver(hubDbOrGet: Db | null | (() => Db | null)): (t
   };
 }
 
+// ── completion backfill (the full job log, from the hub's DB) ───────────────
+// The runner prefixes every uploaded log line with an ISO timestamp; the live feed
+// does not. Strip it so backfilled lines render like teed ones.
+const LOG_TS_PREFIX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z? /;
+
+/** Split a raw uploaded job log into clean display lines (no CR, no timestamp, no ANSI). */
+export function splitUploadedLog(content: string): string[] {
+  const lines = content.split("\n");
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  return lines.map((l) => l.replace(/\r$/, "").replace(LOG_TS_PREFIX, "").replace(ANSI, ""));
+}
+
+export interface BackfillOptions {
+  now?: () => number;
+  retentionMs?: number;
+}
+
+/**
+ * Replace teed (throttled, truncated — issue #80) lines with the complete job log for
+ * every finished job the hub has one for. A finished job's record carries LogId; the
+ * uploaded content lives in the hub's Logs table (possibly in pages). One transaction
+ * per timeline: delete the teed rows, insert the full log, stamp streams with the real
+ * run_id and backfilled=1 so the work is done once. Skips tombstoned runs (#77) and
+ * jobs that finished before the retention cutoff (#84) — a pruned run must stay pruned.
+ * Returns the lower-cased timeline ids it backfilled. Throws only on joblogs-DB errors;
+ * a missing/mid-migration hub schema just yields no candidates.
+ */
+export function backfillCompletedJobs(db: Db, hubDb: Db, opts: BackfillOptions = {}): string[] {
+  const now = opts.now ?? Date.now;
+  const cutoff = now() - (opts.retentionMs ?? RETENTION_MS);
+  interface Candidate {
+    tl: string;
+    logId: number;
+    finished: string | null;
+    runid: number | null;
+  }
+  let candidates: Candidate[];
+  try {
+    // The job-level record (RecordType 'Job') holds the complete job log; step ('Task')
+    // records hold per-step logs and are intentionally excluded — the job log already
+    // contains every step's lines in order.
+    candidates = hubDb
+      .prepare(
+        `SELECT r.TimelineId AS tl, r.LogId AS logId, r.FinishTime AS finished, j.runid AS runid
+         FROM TimeLineRecords r JOIN Jobs j ON j.TimeLineId = r.TimelineId
+         WHERE r.LogId IS NOT NULL AND LOWER(r.RecordType) = 'job'`,
+      )
+      .all() as Candidate[];
+  } catch {
+    return []; // hub DB has no schema yet (fresh home) — retried on the next tick
+  }
+  const done: string[] = [];
+  for (const c of candidates) {
+    if (!c.tl || typeof c.logId !== "number") continue;
+    const tl = c.tl.toLowerCase();
+    const parsed = Date.parse(c.finished ?? "");
+    const finished = Number.isFinite(parsed) ? parsed : now();
+    if (finished < cutoff) continue; // pruned (or about to be) — do not resurrect
+    const stream = db.prepare("SELECT backfilled FROM streams WHERE timeline_id=?").get(tl) as
+      | { backfilled: number }
+      | undefined;
+    if (stream?.backfilled) continue;
+    if (typeof c.runid === "number" && db.prepare("SELECT 1 FROM deleted_runs WHERE run_id=?").get(c.runid)) continue;
+    let content = "";
+    try {
+      const pages = hubDb.prepare("SELECT Content AS content FROM Logs WHERE RefId=? ORDER BY Id").all(c.logId) as {
+        content: string | null;
+      }[];
+      content = pages.map((p) => p.content ?? "").join("");
+    } catch {
+      continue; // Logs table unreadable right now — retried on the next tick
+    }
+    if (!content) continue; // record points at a log whose upload has not landed yet
+    const lines = splitUploadedLog(content);
+    db.exec("BEGIN");
+    try {
+      db.prepare("DELETE FROM job_logs WHERE timeline_id=?").run(tl);
+      const ins = db.prepare("INSERT INTO job_logs(run_id,timeline_id,record_id,ts,line) VALUES(?,?,?,?,?)");
+      for (const line of lines) ins.run(c.runid, tl, null, finished, line);
+      db.prepare(
+        `INSERT INTO streams(timeline_id,run_id,updated_at,backfilled) VALUES(?,?,?,1)
+         ON CONFLICT(timeline_id) DO UPDATE SET run_id=excluded.run_id,
+           updated_at=excluded.updated_at, backfilled=1`,
+      ).run(tl, c.runid, finished);
+      db.exec("COMMIT");
+    } catch (e) {
+      db.exec("ROLLBACK");
+      throw e;
+    }
+    done.push(tl);
+  }
+  return done;
+}
+
 // ── the tee ─────────────────────────────────────────────────────────────────
 export interface TeeOptions {
   dbPath?: string;
@@ -410,6 +518,8 @@ export interface TeeOptions {
   flushMs?: number;
   retentionMs?: number;
   reconnectMs?: number;
+  /** how often to look for newly finished jobs to backfill (default 5s) */
+  backfillMs?: number;
   now?: () => number;
   /** test hook: notified after the writer commits a batch */
   onFlush?: () => void;
@@ -419,6 +529,8 @@ export interface JobLogTee {
   stop: () => void;
   /** resolves once the DB is open and the first connection attempt is made (tests) */
   ready: Promise<void>;
+  /** run one backfill pass now instead of waiting for the interval (tests) */
+  backfillNow: () => Promise<void>;
 }
 
 /**
@@ -437,6 +549,10 @@ export function startJobLogTee(hubPort: number, opts: TeeOptions = {}): JobLogTe
   let stopped = false;
   let currentReq: http.ClientRequest | null = null;
   let pruneTimer: NodeJS.Timeout | null = null;
+  let backfillTimer: NodeJS.Timeout | null = null;
+  // Timelines whose complete job log has been backfilled: late live frames for them
+  // are dropped so they cannot append duplicates after the full log landed.
+  const backfilled = new Set<string>();
 
   // The hub creates its DB after we start (fresh NDH_HOME), so a one-shot open at
   // startup left run_id unresolved forever (issue #81). Open lazily and keep retrying.
@@ -451,6 +567,19 @@ export function startJobLogTee(hubPort: number, opts: TeeOptions = {}): JobLogTe
     return hubDb;
   };
 
+  const backfillNow = async (): Promise<void> => {
+    const hub = await ensureHubDb();
+    if (stopped || !hub || !db) return;
+    try {
+      writer?.flush(); // teed rows must be in the DB before the backfill replaces them
+      for (const tl of backfillCompletedJobs(db, hub, { now, retentionMs: opts.retentionMs ?? RETENTION_MS })) {
+        backfilled.add(tl);
+      }
+    } catch {
+      /* transient (hub DB mid-write) — retried on the next tick */
+    }
+  };
+
   const connect = () => {
     if (stopped) return;
     const parse = createSseParser((ev) => {
@@ -462,7 +591,7 @@ export function startJobLogTee(hubPort: number, opts: TeeOptions = {}): JobLogTe
           record?: { value?: string[]; stepId?: string };
         };
         const value = d.record?.value;
-        if (!d.timelineId || !value?.length) return;
+        if (!d.timelineId || backfilled.has(d.timelineId) || !value?.length) return;
         const runId = resolve1(d.timelineId);
         const recordId = d.recordId ?? d.record?.stepId ?? null;
         const ts = now();
@@ -511,6 +640,10 @@ export function startJobLogTee(hubPort: number, opts: TeeOptions = {}): JobLogTe
       pruneTimer = setInterval(prune, 60 * 60 * 1000);
       pruneTimer.unref?.();
       connect();
+      // Catch up on jobs that finished while the tee was down, then poll for new ones.
+      await backfillNow();
+      backfillTimer = setInterval(() => void backfillNow(), opts.backfillMs ?? 5000);
+      backfillTimer.unref?.();
     } catch {
       /* tee disabled */
     }
@@ -520,6 +653,7 @@ export function startJobLogTee(hubPort: number, opts: TeeOptions = {}): JobLogTe
     stopped = true;
     currentReq?.destroy();
     if (pruneTimer) clearInterval(pruneTimer);
+    if (backfillTimer) clearInterval(backfillTimer);
     try {
       writer?.stop();
     } catch {
@@ -537,5 +671,5 @@ export function startJobLogTee(hubPort: number, opts: TeeOptions = {}): JobLogTe
     }
   };
 
-  return { stop, ready };
+  return { stop, ready, backfillNow };
 }

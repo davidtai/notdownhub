@@ -21,6 +21,8 @@ import {
   serveJobLogs,
   makeRunIdResolver,
   startJobLogTee,
+  backfillCompletedJobs,
+  splitUploadedLog,
   storedRunId,
   type SseEvent,
 } from "../joblogs.js";
@@ -304,6 +306,103 @@ test("serveJobLogs: 404 on a mismatched runId, 200 with lines on the right one (
   assert.deepEqual(JSON.parse(right.rec.body!), { retained: true, lines: ["mine"] });
 });
 
+// ── completion backfill (#80) ────────────────────────────────────────────────
+/** A hub DB with the three tables the backfill reads (Jobs, TimeLineRecords, Logs). */
+function fakeHub(path: string): DatabaseSync {
+  const hub = new DatabaseSync(path);
+  hub.exec("CREATE TABLE Jobs(JobId TEXT, TimeLineId TEXT, runid INTEGER)");
+  hub.exec("CREATE TABLE TimeLineRecords(Id TEXT, TimelineId TEXT, LogId INTEGER, RecordType TEXT, FinishTime TEXT)");
+  hub.exec("CREATE TABLE Logs(Id INTEGER PRIMARY KEY, Content TEXT, RefId INTEGER)");
+  return hub;
+}
+
+/** Seed one finished job (upper-cased ids, like the real hub) with an uploaded full log. */
+function seedFinishedJob(hub: DatabaseSync, runId: number, tlUpper: string, logId: number, lines: string[], finished: string | null = new Date().toISOString()): void {
+  hub.prepare("INSERT INTO Jobs(TimeLineId,runid) VALUES(?,?)").run(tlUpper, runId);
+  hub.prepare("INSERT INTO TimeLineRecords(Id,TimelineId,LogId,RecordType,FinishTime) VALUES(?,?,?,?,?)").run(tlUpper, tlUpper, logId, "Job", finished);
+  const content = lines.map((l) => `2026-08-07T00:00:00.0000000Z ${l}`).join("\n") + "\n";
+  hub.prepare("INSERT INTO Logs(Id,Content,RefId) VALUES(?,?,?)").run(logId, content, logId);
+}
+
+test("splitUploadedLog: strips CR, the runner timestamp prefix, and ANSI; drops the trailing blank", () => {
+  const raw = "2026-08-07T04:29:51.7835504Z plain\r\n2026-08-07T04:29:51.79Z \x1b[32mgreen\x1b[0m\nno timestamp\n";
+  assert.deepEqual(splitUploadedLog(raw), ["plain", "green", "no timestamp"]);
+});
+
+test("backfillCompletedJobs: replaces the truncated tee with the complete 5000-line job log (#80)", async () => {
+  const path = tmp();
+  const db = await openDb(path);
+  const hub = fakeHub(tmp());
+  const full = Array.from({ length: 5000 }, (_, i) => `line ${i + 1} - the quick brown fox ${i + 1}`);
+  seedFinishedJob(hub, 12, "BIGJOB-TL", 75, full);
+  // a per-step (Task) record with its own log must be ignored — the Job log has it all
+  hub.prepare("INSERT INTO TimeLineRecords(Id,TimelineId,LogId,RecordType,FinishTime) VALUES(?,?,?,?,?)").run("STEP", "BIGJOB-TL", 76, "Task", new Date().toISOString());
+  hub.prepare("INSERT INTO Logs(Id,Content,RefId) VALUES(?,?,?)").run(76, "step-only\n", 76);
+  // the throttled feed persisted only the first 1011 lines, with run_id unresolved
+  const w = new JobLogWriter(db, 10_000, 20_000);
+  w.add(full.slice(0, 1011).map((line) => ({ runId: null, timelineId: "bigjob-tl", recordId: null, ts: 1, line })));
+  w.flush();
+  assert.equal((await readJobLog(path, "bigjob-tl"))!.length, 1011);
+
+  assert.deepEqual(backfillCompletedJobs(db, hub), ["bigjob-tl"]);
+  const lines = (await readJobLog(path, "bigjob-tl"))!;
+  assert.equal(lines.length, 5000, "every line of the uploaded job log is persisted");
+  assert.equal(lines[0], "line 1 - the quick brown fox 1");
+  assert.equal(lines[4999], "line 5000 - the quick brown fox 5000");
+  // run_id is stamped from the hub's Jobs row (#81) and the pairing now holds
+  assert.equal(await storedRunId(path, "bigjob-tl"), 12);
+  assert.equal((await readJobLog(path, "bigjob-tl", 12))!.length, 5000);
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM job_logs WHERE run_id=12").get() as { n: number }).n, 5000);
+  // idempotent: a second pass finds nothing left to do
+  assert.deepEqual(backfillCompletedJobs(db, hub), []);
+  hub.close();
+  db.close();
+});
+
+test("backfillCompletedJobs: joins paged log content in order", async () => {
+  const path = tmp();
+  const db = await openDb(path);
+  const hub = fakeHub(tmp());
+  hub.prepare("INSERT INTO Jobs(TimeLineId,runid) VALUES(?,?)").run("PAGED", 3);
+  hub.prepare("INSERT INTO TimeLineRecords(Id,TimelineId,LogId,RecordType,FinishTime) VALUES(?,?,?,?,?)").run("PAGED", "PAGED", 9, "job", null); // lower-case RecordType + NULL FinishTime tolerated
+  hub.prepare("INSERT INTO Logs(Id,Content,RefId) VALUES(?,?,?)").run(1, "first\nsec", 9);
+  hub.prepare("INSERT INTO Logs(Id,Content,RefId) VALUES(?,?,?)").run(2, "ond\nlast\n", 9);
+  assert.deepEqual(backfillCompletedJobs(db, hub), ["paged"]);
+  assert.deepEqual(await readJobLog(path, "paged"), ["first", "second", "last"]);
+  hub.close();
+  db.close();
+});
+
+test("backfillCompletedJobs: skips tombstoned runs, pre-cutoff jobs, and logs not yet uploaded", async () => {
+  const path = tmp();
+  const db = await openDb(path);
+  const hub = fakeHub(tmp());
+  seedFinishedJob(hub, 5, "DELETED-TL", 1, ["never"]);
+  markRunDeleted(db, 5); // tombstoned (#77): its log must stay purged
+  seedFinishedJob(hub, 6, "ANCIENT-TL", 2, ["too-old"], "2020-01-01T00:00:00.0000000Z"); // pruned era (#84)
+  hub.prepare("INSERT INTO Jobs(TimeLineId,runid) VALUES(?,?)").run("PENDING-TL", 7);
+  hub.prepare("INSERT INTO TimeLineRecords(Id,TimelineId,LogId,RecordType,FinishTime) VALUES(?,?,?,?,?)").run("PENDING-TL", "PENDING-TL", 99, "Job", new Date().toISOString()); // LogId set, upload not landed
+  assert.deepEqual(backfillCompletedJobs(db, hub), []);
+  assert.equal((await readJobLog(path, "deleted-tl"))!.length, 0);
+  assert.equal((await readJobLog(path, "ancient-tl"))!.length, 0);
+  hub.close();
+  db.close();
+});
+
+test("backfillCompletedJobs: [] when the hub DB has no schema yet; throws on a joblogs write error", async () => {
+  const path = tmp();
+  const db = await openDb(path);
+  const empty = new DatabaseSync(tmp());
+  assert.deepEqual(backfillCompletedJobs(db, empty), []); // fresh home: hub tables not created yet
+  empty.close();
+  const hub = fakeHub(tmp());
+  seedFinishedJob(hub, 1, "TL", 1, ["x"]);
+  db.exec("DROP TABLE job_logs"); // make the replace transaction fail
+  assert.throws(() => backfillCompletedJobs(db, hub));
+  hub.close();
+  db.close();
+});
+
 test("storedRunId: resolved id, null for unknown/unresolved timelines, null on a missing DB", async () => {
   const path = tmp();
   const db = await openDb(path);
@@ -430,6 +529,60 @@ test("startJobLogTee: onFlush hook fires and stop() is idempotent", async () => 
   assert.ok(flushes >= 1);
   tee.stop();
   tee.stop(); // idempotent
+  await feed.close();
+});
+
+test("startJobLogTee: a 5000-line stream is persisted completely — the pipeline drops nothing (#80)", async () => {
+  const dbPath = tmp();
+  const total = 5000;
+  const feed = await sseHub((_req, res) => {
+    for (let i = 0; i < total; i += 250) {
+      const chunk = Array.from({ length: 250 }, (_, k) => `line ${i + k + 1}`);
+      res.write(logFrame("hugetl", chunk));
+    }
+  });
+  const tee = startJobLogTee(0, { dbPath, hubDbPath: tmp(), baseUrl: feed.url, flushMs: 5, reconnectMs: 5000, backfillMs: 60_000 });
+  await tee.ready;
+  let lines: string[] = [];
+  for (let i = 0; i < 100; i++) {
+    lines = (await readJobLog(dbPath, "hugetl")) ?? [];
+    if (lines.length >= total) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.equal(lines.length, 5000, "every streamed line reaches the database");
+  assert.equal(lines[0], "line 1");
+  assert.equal(lines[4999], "line 5000");
+  tee.stop();
+  await feed.close();
+});
+
+test("startJobLogTee: backfills the full job log when hub.db appears after startup; drops late frames (#80/#81)", async () => {
+  const dbPath = tmp();
+  const hubPath = join(mkdtempSync(join(tmpdir(), "ndh-jl-hub-")), "hub.db"); // does not exist yet
+  let res1: http.ServerResponse | null = null;
+  const feed = await sseHub((_req, res) => {
+    res1 = res;
+    res.write(logFrame("latetl", ["throttled 1", "throttled 2"])); // the truncated live feed
+  });
+  const tee = startJobLogTee(0, { dbPath, hubDbPath: hubPath, baseUrl: feed.url, flushMs: 5, reconnectMs: 5000, backfillMs: 60_000 });
+  await tee.ready; // hub.db missing here — the old code would have given up forever
+  for (let i = 0; i < 100 && ((await readJobLog(dbPath, "latetl")) ?? []).length < 2; i++) await new Promise((r) => setTimeout(r, 20));
+  assert.equal(await storedRunId(dbPath, "latetl"), null, "run_id unresolved while hub.db is absent");
+  // the hub creates its DB and the job finishes with a complete uploaded log
+  const hub = fakeHub(hubPath);
+  const full = Array.from({ length: 2000 }, (_, i) => `full ${i + 1}`);
+  seedFinishedJob(hub, 21, "LATETL", 5, full);
+  hub.close();
+  await tee.backfillNow();
+  const lines = (await readJobLog(dbPath, "latetl"))!;
+  assert.equal(lines.length, 2000, "the complete uploaded log replaced the truncated tee");
+  assert.equal(lines[1999], "full 2000");
+  assert.equal(await storedRunId(dbPath, "latetl"), 21, "run_id resolved once hub.db exists (#81)");
+  // a straggler frame arriving after the backfill must not append duplicates
+  (res1 as http.ServerResponse | null)?.write(logFrame("latetl", ["straggler"]));
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(((await readJobLog(dbPath, "latetl")) ?? []).length, 2000);
+  tee.stop();
   await feed.close();
 });
 
