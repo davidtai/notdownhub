@@ -1,3 +1,9 @@
 packages:
   - packages/*
   - apps/*
+# Approve esbuild (a vite dependency) to run its postinstall that fetches the
+# native binary; without this pnpm marks the build ignored and blocks `pnpm run`.
+allowBuilds:
+  esbuild: true
+onlyBuiltDependencies:
+  - esbuild

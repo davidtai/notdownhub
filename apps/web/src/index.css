@@ -1,0 +1,187 @@
+@import "tailwindcss";
+
+/* Class-based dark mode: the .dark class is toggled on <html> by the theme module. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+  notdownhub identity — "instrument panel for your own runners".
+  The brand color (phosphor amber) doubles as the live/running status color:
+  when your hub is working, the UI glows amber. Green = passed, red = failed,
+  amber = alive. Cool graphite everywhere else. Monospace is first-class for
+  every identifier (run ids, sha, durations, labels).
+*/
+:root {
+  --bg: #f4f6fb;
+  --bg-grid: #e7ebf3;
+  --surface: #ffffff;
+  --surface-2: #eef1f7;
+  --line: #d9dfea;
+  --line-strong: #c3cbda;
+  --fg: #171c26;
+  --fg-muted: #5b6577;
+  --fg-faint: #8b94a6;
+
+  --brand: #b4780f; /* amber, darkened for contrast on light */
+  --brand-glow: #f5a524;
+  --edge: #1f8fb8;
+
+  --st-success: #1f9a53;
+  --st-fail: #d93b34;
+  --st-running: #b4780f;
+  --st-queued: #8b94a6;
+  --st-skipped: #a0a8b8;
+
+  color-scheme: light;
+}
+
+.dark {
+  --bg: #0c0f16;
+  --bg-grid: #11151f;
+  --surface: #141924;
+  --surface-2: #1b2130;
+  --line: #262e3e;
+  --line-strong: #333d51;
+  --fg: #eaeef6;
+  --fg-muted: #8b95a9;
+  --fg-faint: #5f6a7d;
+
+  --brand: #f5a524;
+  --brand-glow: #f5a524;
+  --edge: #4cb5e0;
+
+  --st-success: #4bd07a;
+  --st-fail: #fb5b54;
+  --st-running: #f5a524;
+  --st-queued: #6b7688;
+  --st-skipped: #545e70;
+
+  color-scheme: dark;
+}
+
+/* Expose the runtime palette to Tailwind utilities (bg-surface, text-brand, …). */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-faint: var(--fg-faint);
+  --color-brand: var(--brand);
+  --color-brand-glow: var(--brand-glow);
+  --color-edge: var(--edge);
+  --color-st-success: var(--st-success);
+  --color-st-fail: var(--st-fail);
+  --color-st-running: var(--st-running);
+  --color-st-queued: var(--st-queued);
+  --color-st-skipped: var(--st-skipped);
+
+  --font-sans: "Archivo", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --radius-card: 10px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg);
+  /* Faint engineering grid — the "graph paper" of a control panel. Quiet. */
+  background-image:
+    linear-gradient(var(--bg-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px);
+  background-size: 44px 44px;
+  color: var(--fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Uppercase micro-labels — the panel's engraved captions. */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--brand-glow) 35%, transparent);
+}
+
+/* Focus is a brand-colored ring — visible on keyboard nav. */
+:focus-visible {
+  outline: 2px solid var(--brand-glow);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Thin, unobtrusive scrollbars that match the instrument. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+@keyframes ndh-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.82);
+  }
+}
+.live-pulse {
+  animation: ndh-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes ndh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spin {
+  animation: ndh-spin 1s linear infinite;
+}
+
+/* Signal ridge — the signature. An oscilloscope trace that drifts when work is
+   live and flat-lines when idle. Ambient, low-contrast, one memorable element. */
+@keyframes ndh-ridge {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+.ridge-trace {
+  animation: ndh-ridge 3.2s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-pulse,
+  .spin,
+  .ridge-trace {
+    animation: none !important;
+  }
+}
