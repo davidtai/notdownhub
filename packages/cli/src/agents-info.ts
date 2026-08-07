@@ -163,7 +163,23 @@ export interface RunMeta {
   finishedAt?: string;
   durationMs?: number;
   runners: string[];
+  /**
+   * Active/queued jobs of the run's CURRENT (latest) attempt — present only while
+   * that attempt is still in progress (#132). `key` is the stable YAML job key
+   * (Jobs.WorkflowIdentifier, the identity #114 aliases are stored under), `name`
+   * the job's original display name. A finished run never carries this field.
+   */
+  runningJobs?: RunningJob[];
 }
+
+/** One in-flight job of a run's current attempt: alias key + original name. */
+export interface RunningJob {
+  key: string;
+  name: string;
+}
+
+/** WorkflowRunAttempt.Status value for a completed attempt (runner.server Status enum). */
+const ATTEMPT_COMPLETED = 4;
 
 /** Parse the hub's "YYYY-MM-DD HH:MM:SS.ffffff" (UTC) timestamps into epoch ms, or NaN. */
 function parseHubTime(s: string): number {
@@ -201,6 +217,7 @@ export async function readRunMeta(hubDb: string = hubDbPath()): Promise<Map<numb
           if (Number.isFinite(d) && d >= 0) m.durationMs = d;
         }
       }
+      collectRunningJobs(db, out);
     } finally {
       db.close();
     }
@@ -208,6 +225,53 @@ export async function readRunMeta(hubDb: string = hubDbPath()): Promise<Map<numb
     /* DB unavailable → empty map (callers render runs without the extras) */
   }
   return out;
+}
+
+/**
+ * Attach `runningJobs` to the metadata map (#132): for every run whose LATEST
+ * attempt is still in progress, the attempt's jobs that have not finished yet
+ * (their job-level timeline record has no FinishTime, or no record exists yet —
+ * queued). Two batched reads for the whole map, never one query per run. Older
+ * attempts' jobs are ignored, so a re-run only ever reports its newest attempt.
+ * Wrapped in its own try so a hub DB predating these tables still serves timing.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function collectRunningJobs(db: any, out: Map<number, RunMeta>): void {
+  try {
+    const attempts = db
+      .prepare(`SELECT Id AS id, WorkflowRunId AS runId, Attempt AS attempt, Status AS status FROM WorkflowRunAttempt`)
+      .all() as { id: number; runId: number | null; attempt: number; status: number }[];
+    // The CURRENT attempt per run = the highest attempt number.
+    const latest = new Map<number, { id: number; attempt: number; status: number }>();
+    for (const a of attempts) {
+      if (a.runId == null) continue;
+      const cur = latest.get(a.runId);
+      if (!cur || a.attempt > cur.attempt) latest.set(a.runId, a);
+    }
+    const jobs = db
+      .prepare(
+        `SELECT j.runid AS runid, j.WorkflowRunAttemptId AS attemptId, j.name AS name,
+                j.WorkflowIdentifier AS wfid, t.FinishTime AS finished
+         FROM Jobs j LEFT JOIN TimeLineRecords t ON t.TimelineId = j.TimeLineId AND t.RecordType = 'Job'`,
+      )
+      .all() as { runid: number; attemptId: number | null; name: string | null; wfid: string | null; finished: string | null }[];
+    for (const j of jobs) {
+      const cur = latest.get(j.runid);
+      // Only the newest attempt of a run that is still in progress can have active jobs.
+      if (!cur || cur.status === ATTEMPT_COMPLETED || j.attemptId !== cur.id) continue;
+      if (j.finished) continue; // this job already finished — not active
+      const name = j.name ?? j.wfid;
+      if (!name) continue;
+      const key = j.wfid || name; // same identity rule as the UI's jobAliasKey (#114)
+      const m = out.get(j.runid) ?? { runners: [] };
+      const list = (m.runningJobs ??= []);
+      // Matrix legs share a key but differ by name; identical pairs collapse.
+      if (!list.some((x) => x.key === key && x.name === name)) list.push({ key, name });
+      out.set(j.runid, m);
+    }
+  } catch {
+    /* hub DB without these tables (older schema) → timing still served, no runningJobs */
+  }
 }
 
 /** Exposed for tests. */

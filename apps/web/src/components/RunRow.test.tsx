@@ -90,6 +90,83 @@ describe("RunRow run timing (#96)", () => {
   });
 });
 
+// ── #132: in-progress rows name their active job(s), aliased (#114) ──────────
+describe("RunRow running jobs (#132)", () => {
+  const LIVE: WorkflowRun = {
+    id: 20,
+    displayName: "CI",
+    owner: "acme",
+    repo: "widget",
+    status: "inProgress",
+    result: null,
+  };
+
+  it("shows the active job through the alias layer — alias rendered, original in the tooltip", () => {
+    renderWithRouter(
+      <RunRow
+        run={LIVE}
+        meta={{ runningJobs: [{ key: "build", name: "build" }] }}
+        aliases={[{ project: "acme/widget", jobKey: "build", alias: "Compile" }]}
+      />,
+    );
+    expect(screen.getByText("running:")).toBeTruthy();
+    const job = screen.getByText("Compile");
+    expect(job.getAttribute("title")).toBe("Original: build");
+    // Alias, never override: the original name is not rendered as text.
+    expect(screen.queryByText("build")).toBeNull();
+  });
+
+  it("falls back to the original job name (no tooltip) when no alias exists", () => {
+    renderWithRouter(
+      <RunRow
+        run={LIVE}
+        meta={{ runningJobs: [{ key: "build", name: "build" }] }}
+        aliases={[{ project: "other/project", jobKey: "build", alias: "Nope" }]}
+      />,
+    );
+    const job = screen.getByText("build");
+    expect(job.getAttribute("title")).toBeNull();
+    expect(screen.queryByText("Nope")).toBeNull();
+  });
+
+  it("lists two jobs and collapses the rest into '+N more'", () => {
+    renderWithRouter(
+      <RunRow
+        run={LIVE}
+        meta={{
+          runningJobs: [
+            { key: "a", name: "alpha" },
+            { key: "b", name: "beta" },
+            { key: "c", name: "gamma" },
+            { key: "d", name: "delta" },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText("alpha")).toBeTruthy();
+    expect(screen.getByText("beta")).toBeTruthy();
+    expect(screen.getByText("+2 more")).toBeTruthy();
+    expect(screen.queryByText("gamma")).toBeNull();
+    expect(screen.queryByText("delta")).toBeNull();
+  });
+
+  it("never shows the line on a finished row, even when stale meta still carries runningJobs", () => {
+    renderWithRouter(
+      <RunRow
+        run={{ ...LIVE, status: "completed", result: "succeeded" }}
+        meta={{ runningJobs: [{ key: "build", name: "build" }] }}
+      />,
+    );
+    expect(screen.queryByText(/running:/)).toBeNull();
+    expect(screen.queryByText("build")).toBeNull();
+  });
+
+  it("shows no line while the run has no active-job data at all", () => {
+    renderWithRouter(<RunRow run={LIVE} meta={{}} />);
+    expect(screen.queryByText(/running:/)).toBeNull();
+  });
+});
+
 describe("RunRow", () => {
   it("renders full metadata: title, repo, ref, sha, event and relative time", () => {
     vi.useFakeTimers();

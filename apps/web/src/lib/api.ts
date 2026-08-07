@@ -188,6 +188,19 @@ export interface RunTimeMeta {
   startedAt?: string;
   finishedAt?: string;
   durationMs?: number;
+  /**
+   * Active/queued jobs of the run's CURRENT attempt (#132) — present only while
+   * that attempt is in progress; finished runs never carry it. `key` is the
+   * stable YAML job key #114 aliases are stored under, `name` the original
+   * display name (what renders when no alias exists).
+   */
+  runningJobs?: RunningJobRef[];
+}
+
+/** One in-flight job on an in-progress run: alias key + original name (#132). */
+export interface RunningJobRef {
+  key: string;
+  name: string;
 }
 
 /**
