@@ -15,6 +15,7 @@ import { serveProjects } from "./projects.js";
 import { appendDefaultPlatform, serveRerun } from "./rerunmap.js";
 import { serveRunsMeta } from "./runs-meta.js";
 import { serveLocalcheckout } from "./localcheckout.js";
+import { serveInnerLocalcheckout } from "./localcheckout-inner.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -257,6 +258,17 @@ async function handleRequest(
       // through this front, so serve the ndh-owned checkout@v4-parity composite instead
       // (localcheckout.ts). Any shape we cannot render falls back to the engine's own shim.
       if (!(await serveLocalcheckout(opts.hubPort, url, res))) {
+        proxy(req, res, opts.hubPort);
+      }
+    } else if (req.method === "GET" && /\/localcheckout\.(tar\.gz|zip)$/i.test(url.pathname)) {
+      // #107: the composite's INNER step resolves to the engine's static inner action
+      // (wwwroot/localcheckout.tar.gz|.zip — the hub mints these URLs from the Host header, so
+      // runners fetch them through this front). Its ancient bundled @actions/core stamps the
+      // set-output deprecation warning on every localcheckout run. Serve the ndh-owned
+      // dependency-free inner action instead (localcheckout-inner.ts); on any failure — or
+      // NDH_INNER_LOCALCHECKOUT=engine — proxy the engine's original archive unchanged.
+      // (/localcheckoutazure.zip does not match and stays proxied.)
+      if (!serveInnerLocalcheckout(url.pathname, res)) {
         proxy(req, res, opts.hubPort);
       }
     } else if (req.method === "POST" && url.pathname.match(/^\/_apis\/v1\/Message\/schedule2\/?$/i)) {

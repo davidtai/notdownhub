@@ -165,6 +165,16 @@ Each input that cannot apply to a copied tree logs one explicit line and does
 nothing. If the front cannot render the shim, it proxies the engine's own copy
 unchanged.
 
+The composite's inner step resolves to the engine's static inner action at
+`/localcheckout.tar.gz` (or `.zip`). That bundle ships an ancient toolkit that
+emits the `set-output` deprecation warning on every run (issue #107). The front
+intercepts that GET too and serves an ndh-owned, dependency-free inner action
+(`localcheckout-inner.ts`). It streams the dispatched tree the same way, but
+writes its `skip` output to the `GITHUB_OUTPUT` env file and runs on node20. It
+declares the full checkout input surface, so both outer composites stay
+warning-free. On any failure, or with `NDH_INNER_LOCALCHECKOUT=engine`, the
+front proxies the engine's original archive unchanged.
+
 ### Request flow: JWT injection for agent-status reads
 
 `Runner.Server`'s `AgentPools` / `Agent` endpoints require a **management JWT**
