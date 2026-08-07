@@ -552,15 +552,19 @@ non-destructive:
   dispatch that was already accepted and queued before the restart resumes when
   a matching runner reconnects.
 
-Verify recovery with:
+Verify recovery from the hub machine with:
 
 ```bash
 ndh status --server http://hub-host:4949
 # runners:
-#   build-box-1  []
+#   build-box-1  [self-hosted,macOS,ARM64]  online, idle
 # recent runs:
 #   …
 ```
+
+The label list contains the labels you joined with plus the labels the
+runner detects on its host. Until the runner reconnects, its row shows
+`offline`.
 
 ---
 
@@ -874,7 +878,7 @@ ndh dispatch --server http://hub.tailnet:4949 -W .github/workflows/ci.yml \
 | `runner join` / start says the runner is `already configured` | An older `ndh` did not clear the local `.runner` before re-configuring. | Re-join with `ndh runner join … --re-join` (it unregisters and rebuilds the instance for you), or `ndh runner remove <name>` and join again. For Docker, recreate the container (fresh, or with a clean state volume). |
 | `ndh hub up` prints `a hub is already running on :4949` | Your own hub holds the port; the identity-checked pre-flight confirms it, and refuses instead of crashing with `EADDRINUSE`. | `ndh hub down` to stop the previous hub and free both ports, then `ndh hub up`. Prefer a supervised service. |
 | `ndh hub up` prints `:4949 is in use by another process` | The port holder is not an ndh hub, so `ndh hub down` cannot free it. | Free the port, or pass `--port`. Find the holder with `lsof -iTCP:4949 -sTCP:LISTEN` and stop it. |
-| `ndh status` shows a runner with empty `[]` labels | v0.1 cosmetic: `status` lists the agent name but does not render its labels. | Not fatal — the labels are still registered and matched for dispatch; confirm them from the `--labels` you joined with. |
+| `ndh status` shows a runner with empty `[]` labels | You ran `status` on a machine other than the hub. The off-box view lists runner names without labels or live state ([details](collaboration.md#how-the-team-sees-results)). | Not fatal — the labels are still registered and matched for dispatch. Run `ndh status` on the hub machine to see labels and online/busy state. |
 | Web UI / `GET /api/local/join-info` returns `403` (`the notdownhub UI is local-only…`) or `401` from another machine | By design: the UI + pairing endpoint are loopback-only; `403` when no `--basic-auth`, `401` when it is set and creds are missing/wrong. | Open the UI on the hub itself (`http://localhost:4949`) or over an SSH tunnel; to admit a remote operator, start the hub with `--basic-auth user:pass` (or `NDH_BASIC_AUTH`) and send those credentials. The API/runner protocol/mirror are unaffected. |
 | Startup logs `--basic-auth must be user:pass — ignoring` | The `--basic-auth` / `NDH_BASIC_AUTH` value had no colon, so it was rejected and the UI stayed loopback-only. | Pass it as `user:pass` (a single colon-separated string). |
 

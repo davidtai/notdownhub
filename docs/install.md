@@ -301,10 +301,17 @@ ndh run -W examples/demo/.github/workflows/ci.yml -l
 Expected tail — the engine has parsed the matrix + `needs:` graph:
 
 ```
+| Updated Workflow Name: demo-ci
 | Found 2 matching jobs for the requested event push
 | build
 | report depends on build
+All Workflows skipped, due to filters
+Stopped Server
 ```
+
+The closing `All Workflows skipped, due to filters` line is normal in list
+mode, not an error. Nothing was filtered out. The `-l` flag lists the jobs
+and executes none of them, so the engine reports every workflow as skipped.
 
 Full end-to-end (this actually executes). Without Docker, `ndh run` maps
 `ubuntu-latest` to the host, so no `-P` flag is needed:

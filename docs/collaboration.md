@@ -153,6 +153,12 @@ push as `remote:` lines:
 
 ```
 $ git push origin main
+remote: [ndh] injecting 1 secret via ephemeral secret-file
+remote: [ndh] injecting 1 var via var-file
+remote: Couldn't retrieve github.sha
+remote: [.github/workflows/ci.yml] Running: .github/workflows/ci.yml
+remote: [app-ci / build] Running: build
+remote: [app-ci / build] Succeeded: Set up job
 remote: | secret CI_GREETING arrived intact
 remote: [app-ci / build] Succeeded: check the injected secret
 remote: | deploy target is staging
@@ -165,7 +171,19 @@ To git.internal:/srv/git/app.git
  * [new branch]      main -> main
 ```
 
+The transcript is trimmed: every line is from a real push, in order, with
+the noisier lines cut. The full stream also carries git's detached-HEAD
+advice from the hook's work-tree checkout. It carries the engine's
+job-planning lines (`Evaluate job name`, `Queued Job: …`,
+`Read Job from Queue: …`) and each step's `##[group]` command block too.
+
 Facts about the push, all verified:
+
+- `Couldn't retrieve github.sha` appears in every hook push, and it is not
+  an error ([#139](https://github.com/davidtai/notdownhub/issues/139)).
+  The hook dispatches from a temporary work-tree with no git metadata, so
+  the engine cannot read the sha there. The run still executes the pushed
+  commit, and the results are unaffected.
 
 - The push waits until the dispatched workflows complete. The verified first
   push returned after 33 seconds, action-mirror warm-up included. The hub
