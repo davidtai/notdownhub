@@ -25,8 +25,20 @@ test("prepareHub: creates + persists a registration token, assembles env and mir
   assert.match(String(plan.env["ConnectionStrings__sqlite"]), /hub\.db/);
   assert.equal(plan.env["Runner.Server__ActionDownloadUrls__0__TarballUrl"], "http://hub.lan:4949/mirror/{0}/tarball/{1}");
   assert.equal(plan.env["Runner.Server__ActionDownloadUrls__0__ZipballUrl"], "http://hub.lan:4949/mirror/{0}/zipball/{1}");
+  // GitServerUrl (github.server_url / GITHUB_SERVER_URL for jobs) points at this hub on a `.localhost`
+  // host: it keeps the front's port, so the printed artifact URL resolves, while `.localhost` keeps
+  // actions/upload-artifact from treating the hub as GHES and refusing v4 uploads.
+  assert.equal(plan.env["Runner.Server__GitServerUrl"], "http://ndh.localhost:4949");
   // token persisted to disk
   assert.equal(readFileSync(join(home, "hub", "runner-token"), "utf8").trim(), plan.token);
+});
+
+test("prepareHub: GitServerUrl elides the default port and follows --tls scheme", async () => {
+  freshHome();
+  const plain = await prepareHub(opts({ port: "80", host: "h" }));
+  assert.equal(plain.env["Runner.Server__GitServerUrl"], "http://ndh.localhost");
+  const tls = await prepareHub(opts({ tls: true, port: "443", host: "h" }));
+  assert.equal(tls.env["Runner.Server__GitServerUrl"], "https://ndh.localhost");
 });
 
 test("prepareHub: reuses an already-persisted token", async () => {

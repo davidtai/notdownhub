@@ -9,6 +9,7 @@ import { download, exists, log, ndhHome } from "./lib.js";
 import { getAgentsInfo } from "./agents-info.js";
 import { serveJobLogs } from "./joblogs.js";
 import { getConfigInfo } from "./config-info.js";
+import { listArtifacts, parseArtifactApiPath, parseArtifactPrettyUrl, serveArtifactDownload } from "./artifacts.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -148,6 +149,34 @@ async function handleRequest(
         return;
       }
       await serveJobLogs(url.pathname, res);
+    } else if (parseArtifactApiPath(url.pathname)) {
+      // A run's artifacts (list) + the archive download, for the UI. Same local-only gate as the
+      // other /api/local reads — a UI-initiated download rides the same rule as the rest of the UI.
+      // (The raw /_apis/pipelines/... artifact endpoints stay proxied below so the RUNNER can still
+      // upload and a direct/CLI client can still fetch; only these convenience paths are UI-gated.)
+      if (!uiAccessAllowed(req, opts)) {
+        denyUi(res, opts);
+        return;
+      }
+      const { runId, selector } = parseArtifactApiPath(url.pathname)!;
+      const base = `http://127.0.0.1:${opts.hubPort}`;
+      if (selector === null) {
+        const list = await listArtifacts(base, runId).catch(() => []);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(list));
+      } else {
+        await serveArtifactDownload(base, runId, selector, res);
+      }
+    } else if (parseArtifactPrettyUrl(url.pathname)) {
+      // The exact URL actions/upload-artifact prints in the job log. github.server_url now points at
+      // this hub (hub.ts sets Runner.Server__GitServerUrl), so instead of a dead github.com link the
+      // operator gets the real artifact archive. Gated like the UI download it resolves to.
+      if (!uiAccessAllowed(req, opts)) {
+        denyUi(res, opts);
+        return;
+      }
+      const { runId, artifactId } = parseArtifactPrettyUrl(url.pathname)!;
+      await serveArtifactDownload(`http://127.0.0.1:${opts.hubPort}`, runId, artifactId, res);
     } else if (opts.uiDir && !uiAccessAllowed(req, opts) && isUiPath(url.pathname)) {
       denyUi(res, opts);
     } else if (opts.uiDir && (await serveUi(opts.uiDir, url.pathname, res))) {

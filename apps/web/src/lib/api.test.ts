@@ -9,6 +9,8 @@ import {
   getJobLogs,
   getConfig,
   getJoinInfo,
+  getArtifacts,
+  artifactDownloadUrl,
 } from "./api";
 import { mockFetch, routes } from "../test/helpers";
 
@@ -114,6 +116,34 @@ describe("getConfig", () => {
   it("supplies defaults for an empty payload", async () => {
     mockFetch(routes({ "/api/local/config": {} }));
     expect(await getConfig()).toEqual({ backend: "unknown", secrets: [], vars: [] });
+  });
+});
+
+describe("getArtifacts", () => {
+  it("returns a run's artifacts (bare array)", async () => {
+    mockFetch(routes({ "/api/local/artifacts/4": [{ id: 5, name: "my-artifact", size: 158 }] }));
+    expect(await getArtifacts(4)).toEqual([{ id: 5, name: "my-artifact", size: 158 }]);
+  });
+
+  it("unwraps an OData { value: [...] } envelope", async () => {
+    mockFetch(routes({ "/api/local/artifacts/4": { body: { value: [{ id: 6, name: "a", size: 1 }] } } }));
+    expect(await getArtifacts(4)).toEqual([{ id: 6, name: "a", size: 1 }]);
+  });
+
+  it("returns [] when the run has no artifacts or the endpoint errors", async () => {
+    mockFetch(routes({ "/api/local/artifacts/9": [] }));
+    expect(await getArtifacts(9)).toEqual([]);
+    mockFetch(routes({ "/api/local/artifacts/9": { status: 403 } }));
+    expect(await getArtifacts(9)).toEqual([]);
+    mockFetch(routes({ "/api/local/artifacts/9": { throw: true } }));
+    expect(await getArtifacts(9)).toEqual([]);
+  });
+});
+
+describe("artifactDownloadUrl", () => {
+  it("builds a same-origin URL with the name url-encoded", () => {
+    expect(artifactDownloadUrl(4, "my-artifact")).toBe("/api/local/artifacts/4/my-artifact");
+    expect(artifactDownloadUrl(4, "cover report/x")).toBe("/api/local/artifacts/4/cover%20report%2Fx");
   });
 });
 

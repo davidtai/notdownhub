@@ -138,6 +138,36 @@ describe("RunDetail", () => {
     await waitFor(() => expect(screen.getByText("os: linux")).toBeTruthy());
   });
 
+  it("shows an Artifacts section with a download link when the run has artifacts", async () => {
+    mockFetch((url) => {
+      if (url.includes("/workflow/runs")) return { body: [{ id: 5, displayName: "Deploy", status: "completed", result: "succeeded" }] };
+      if (url.includes("/attempts")) return { body: [{ id: 1, attempt: 1, timeLineId: "at1" }] };
+      if (url.includes("/jobs")) return { body: [] };
+      if (url.includes("/api/local/artifacts/5")) return { body: [{ id: 5, name: "my-artifact", size: 158 }] };
+      if (url.includes("/api/local/joblogs/")) return { body: { retained: false, lines: [] } };
+      return { status: 404 };
+    });
+    renderDetail();
+    await waitFor(() => expect(screen.getByText("Artifacts")).toBeTruthy());
+    expect(screen.getByText("my-artifact")).toBeTruthy();
+    expect(screen.getByText("158 B")).toBeTruthy();
+    const link = screen.getByLabelText("Download my-artifact") as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("/api/local/artifacts/5/my-artifact");
+  });
+
+  it("shows no Artifacts section for a run without artifacts", async () => {
+    mockFetch((url) => {
+      if (url.includes("/workflow/runs")) return { body: [{ id: 5, displayName: "Deploy", status: "completed", result: "succeeded" }] };
+      if (url.includes("/attempts")) return { body: [] };
+      if (url.includes("/jobs")) return { body: [] };
+      if (url.includes("/api/local/artifacts/5")) return { body: [] };
+      return { status: 404 };
+    });
+    renderDetail();
+    await waitFor(() => expect(screen.getByText("Deploy")).toBeTruthy());
+    expect(screen.queryByText("Artifacts")).toBeNull();
+  });
+
   it("renders an unknown state with no attempts or jobs", async () => {
     mockFetch((url) => {
       if (url.includes("/workflow/runs")) return { body: [] };

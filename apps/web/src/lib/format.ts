@@ -129,6 +129,20 @@ export function timelineSpan(records: { startTime: string | null; finishTime: st
   };
 }
 
+/** Human byte size, e.g. "0 B", "158 B", "1.2 KB", "3.4 MB". */
+export function humanSize(bytes?: number | null): string {
+  if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let n = bytes / 1024;
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i++;
+  }
+  return `${n.toFixed(n < 10 ? 1 : 0)} ${units[i]}`;
+}
+
 /** Parse the hub's matrix field (a JSON string) into a compact chip label. */
 export function matrixLabel(matrix?: string | null): string | null {
   if (!matrix) return null;

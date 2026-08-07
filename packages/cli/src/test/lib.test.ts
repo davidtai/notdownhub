@@ -13,6 +13,7 @@ import {
   run,
   randomToken,
   log,
+  humanSize,
   VENDOR_VERSION,
   connErrorCode,
   rootErrorMessage,
@@ -209,4 +210,16 @@ test("probeServer: a listening host is reachable; a dead port is not (real socke
 test("probeServer: a non-connection fetch failure is treated as reachable (let the real command speak)", async () => {
   // An unparseable URL rejects fetch without a connection code → probe stays optimistic.
   assert.deepEqual(await probeServer("http://[bad"), { ok: true });
+});
+
+test("humanSize renders bytes through terabytes and rejects nonsense", () => {
+  assert.equal(humanSize(0), "0 B");
+  assert.equal(humanSize(158), "158 B");
+  assert.equal(humanSize(1024), "1.0 KB");
+  assert.equal(humanSize(1536), "1.5 KB");
+  assert.equal(humanSize(20 * 1024), "20 KB");
+  assert.equal(humanSize(3.4 * 1024 * 1024), "3.4 MB");
+  assert.equal(humanSize(2 * 1024 ** 4), "2.0 TB");
+  assert.equal(humanSize(-1), "");
+  assert.equal(humanSize(Number.NaN), "");
 });

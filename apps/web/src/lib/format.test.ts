@@ -9,6 +9,7 @@ import {
   elapsedMs,
   timelineSpan,
   matrixLabel,
+  humanSize,
   projectLabel,
 } from "./format";
 
@@ -198,5 +199,24 @@ describe("matrixLabel", () => {
   it("joins entries of an object or the first array element", () => {
     expect(matrixLabel(JSON.stringify({ os: "linux", node: 20 }))).toBe("os: linux · node: 20");
     expect(matrixLabel(JSON.stringify([{ os: "mac" }]))).toBe("os: mac");
+  });
+});
+
+describe("humanSize", () => {
+  it("renders bytes through terabytes", () => {
+    expect(humanSize(0)).toBe("0 B");
+    expect(humanSize(158)).toBe("158 B");
+    expect(humanSize(1024)).toBe("1.0 KB");
+    expect(humanSize(1536)).toBe("1.5 KB");
+    expect(humanSize(20 * 1024)).toBe("20 KB");
+    expect(humanSize(3 * 1024 * 1024)).toBe("3.0 MB");
+    expect(humanSize(2 * 1024 ** 4)).toBe("2.0 TB");
+  });
+
+  it("returns '' for missing or nonsensical values", () => {
+    expect(humanSize()).toBe("");
+    expect(humanSize(null)).toBe("");
+    expect(humanSize(-1)).toBe("");
+    expect(humanSize(Number.NaN)).toBe("");
   });
 });
