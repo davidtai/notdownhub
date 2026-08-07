@@ -78,6 +78,13 @@ test("JobLogWriter: flushes on size threshold, preserves order, upserts stream m
   w.flush();
   assert.equal((db.prepare("SELECT run_id FROM streams WHERE timeline_id='tl'").get() as { run_id: number }).run_id, 5);
   assert.equal((await readJobLog(path, "tl"))!.length, 4);
+  // run_id-scoped retrieval: matching run returns the lines; a wrong run returns none;
+  // a stream with a null/unresolved run_id is still returned (tolerant match).
+  assert.equal((await readJobLog(path, "tl", 5))!.length, 4, "matching run_id returns the lines");
+  assert.equal((await readJobLog(path, "tl", 999))!.length, 0, "a non-matching run_id returns nothing");
+  w.add([{ runId: null, timelineId: "tlnull", recordId: null, ts: 1, line: "x" }]);
+  w.flush();
+  assert.equal((await readJobLog(path, "tlnull", 7))!.length, 1, "unresolved (null) run_id is tolerated");
   w.add([]); // no-op
   w.flush(); // empty flush is a no-op
   db.close();

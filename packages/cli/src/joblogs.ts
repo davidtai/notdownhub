@@ -178,14 +178,23 @@ export function pruneOldRuns(db: Db, cutoffMs: number): number {
   }
 }
 
-/** Ordered console lines for a job's timeline, or null if the DB can't be read. */
-export async function readJobLog(dbPath: string, timelineId: string): Promise<string[] | null> {
+/**
+ * Ordered console lines for a job's timeline, or null if the DB can't be read.
+ * When runId is given, the timeline must belong to that run (or have an unresolved/null
+ * run_id) — this validates the /joblogs/<runId>/<timelineId> pairing instead of ignoring runId.
+ */
+export async function readJobLog(dbPath: string, timelineId: string, runId?: number): Promise<string[] | null> {
   try {
     const db = await openDb(dbPath, true);
     try {
-      const rows = db.prepare("SELECT line FROM job_logs WHERE timeline_id=? ORDER BY id").all(timelineId) as {
-        line: string;
-      }[];
+      const sql =
+        runId !== undefined
+          ? "SELECT j.line FROM job_logs j LEFT JOIN streams s ON s.timeline_id = j.timeline_id " +
+            "WHERE j.timeline_id=? AND (s.run_id=? OR s.run_id IS NULL) ORDER BY j.id"
+          : "SELECT line FROM job_logs WHERE timeline_id=? ORDER BY id";
+      const rows = (runId !== undefined
+        ? db.prepare(sql).all(timelineId, runId)
+        : db.prepare(sql).all(timelineId)) as { line: string }[];
       return rows.map((r) => r.line);
     } finally {
       db.close();
@@ -207,8 +216,9 @@ export async function serveJobLogs(pathname: string, res: ServerResponse): Promi
     res.end(JSON.stringify({ error: "expected /api/local/joblogs/<runId>/<timelineId>" }));
     return;
   }
+  const runIdNum = Number(decodeURIComponent(m[1]));
   const timelineId = decodeURIComponent(m[2]);
-  const lines = await readJobLog(joblogsDbPath(), timelineId);
+  const lines = await readJobLog(joblogsDbPath(), timelineId, Number.isInteger(runIdNum) ? runIdNum : undefined);
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify({ retained: !!(lines && lines.length), lines: lines ?? [] }));
 }

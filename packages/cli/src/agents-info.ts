@@ -128,25 +128,23 @@ async function agentsFromApi(hubPort: number, mint: () => Promise<string | null>
 
 export async function getAgentsInfo(hubPort: number, mint: () => Promise<string | null>): Promise<AgentInfo[]> {
   const db = await readFromDb();
-  const base = db ? db.agents : await agentsFromApi(hubPort, mint);
-  const out: AgentInfo[] = [];
-  for (const a of base) {
-    if (!a.name) continue;
-    const online = await isOnline(hubPort, a.name);
-    const busy = db ? db.busy.has(a.name) : false;
+  const base = (db ? db.agents : await agentsFromApi(hubPort, mint)).filter((a) => a.name);
+  // Probe liveness for all agents concurrently — one round-trip total, not one per agent.
+  const online = await Promise.all(base.map((a) => isOnline(hubPort, a.name!)));
+  return base.map((a, i) => {
+    const busy = db ? db.busy.has(a.name!) : false;
     const labels = db && a.id !== undefined ? (db.labels.get(a.id) ?? []) : [];
-    out.push({
+    return {
       id: a.id,
-      name: a.name,
+      name: a.name!,
       version: a.version,
       os: a.os,
       ephemeral: !!a.ephemeral,
       maxParallelism: a.maxParallelism,
       labels,
-      online,
+      online: online[i],
       busy,
-      state: online ? (busy ? "active" : "idle") : "offline",
-    });
-  }
-  return out;
+      state: online[i] ? (busy ? "active" : "idle") : "offline",
+    };
+  });
 }

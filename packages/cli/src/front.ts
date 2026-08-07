@@ -33,6 +33,8 @@ export interface FrontOptions {
   basicAuth?: string;
   /** TLS material; when set the front serves HTTPS. */
   tls?: { key: Buffer; cert: Buffer };
+  /** GitHub token for authenticated mirror fetches (from `--github-token`). */
+  githubToken?: string;
 }
 
 /** The UI (and its join-info endpoint) is local-only: the operator at the hub machine. */
@@ -103,7 +105,7 @@ async function handleRequest(
   try {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname.startsWith("/mirror/")) {
-      await serveMirror(url.pathname, res);
+      await serveMirror(url.pathname, res, opts.githubToken);
     } else if (url.pathname === "/api/local/join-info") {
       // Pairing info for the UI. The token must not leak to arbitrary readers — a remote
       // reader could register rogue runners with it. Loopback always; basic auth if configured.
@@ -185,12 +187,26 @@ function proxy(req: http.IncomingMessage, res: http.ServerResponse, hubPort: num
     (up) => {
       res.writeHead(up.statusCode ?? 502, up.headers);
       up.pipe(res);
+      // If the upstream response dies mid-body (dropped SSE / long-poll), reset the client socket
+      // so the consumer sees a broken connection immediately instead of hanging on a half-response.
+      up.on("error", () => res.destroy());
+      up.on("aborted", () => res.destroy());
     },
   );
   upstream.on("error", () => {
-    if (!res.headersSent) res.writeHead(502);
-    res.end("hub unavailable");
+    // Before any headers: return a clean 502. After headers (mid-stream): force-reset, never
+    // inject a body into a partially-streamed response.
+    if (!res.headersSent) {
+      res.writeHead(502);
+      res.end("hub unavailable");
+    } else {
+      res.destroy();
+    }
   });
+  // If the client goes away, stop the upstream request so its long-poll is not leaked.
+  const abort = () => upstream.destroy();
+  res.on("close", abort);
+  req.on("aborted", abort);
   req.pipe(upstream);
 }
 
@@ -219,8 +235,18 @@ async function serveUi(uiDir: string, pathname: string, res: http.ServerResponse
   return true;
 }
 
-/** GET /mirror/{owner}/{repo}/{tarball|zipball}/{ref} — serve from cache, else fetch from GitHub and cache. */
-async function serveMirror(pathname: string, res: http.ServerResponse): Promise<void> {
+// Reversible, collision-free path segment: percent-encode everything outside a safe set, and
+// encode '.' too so a literal "feature/x" and "feature.x" / "feature_x" never map to one file.
+function encodeSeg(s: string): string {
+  return encodeURIComponent(s).replace(/\./g, "%2E").replace(/\*/g, "%2A");
+}
+
+// Coalesce concurrent misses for the same cache file so two runners racing one uncached ref
+// share a single fetch (no duplicate download, no interleaved temp-file writes).
+const inflightFetches = new Map<string, Promise<void>>();
+
+/** GET /mirror/{owner}/{repo}/{tarball|zipball}/{ref} — serve from cache, else fetch and cache. */
+async function serveMirror(pathname: string, res: http.ServerResponse, githubToken?: string): Promise<void> {
   const m = pathname.match(/^\/mirror\/([^/]+)\/([^/]+)\/(tarball|zipball)\/(.+)$/);
   if (!m) {
     res.writeHead(404);
@@ -228,19 +254,15 @@ async function serveMirror(pathname: string, res: http.ServerResponse): Promise<
     return;
   }
   const [, owner, repo, kind, ref] = m;
-  const safe = (s: string) => s.replace(/[^A-Za-z0-9._-]/g, "_");
-  const file = join(ndhHome(), "mirror", safe(owner), safe(repo), `${kind}-${safe(ref)}.tgz`);
+  const file = join(ndhHome(), "mirror", encodeSeg(owner), encodeSeg(repo), `${kind}-${encodeSeg(ref)}.tgz`);
   if (!(await exists(file))) {
-    // Upstream is overridable (NDH_MIRROR_UPSTREAM) so the mirror can point at a private GitHub
-    // Enterprise host or a local fixture in tests; defaults to public GitHub.
-    const upstream = process.env.NDH_MIRROR_UPSTREAM ?? "https://api.github.com";
-    const src = `${upstream.replace(/\/$/, "")}/repos/${owner}/${repo}/${kind}/${ref}`;
-    log(`mirror miss — fetching ${owner}/${repo}@${ref} (${kind})`);
-    await mkdir(dirname(file), { recursive: true });
-    const headers: Record<string, string> = { "user-agent": "notdownhub" };
-    if (process.env.GITHUB_TOKEN) headers.authorization = `token ${process.env.GITHUB_TOKEN}`;
     try {
-      await download(src, file, { headers });
+      let fetching = inflightFetches.get(file);
+      if (!fetching) {
+        fetching = fetchToCache(owner, repo, kind, ref, file, githubToken).finally(() => inflightFetches.delete(file));
+        inflightFetches.set(file, fetching);
+      }
+      await fetching;
     } catch (err) {
       res.writeHead(502);
       res.end(`mirror fetch failed (offline and not cached?): ${err}`);
@@ -251,9 +273,30 @@ async function serveMirror(pathname: string, res: http.ServerResponse): Promise<
   createReadStream(file).pipe(res);
 }
 
+async function fetchToCache(
+  owner: string,
+  repo: string,
+  kind: string,
+  ref: string,
+  file: string,
+  githubToken?: string,
+): Promise<void> {
+  // Upstream is overridable (NDH_MIRROR_UPSTREAM) so the mirror can point at a private GitHub
+  // Enterprise host or a local fixture in tests; defaults to public GitHub.
+  const upstream = process.env.NDH_MIRROR_UPSTREAM ?? "https://api.github.com";
+  const src = `${upstream.replace(/\/$/, "")}/repos/${owner}/${repo}/${kind}/${ref}`;
+  log(`mirror miss — fetching ${owner}/${repo}@${ref} (${kind})`);
+  await mkdir(dirname(file), { recursive: true });
+  const headers: Record<string, string> = { "user-agent": "notdownhub" };
+  // `--github-token` (threaded here) or a shell-exported GITHUB_TOKEN authenticates the fetch.
+  const token = githubToken ?? process.env.GITHUB_TOKEN;
+  if (token) headers.authorization = `token ${token}`;
+  await download(src, file, { headers });
+}
+
 export function uiDistDir(): string {
   return join(dirname(fileURLToPath(import.meta.url)), "..", "ui-dist");
 }
 
 /** Exposed for tests: the local-only UI access gates + the extracted request router. */
-export const __test = { isLoopback, basicAuthOk, uiAccessAllowed, denyUi, isUiPath, handleRequest };
+export const __test = { isLoopback, basicAuthOk, uiAccessAllowed, denyUi, isUiPath, handleRequest, encodeSeg };

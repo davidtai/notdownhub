@@ -16,8 +16,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "c8 --check-coverage node --test \"dist/test/**/*.test.js\"",
-    "test:nocov": "node --test \"dist/test/**/*.test.js\""
+    "test": "c8 --check-coverage node --import ./dist/test/_setup.js --test \"dist/test/**/*.test.js\"",
+    "test:nocov": "node --import ./dist/test/_setup.js --test \"dist/test/**/*.test.js\""
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

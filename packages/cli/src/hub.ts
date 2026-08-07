@@ -25,6 +25,10 @@ interface HubUpOptions {
   tlsKey?: string;
 }
 
+function isValidPort(n: number): boolean {
+  return Number.isInteger(n) && n >= 1 && n <= 65535;
+}
+
 /** First non-internal IPv4 address, used so mirror URLs are reachable from the fleet. */
 function detectLanIp(): string | undefined {
   return Object.values(networkInterfaces())
@@ -119,12 +123,14 @@ export function resolveBasicAuth(raw: string | undefined): string | undefined {
 export async function prepareHub(opts: HubUpOptions): Promise<HubPlan> {
   const scheme: "http" | "https" = opts.tls ? "https" : "http";
   const port = opts.port !== undefined ? Number(opts.port) : opts.tls ? 443 : 4949;
+  if (!isValidPort(port)) fail(`invalid --port '${opts.port}' — expected an integer 1-65535`);
   // Mirror URLs are handed to runners verbatim — they must be reachable from the fleet,
   // not just this machine. Default to our LAN address; --host overrides (DNS, tailnet, etc).
   const host = opts.host ?? detectLanIp() ?? "127.0.0.1";
   const defaultPort = scheme === "https" ? 443 : 80;
   const origin = `${scheme}://${host}${port === defaultPort ? "" : `:${port}`}`;
   const hubPort = Number(opts.hubPort);
+  if (!isValidPort(hubPort)) fail(`invalid --hub-port '${opts.hubPort}' — expected an integer 1-65535`);
   const hubHome = join(ndhHome(), "hub");
   await mkdir(hubHome, { recursive: true });
 
@@ -226,7 +232,7 @@ async function hubUp(opts: HubUpOptions, deps: HubDeps = {}): Promise<number> {
       child.kill(sig);
     });
 
-  startFrontFn({ port, hubPort, uiDir, runnerToken: token || undefined, host, basicAuth, tls });
+  startFrontFn({ port, hubPort, uiDir, runnerToken: token || undefined, host, basicAuth, tls, githubToken: opts.githubToken });
 
   log(`hub up on ${scheme}://localhost${port === (scheme === "https" ? 443 : 80) ? "" : `:${port}`}  (ui: ${uiDir ? (basicAuth ? "yes, basic-auth" : "yes, local-only") : "no"}, auth: ${token ? "on" : "OFF"}, mirror: ${opts.mirrorRewrite ? `on @ ${origin}/mirror` : "off"})`);
   log(`logging to ${logPath} (daily rotation)`);
@@ -237,4 +243,4 @@ async function hubUp(opts: HubUpOptions, deps: HubDeps = {}): Promise<number> {
 }
 
 /** Exposed for tests. */
-export const __test = { prepareHub, hubUp, detectLanIp };
+export const __test = { prepareHub, hubUp, detectLanIp, isValidPort };
