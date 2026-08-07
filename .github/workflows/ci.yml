@@ -1,8 +1,11 @@
 name: ci
 
 # Builds and tests every workspace package. `pnpm -r build` / `pnpm -r test`
-# are recursive, so this stays correct as packages (e.g. a future web app) are
-# added — no per-package edits needed.
+# are recursive, so this stays correct as packages are added — no per-package
+# edits needed. Both packages ship a coverage gate that fails the `test` step
+# below when it regresses: packages/cli (c8 over node --test) and apps/web
+# (vitest + @vitest/coverage-v8), each enforcing 95% line/statement and 90%
+# branch/function coverage.
 #
 # It uses only checkout + pnpm/setup-node, so it also runs locally with the
 # tool this repo ships. On a machine without Docker, map ubuntu-latest to the
