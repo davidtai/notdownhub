@@ -69,6 +69,7 @@ export interface TimeCell {
  *   finished + finishedAt        → "3m ago" + duration line  (title: Started · Finished)
  *   startedAt only (no finish)   → started-relative          (title: Started <absolute>)
  *   no meta                      → createdOn fallback, else null (row shows no time)
+ *   skipped + nothing recorded   → "—" placeholder (#140) — skipped runs have no job timeline
  */
 export function runTimeCell(state: State, meta?: RunTimeMeta, createdOn?: string | null): TimeCell | null {
   if (meta?.startedAt) {
@@ -88,7 +89,12 @@ export function runTimeCell(state: State, meta?: RunTimeMeta, createdOn?: string
     return { primary: relativeTime(meta.startedAt), title: `Started ${startedAbs}` };
   }
   const fallback = relativeTime(createdOn);
-  if (!fallback) return null;
+  if (!fallback) {
+    // A filter-skipped run has no job timeline at all — runs-meta legitimately has
+    // nothing for it. Show an explicit placeholder, never a blank slot (#140).
+    if (state === "skipped") return { primary: "—", title: "Skipped — no jobs ran" };
+    return null;
+  }
   const abs = absoluteTime(createdOn);
   return abs ? { primary: fallback, title: abs } : { primary: fallback };
 }

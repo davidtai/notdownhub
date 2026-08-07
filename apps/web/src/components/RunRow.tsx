@@ -2,7 +2,7 @@ import { Fragment } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { GitBranch, GitCommitHorizontal } from "lucide-react";
 import { aliasFor, type JobAlias, type RunTimeMeta, type WorkflowRun } from "../lib/api";
-import { toState, shortRef, shortSha, projectLabel, isFinished } from "../lib/format";
+import { toState, shortRef, shortSha, projectLabel, isFinished, runDisplayName } from "../lib/format";
 import { runTimeCell } from "../lib/runmeta";
 import { StatusIcon, WarningMarker } from "./StatusIcon";
 import { RunActions } from "./RunActions";
@@ -48,7 +48,8 @@ export function RunRow({
   const sha = shortSha(run.sha);
   const repo = projectLabel(run);
   const when = runTimeCell(state, meta, run.createdOn);
-  const title = run.displayName || run.fileName || `Run ${run.id}`;
+  // Honest name for a filter-skipped run: basename + "(skipped)", never the raw workflow path (#140).
+  const title = runDisplayName(run);
   // #132: the current attempt's active jobs — meaningful only while the run is
   // actually in progress (stale meta on a just-finished run must not render).
   const runningJobs = state === "running" ? (meta?.runningJobs ?? []) : [];

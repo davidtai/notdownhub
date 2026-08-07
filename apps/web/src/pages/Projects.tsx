@@ -265,7 +265,15 @@ function ProjectCard({
         <span className="text-[12px] text-fg-muted">
           {project.runCount} {project.runCount === 1 ? "run" : "runs"}
         </span>
-        {when && <span className="tnum text-[12px] text-fg-subtle">last {when}</span>}
+        {when ? (
+          <span className="tnum text-[12px] text-fg-subtle">last {when}</span>
+        ) : state === "skipped" ? (
+          // A filter-skipped last run has no job timeline, so there is no real time to
+          // show — say so explicitly instead of leaving the slot blank (#140).
+          <span className="text-[12px] text-fg-subtle" title="Last run was skipped — no jobs ran">
+            last run skipped
+          </span>
+        ) : null}
 
         <div className="ml-auto flex items-center gap-1.5">
           <Link

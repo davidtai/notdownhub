@@ -116,6 +116,25 @@ describe("Projects", () => {
     expect(screen.getByText("schedule (0 0 * * *)")).toBeTruthy();
   });
 
+  it("a project whose last run was filter-skipped says 'last run skipped', not a blank slot (#140)", async () => {
+    const skipped = [
+      { id: 7, fileName: ".github/workflows/ci.yml", displayName: ".github/workflows/ci.yml", eventName: "push", owner: "team", repo: "app", status: "completed", result: "skipped" },
+    ];
+    mockFetch((url: string) => {
+      if (url.includes("/api/local/runs")) return { status: 204 };
+      if (url.includes("/workflow/runs")) return { body: skipped };
+      if (/run\/\d+\/attempt\/\d+\/jobs/.test(url)) return { body: [] };
+      if (/run\/\d+\/attempts/.test(url)) return { body: [] };
+      return undefined;
+    });
+    renderProjects();
+
+    await waitFor(() => expect(screen.getByText("team/app")).toBeTruthy());
+    // A skipped run has no job timeline, so there is no real time — say so explicitly.
+    expect(screen.getByText("last run skipped")).toBeTruthy();
+    expect(screen.getByTitle("Last run was skipped — no jobs ran")).toBeTruthy();
+  });
+
   it("links the workflow file name to a YAML preview that opens in a new tab", async () => {
     mockFetch(hubRouter());
     renderProjects();

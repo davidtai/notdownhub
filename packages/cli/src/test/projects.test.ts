@@ -223,6 +223,24 @@ test("projectsCmd: derives from the unpaged full history and prints every projec
   }
 });
 
+test("projectsCmd: a skipped last run prints basename + (skipped), never the raw path (#140)", async () => {
+  const srv = await hubServing({
+    "_apis/v1/Message/workflow/runs": [
+      { id: 7, fileName: ".github/workflows/ci.yml", displayName: ".github/workflows/ci.yml", status: "completed", result: "skipped", eventName: "push", owner: "team", repo: "app" },
+    ],
+  });
+  const cap = capture();
+  try {
+    await projectsCmd(srv.url);
+    const out = cap.logs.join("\n");
+    assert.match(out, /team\/app\s+1 run \s+last: #7 ci\.yml \(skipped\) completed\/skipped \(push\)/);
+    assert.doesNotMatch(out, /last: #7 \.github\/workflows/);
+  } finally {
+    cap.restore();
+    await srv.close();
+  }
+});
+
 test("projectsCmd: reports an empty list when the hub has no runs", async () => {
   const srv = await hubServing({ "_apis/v1/Message/workflow/runs": [] });
   const cap = capture();

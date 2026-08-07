@@ -14,7 +14,43 @@ import {
   matrixLabel,
   humanSize,
   projectLabel,
+  runDisplayName,
 } from "./format";
+
+describe("runDisplayName (#140)", () => {
+  it("gives a filter-skipped run the file basename + (skipped), never the raw path", () => {
+    expect(runDisplayName({ id: 7, fileName: ".github/workflows/ci.yml", status: "completed", result: "skipped" })).toBe(
+      "ci.yml (skipped)",
+    );
+    expect(
+      runDisplayName({
+        id: 7,
+        fileName: ".github/workflows/ci.yml",
+        displayName: ".github/workflows/ci.yml",
+        status: "completed",
+        result: "skipped",
+      }),
+    ).toBe("ci.yml (skipped)");
+  });
+
+  it("keeps a real engine name on a skipped run when one exists", () => {
+    expect(
+      runDisplayName({ id: 7, fileName: ".github/workflows/ci.yml", displayName: "app-ci", result: "skipped" }),
+    ).toBe("app-ci");
+  });
+
+  it("marks a skipped run with no file at all by its id", () => {
+    expect(runDisplayName({ id: 7, result: "skipped" })).toBe("Run 7 (skipped)");
+  });
+
+  it("keeps the existing displayName → fileName → Run <id> ladder for executed runs", () => {
+    expect(runDisplayName({ id: 6, fileName: ".github/workflows/ci.yml", displayName: "app-ci", result: "succeeded" })).toBe(
+      "app-ci",
+    );
+    expect(runDisplayName({ id: 6, fileName: "release.yml" })).toBe("release.yml");
+    expect(runDisplayName({ id: 6 })).toBe("Run 6");
+  });
+});
 
 describe("projectLabel", () => {
   it("joins owner/repo when both are present", () => {

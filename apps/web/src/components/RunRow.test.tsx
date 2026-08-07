@@ -216,6 +216,25 @@ describe("RunRow", () => {
     expect(screen.getByText("ci.yml")).toBeTruthy();
   });
 
+  it("skipped run: honest basename title + a — time placeholder, never a blank slot (#140)", () => {
+    const run: WorkflowRun = {
+      id: 7,
+      fileName: ".github/workflows/ci.yml",
+      displayName: ".github/workflows/ci.yml",
+      status: "completed",
+      result: "skipped",
+      eventName: "push",
+      owner: "team",
+      repo: "app",
+    };
+    renderWithRouter(<RunRow run={run} />);
+    expect(screen.getByText("ci.yml (skipped)")).toBeTruthy();
+    expect(screen.queryByText(".github/workflows/ci.yml")).toBeNull();
+    // No job timeline exists for a skipped run — the time slot shows a placeholder, not nothing.
+    expect(screen.getByText("—")).toBeTruthy();
+    expect(screen.getByTitle("Skipped — no jobs ran")).toBeTruthy();
+  });
+
   it("shows the amber warning marker for a green run carrying warnings", () => {
     const run: WorkflowRun = { id: 5, fileName: "ci.yml", status: "completed", result: "succeeded" };
     renderWithRouter(<RunRow run={run} warnings={2} />);
