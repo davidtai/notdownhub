@@ -143,6 +143,12 @@ from the host OS/arch). `start` begins listening for jobs; with several joined
 runners pass a name (`ndh runner start <name>`), and `ndh runner list` shows
 what is joined.
 
+`ndh runner remove <name>` retires an instance. It stops the listener,
+unregisters the agent from the hub, then deletes the instance directory. A
+removed agent no longer lingers Offline in the UI or in `ndh status`. Pass the
+hub's `--token` so the unregister step can authenticate. Add `--force` to skip
+the hub and remove a runner offline.
+
 **From any repo you want built by the fleet:**
 
 ```bash
