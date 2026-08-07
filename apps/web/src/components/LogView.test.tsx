@@ -16,15 +16,26 @@ describe("LogGroups", () => {
     expect(container.firstElementChild?.className).toContain("cls");
   });
 
-  it("folds a group, shows its leaf count and toggles open/closed", () => {
+  it("collapses a completed group by default and toggles open/closed on click", () => {
+    // The group is completed (has its ##[endgroup]) → collapsed by default, GitHub-style.
     render(<LogGroups lines={["##[group]Setup", "a", "b", "##[endgroup]", "tail"]} />);
     const toggle = screen.getByRole("button", { name: /Setup/ });
-    expect(toggle.getAttribute("aria-expanded")).toBe("true"); // open by default
+    expect(toggle.getAttribute("aria-expanded")).toBe("false"); // completed → collapsed
     expect(screen.getByText("2")).toBeTruthy(); // leaf count
-    expect(screen.getByText("a")).toBeTruthy();
+    expect(screen.getByText("a")).toBeTruthy(); // still in the DOM (collapse is CSS-only)
     expect(screen.getByText("tail")).toBeTruthy();
 
-    fireEvent.click(toggle);
+    fireEvent.click(toggle); // user override opens it…
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(toggle); // …and closes it again
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("keeps a still-streaming group (no endgroup yet) expanded by default", () => {
+    render(<LogGroups lines={["##[group]Live", "a", "b"]} />);
+    const toggle = screen.getByRole("button", { name: /Live/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true"); // unterminated → open
+    fireEvent.click(toggle); // user can still collapse it
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
   });
 
