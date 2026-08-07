@@ -303,11 +303,11 @@ in these docs works verbatim. Full per-OS build prerequisites are in
 [docs/install.md](docs/install.md#from-source).
 
 This repo runs its own CI on `ndh`: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
-runs the same on GitHub and locally with `ndh`. On a machine without Docker, map
-`ubuntu-latest` to the host:
+runs the same on GitHub and locally with `ndh`. Without Docker, `ndh run` maps
+`ubuntu-latest` to the host, so no `-P` flag is needed:
 
 ```bash
-ndh run -W .github/workflows/ci.yml -P ubuntu-latest=-self-hosted
+ndh run -W .github/workflows/ci.yml
 ```
 
 Verified end-to-end on a macOS/arm64 host (no Docker): checkout → pnpm/Node 22

@@ -268,8 +268,8 @@ Expected tail — the engine has parsed the matrix + `needs:` graph:
 | report depends on build
 ```
 
-Full end-to-end (actually executes; on a machine without Docker add
-`-P ubuntu-latest=-self-hosted`):
+Full end-to-end (this actually executes). Without Docker, `ndh run` maps
+`ubuntu-latest` to the host, so no `-P` flag is needed:
 
 ```bash
 cd examples/demo
