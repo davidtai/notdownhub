@@ -10,6 +10,7 @@ import { exists, fail, log, ndhHome, randomToken, vendorExe } from "./lib.js";
 import { fileLogWrite, initFileLog } from "./filelog.js";
 import { startFront, uiDistDir, type FrontOptions } from "./front.js";
 import { startJobLogTee } from "./joblogs.js";
+import { registerPrune } from "./prune.js";
 import { certFingerprint, ensureSelfSignedCert } from "./tls.js";
 
 interface HubUpOptions {
@@ -75,6 +76,8 @@ export function registerHub(program: Command): void {
     .action(async () => {
       process.exitCode = await hubDown();
     });
+
+  registerPrune(hub);
 }
 
 /** Minimal shape of the spawned child we depend on (kept tiny so tests can fake it). */
