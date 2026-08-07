@@ -742,6 +742,12 @@ dispatches all workflows. Use `--force` to overwrite a hook ndh did not write.
 The command validates the path, confirms a bare repo, and writes an executable
 `post-receive` hook.
 
+The hook labels every run with a project slug, so runs group per repo. The
+default slug comes from the repo path: `/srv/git/team/app.git` becomes
+`team/app`, and `/srv/git/app.git` becomes `git/app`. Pass
+`--repository owner/name` to override it. The slug also scopes secrets; see
+[collaboration.md](collaboration.md#project-labels-on-a-git-server).
+
 The manual recipe below explains what the generated hook does. Use it on a
 server without `ndh hook install`. This recipe was verified live against a bare
 repo and a running hub:
@@ -759,13 +765,15 @@ while read -r _old new ref; do
   branch=${ref#refs/heads/}
   work=$(mktemp -d)
   git --work-tree="$work" checkout -f "$new"
-  ( cd "$work" && ndh dispatch --server "$HUB" -W "$WORKFLOW" --event push )
+  ( cd "$work" && ndh dispatch --server "$HUB" --repository team/app -W "$WORKFLOW" --event push )
   rm -rf "$work"
   echo "[hook] dispatched $branch"
 done
 ```
 
 Make the hook executable (`chmod +x .git/hooks/post-receive`) on the server.
+Keep the explicit `--repository`: the temp work-tree has no `origin` remote,
+so ndh cannot derive the project there.
 
 The hook needs `ndh` on its PATH. Set an absolute path, or export PATH in the
 hook. The dispatch reads secrets from the server that runs the hook, not from

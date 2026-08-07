@@ -208,12 +208,13 @@ This was verified end to end: `${{ secrets.CI_GREETING }}` set on the server
 arrived intact in a hook-triggered job. The laptop that pushed had no secret
 store at all.
 
-Two verified limits:
+Two notes:
 
-- Store server-side values in the **global** scope. A repo-scoped value
-  (`--repo owner/name`) does not attach to hook dispatches, because the hook's
-  temporary work-tree has no `origin` remote to scope on
-  ([#99](https://github.com/davidtai/notdownhub/issues/99)).
+- Repo-scoped values (`--repo owner/name`) attach to hook runs whose project
+  slug matches ([#99](https://github.com/davidtai/notdownhub/issues/99)).
+  The slug is shown by `ndh hook install`; see
+  [Project labels on a git server](#project-labels-on-a-git-server).
+  Global values attach to every run.
 - On a headless server account, run `ndh secrets backend file` before the
   first `ndh secrets set` ([why](install.md#ndh_home-layout)).
 
@@ -250,26 +251,19 @@ it on the hub machine, or through an SSH tunnel. On a `--basic-auth` hub the
 current build prints a misleading "no retained logs" message from other
 machines ([#100](https://github.com/davidtai/notdownhub/issues/100)).
 
-### Project labels on a git server (current limit)
+### Project labels on a git server
 
-Runs dispatched by the generated hook are labeled `local/<temp-dir>`, and
-every push gets a new label. The cause: the hook dispatches from a temporary
-work-tree with no `origin` remote. The Projects page and `ndh projects` then
-show one throwaway row per push
-([#99](https://github.com/davidtai/notdownhub/issues/99)). Until #99 lands,
-write the hook by hand and pass an explicit label: take the manual recipe
-from
-[operations.md](operations.md#trigger-ci-from-a-git-server) and add
-`--repository`:
+`ndh hook install` bakes a project label into the generated hook
+([#99](https://github.com/davidtai/notdownhub/issues/99)). Every push of a
+repo lands under one stable project in the UI and in `ndh projects`. The
+default label comes from the bare repo path: `/srv/git/team/app.git` becomes
+`team/app`. In a flat layout the containing directory names the owner:
+`/srv/git/app.git` becomes `git/app`. Pass
+`ndh hook install --repository owner/name` to override the derived label.
 
-```sh
-( cd "$work" && ndh dispatch --server "$HUB" --event push --ref "$ref" --repository team/app )
-```
-
-Verified: with `--repository team/app` the run lists as
-`#4 app-ci [team/app] completed/succeeded`, and every push of that repo lands
-under the one `team/app` project. Server-side secrets still resolve from the
-global scope only — `--repository` labels the run, it does not scope secrets.
+The same label scopes secrets and variables. A server-side value stored with
+`--repo owner/name` injects into that repo's hook runs. Re-run `ndh hook
+install` on a repo with an older generated hook to pick this up.
 
 ### More than one project on one server
 

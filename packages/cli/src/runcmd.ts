@@ -56,6 +56,18 @@ export function serverArg(argv: string[]): string | null {
   return eq ? eq.slice("--server=".length) : null;
 }
 
+/**
+ * The value of `--repository <slug>` / `--repository=<slug>` in an argv, or null when absent.
+ * An explicit slug scopes secrets/vars too, not just the run label — the git-server hook (#99)
+ * dispatches from a temp work-tree with no origin, so this is the only slug it can offer.
+ */
+export function repositoryArg(argv: string[]): string | null {
+  const i = argv.indexOf("--repository");
+  if (i >= 0 && i + 1 < argv.length) return argv[i + 1];
+  const eq = argv.find((a) => a.startsWith("--repository="));
+  return eq ? eq.slice("--repository=".length) : null;
+}
+
 /** Seams so tests can observe the exact Runner.Client argv without spawning it. */
 export interface RunDeps {
   runner?: (cmd: string, args: string[]) => Promise<number>;
@@ -70,7 +82,7 @@ export async function runCmd(argv: string[], deps: RunDeps = {}): Promise<number
   const runner = deps.runner ?? run;
   if (!deps.runner) initFileLog(join(ndhHome(), "logs"), "run");
   await (deps.ensure ?? ensureVendor)();
-  const slug = (deps.repoSlug ?? currentRepoSlug)();
+  const slug = repositoryArg(argv) ?? (deps.repoSlug ?? currentRepoSlug)();
   const repo = repositoryArgs(argv, projectSlug(slug));
   // Secret VALUES are passed only through the ephemeral --secret-file, never on argv.
   return withRunnerSecrets(slug, (sec) =>
@@ -107,7 +119,7 @@ export async function dispatchCmd(argv: string[], deps: RunDeps = {}): Promise<n
     log(hubProbeAmbiguousMessage(server));
     if (reach.detail) log(`  ${reach.detail}`);
   }
-  const slug = (deps.repoSlug ?? currentRepoSlug)();
+  const slug = repositoryArg(argv) ?? (deps.repoSlug ?? currentRepoSlug)();
   const repo = repositoryArgs(argv, projectSlug(slug));
   return withRunnerSecrets(slug, (sec) =>
     withRunnerVars(slug, (vars) => runner(vendorExe("Runner.Client"), [...sec, ...vars, ...repo, ...argv])),
@@ -115,4 +127,4 @@ export async function dispatchCmd(argv: string[], deps: RunDeps = {}): Promise<n
 }
 
 /** Exported for tests. */
-export const __test = { defaultPlatformArgs, projectSlug, repositoryArgs, serverArg };
+export const __test = { defaultPlatformArgs, projectSlug, repositoryArg, repositoryArgs, serverArg };

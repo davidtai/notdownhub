@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { mkdir, readFile, stat, writeFile, chmod } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { Command } from "commander";
 import { exists, log } from "./lib.js";
 
@@ -25,20 +25,47 @@ export function shSingleQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+/** Keep a slug segment to git-ish safe chars; mirrors projectSlug's sanitizer (runcmd.ts). */
+function slugSegment(raw: string): string {
+  return raw.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Default `owner/repo` slug for a bare repo, derived from its path (#99): the repo's directory
+ * name minus a trailing `.git`, owned by the name of its parent directory. So
+ * `/srv/git/team/app.git` → `team/app`, and a flat layout `/srv/git/app.git` → `git/app`.
+ * `--repository` always overrides. Two parts always: the engine records the value verbatim and
+ * splits on "/" for the owner, so a one-part value would render as `Unknown/Unknown`.
+ */
+export function deriveRepoSlug(repoPath: string): string {
+  const abs = resolve(repoPath);
+  const name = slugSegment(basename(abs).replace(/\.git$/i, ""));
+  const owner = slugSegment(basename(dirname(abs)));
+  return `${owner || "git"}/${name || "repo"}`;
+}
+
 export interface HookConfig {
   /** Hub base url passed to `ndh dispatch --server`. */
   server: string;
+  /** Project slug (`owner/repo`) passed to `ndh dispatch --repository`; labels every hook run. */
+  repository: string;
   /** Optional workflow file; when set the hook adds `-W <workflow>`. Default: dispatch all. */
   workflow?: string;
 }
 
 /**
  * Build the post-receive hook script (POSIX sh). Pure and deterministic so tests assert the
- * embedded server/workflow and the ref loop directly. The hub url (and workflow, when set) are
- * single-quote-escaped, so any value is embedded safely.
+ * embedded server/repository/workflow and the ref loop directly. The hub url, repository slug,
+ * and workflow (when set) are single-quote-escaped, so any value is embedded safely.
+ *
+ * `--repository` is baked in because the hook dispatches from a temp work-tree with no origin
+ * remote (and git runs post-receive with a relative GIT_DIR), so ndh cannot infer the project
+ * there — without it every push was labeled `local/<mktemp-dir>` and repo-scoped secrets never
+ * resolved (#99).
  */
 export function generateHook(config: HookConfig): string {
   const server = shSingleQuote(config.server);
+  const repository = shSingleQuote(config.repository);
   const workflowArg = config.workflow ? ` -W "$WORKFLOW"` : "";
   const workflowVar = config.workflow ? `WORKFLOW=${shSingleQuote(config.workflow)}\n` : "";
   return `#!/bin/sh
@@ -48,6 +75,7 @@ ${HOOK_MARKER}
 set -eu
 
 HUB=${server}
+REPO=${repository}
 ${workflowVar}
 while read -r _old new ref; do
   case "$ref" in
@@ -57,7 +85,7 @@ while read -r _old new ref; do
   branch=\${ref#refs/heads/}
   work=$(mktemp -d)
   git --work-tree="$work" checkout -f "$new"
-  ( cd "$work" && ndh dispatch --server "$HUB" --event push --ref "$ref"${workflowArg} )
+  ( cd "$work" && ndh dispatch --server "$HUB" --repository "$REPO" --event push --ref "$ref"${workflowArg} )
   rm -rf "$work"
   echo "[ndh] dispatched $branch ($ref)"
 done
@@ -80,6 +108,8 @@ function gitIsBareRepo(repoPath: string): boolean {
 
 export interface InstallOptions {
   server: string;
+  /** Explicit `owner/repo` project slug; default: derived from the repo path (deriveRepoSlug). */
+  repository?: string;
   workflow?: string;
   force?: boolean;
 }
@@ -109,13 +139,15 @@ export async function installHook(repoPath: string, opts: InstallOptions, deps: 
   }
 
   await mkdir(hooksDir, { recursive: true });
-  const script = generateHook({ server: opts.server, workflow: opts.workflow });
+  const repository = opts.repository ?? deriveRepoSlug(repoPath);
+  const script = generateHook({ server: opts.server, repository, workflow: opts.workflow });
   await writeFile(hookPath, script, { mode: 0o755 });
   await chmod(hookPath, 0o755);
 
   log(`installed post-receive hook: ${hookPath}`);
-  log(`  server:   ${opts.server}`);
-  log(`  workflow: ${opts.workflow ?? "(all workflows)"}`);
+  log(`  server:     ${opts.server}`);
+  log(`  repository: ${repository}${opts.repository ? "" : " (derived from the repo path; override with --repository)"}`);
+  log(`  workflow:   ${opts.workflow ?? "(all workflows)"}`);
   log("push a branch to this repo to trigger CI (needs `ndh` on the server's PATH)");
 }
 
@@ -132,10 +164,19 @@ export function registerHook(program: Command): void {
     .description("write a post-receive hook onto a bare repo so a push triggers CI")
     .argument("<repo>", "path to a bare git repo (e.g. /srv/git/app.git)")
     .requiredOption("--server <url>", "hub base url, e.g. http://hub.local:4949")
+    .option(
+      "--repository <owner/repo>",
+      "project slug for hook runs (default: derived from the repo path, e.g. /srv/git/team/app.git -> team/app)",
+    )
     .option("-W, --workflow <path>", "dispatch a specific workflow file (default: all workflows)")
     .option("--force", "overwrite an existing post-receive hook that ndh did not write")
-    .action(async (repo: string, opts: { server: string; workflow?: string; force?: boolean }) => {
-      await installHook(repo, { server: opts.server, workflow: opts.workflow, force: opts.force });
+    .action(async (repo: string, opts: { server: string; repository?: string; workflow?: string; force?: boolean }) => {
+      await installHook(repo, {
+        server: opts.server,
+        repository: opts.repository,
+        workflow: opts.workflow,
+        force: opts.force,
+      });
       process.exitCode = 0;
     });
 }
