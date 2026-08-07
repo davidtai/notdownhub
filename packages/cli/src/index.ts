@@ -6,6 +6,7 @@ import { registerHub } from "./hub.js";
 import { registerRunner } from "./runner.js";
 import { runCmd, dispatchCmd } from "./runcmd.js";
 import { runCancelCmd, runDeleteCmd } from "./run-actions.js";
+import { rerunCmd } from "./rerun.js";
 import { registerStatus } from "./status.js";
 import { registerProjects } from "./projects.js";
 import { registerSecrets } from "./secrets.js";
@@ -17,6 +18,7 @@ import { registerArtifacts } from "./artifacts-cmd.js";
 const EXAMPLES = `
 examples:
   ndh run -W .github/workflows/ci.yml --event push
+  ndh run rerun 2 --server http://hub.tailnet:4949
   ndh run cancel 42 --server http://hub.tailnet:4949
   ndh run delete 42 --server http://hub.tailnet:4949
   ndh run delete --project acme/widget --server http://hub.tailnet:4949
@@ -58,7 +60,7 @@ async function buildProgram(): Promise<Command> {
   // registrations exist so they appear in `ndh --help` / `ndh help run` and act as a fallback.
   program
     .command("run")
-    .description("run this repo's workflows locally, one-shot (also: run cancel <id>, run delete <id> --server <hub>)")
+    .description("run this repo's workflows locally, one-shot (also: run rerun/cancel/delete <id> --server <hub>)")
     .helpOption(false)
     .allowUnknownOption()
     .allowExcessArguments()
@@ -98,10 +100,12 @@ async function buildProgram(): Promise<Command> {
 async function main(): Promise<number> {
   const raw = process.argv.slice(2);
 
-  // `run cancel` / `run delete` are run-management subcommands — intercept them before the
-  // verbatim passthrough, or their args would be handed to Runner.Client.
+  // `run rerun` / `run cancel` / `run delete` are ndh run-management verbs — intercept them
+  // before the verbatim passthrough, or their args would be handed to Runner.Client.
+  if (raw[0] === "run" && raw[1] === "rerun") return rerunCmd(raw.slice(2));
   if (raw[0] === "run" && raw[1] === "cancel") return runCancelCmd(raw.slice(2));
   if (raw[0] === "run" && raw[1] === "delete") return runDeleteCmd(raw.slice(2));
+
   // Verbatim passthrough: everything after `run`/`dispatch` goes to Runner.Client untouched,
   // including a leading `--` and flags like --help. commander would otherwise consume them.
   if (raw[0] === "run") return runCmd(raw.slice(1));

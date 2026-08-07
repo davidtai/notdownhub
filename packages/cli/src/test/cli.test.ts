@@ -270,3 +270,64 @@ test("status: the CLI action runs against a live hub (exit 0)", async () => {
     await srv.close();
   }
 });
+
+test("run rerun --help is intercepted (exit 0, prints usage, no vendor)", async () => {
+  const r = await runCli(["run", "rerun", "--help"], { env: fileEnv(newHome()), cwd: nonGit });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout + r.stderr, /usage: ndh run rerun/);
+});
+
+test("run rerun with no --server is intercepted (exit 2)", async () => {
+  const r = await runCli(["run", "rerun", "2"], { env: fileEnv(newHome()), cwd: nonGit });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /missing --server/);
+});
+
+test("run rerun <id> --server: POSTs the hub's native re-run against a live fixture (exit 0)", async () => {
+  const seen: { method: string; path: string }[] = [];
+  const srv = await startServer((req, res) => {
+    const path = (req.url ?? "").replace(/\?.*$/, "");
+    seen.push({ method: req.method ?? "", path });
+    if (req.method === "GET" && path === "/_apis/v1/Message/workflow/runs") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify([{ id: 2, displayName: "ci", owner: "acme", repo: "widget" }]));
+      return;
+    }
+    if (req.method === "POST" && path === "/_apis/v1/Message/rerunworkflow/2") {
+      res.writeHead(200);
+      res.end("{}");
+      return;
+    }
+    res.writeHead(500);
+    res.end();
+  });
+  try {
+    const r = await runCli(["run", "rerun", "2", "--server", srv.url], { env: fileEnv(newHome()), cwd: nonGit });
+    assert.equal(r.status, 0);
+    assert.match(r.stderr, /re-run queued for #2 \(acme\/widget · ci\)/);
+    assert.ok(seen.some((s) => s.method === "POST" && s.path === "/_apis/v1/Message/rerunworkflow/2"));
+  } finally {
+    await srv.close();
+  }
+});
+
+test("run rerun --failed hits rerunFailed against a live fixture (exit 0)", async () => {
+  const seen: string[] = [];
+  const srv = await startServer((req, res) => {
+    const path = (req.url ?? "").replace(/\?.*$/, "");
+    if (req.method === "POST") seen.push(path);
+    res.writeHead(200, { "content-type": "application/json" });
+    // The runs list must carry #5 or the CLI (rightly) refuses it as absent.
+    res.end(path === "/_apis/v1/Message/workflow/runs" ? JSON.stringify([{ id: 5 }]) : "{}");
+  });
+  try {
+    const r = await runCli(["run", "rerun", "5", "--server", srv.url, "--failed"], {
+      env: fileEnv(newHome()),
+      cwd: nonGit,
+    });
+    assert.equal(r.status, 0);
+    assert.ok(seen.includes("/_apis/v1/Message/rerunFailed/5"));
+  } finally {
+    await srv.close();
+  }
+});

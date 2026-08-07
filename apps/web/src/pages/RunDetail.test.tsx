@@ -275,4 +275,41 @@ describe("RunDetail", () => {
     expect(screen.getByText("Unknown")).toBeTruthy();
     await waitFor(() => expect(screen.getByText("No jobs for this attempt yet.")).toBeTruthy());
   });
+
+  it("offers a Re-run on a finished run and POSTs the hub's native re-run when clicked", async () => {
+    let rerunPosts = 0;
+    const fn = mockFetch((url) => {
+      if (url.includes("/rerunworkflow/5")) {
+        rerunPosts += 1;
+        return { status: 200, body: {} };
+      }
+      if (url.includes("/workflow/runs"))
+        return { body: [{ id: 5, displayName: "Deploy", status: "completed", result: "succeeded" }] };
+      if (url.includes("/attempts")) return { body: [{ id: 1, attempt: 1, timeLineId: "at1" }] };
+      if (url.includes("/jobs")) return { body: [] };
+      if (url.includes("/Timeline/")) return { body: [] };
+      return { status: 404 };
+    });
+
+    renderDetail();
+    const btn = await screen.findByLabelText("Re-run run 5");
+    fireEvent.click(btn);
+    await waitFor(() => expect(rerunPosts).toBe(1));
+    const call = fn.mock.calls.find((c) => String(c[0]).includes("/rerunworkflow/5"));
+    expect((call?.[1] as { method?: string })?.method).toBe("POST");
+  });
+
+  it("hides the Re-run while a run is still in progress", async () => {
+    mockFetch((url) => {
+      if (url.includes("/workflow/runs"))
+        return { body: [{ id: 5, displayName: "Deploy", status: "inProgress", result: null }] };
+      if (url.includes("/attempts")) return { body: [{ id: 1, attempt: 1, timeLineId: "at1" }] };
+      if (url.includes("/jobs")) return { body: [] };
+      if (url.includes("/Timeline/")) return { body: [] };
+      return { status: 404 };
+    });
+    renderDetail();
+    await waitFor(() => expect(screen.getByText("Running")).toBeTruthy());
+    expect(screen.queryByLabelText("Re-run run 5")).toBeNull();
+  });
 });

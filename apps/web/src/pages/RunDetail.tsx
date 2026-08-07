@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, GitBranch, GitCommitHorizontal } from "lucide-react";
 import { getRuns, getAttempts, getJobs, getTimeline, getArtifacts, type Job, type TimelineRecord, type WorkflowRun } from "../lib/api";
-import { toState, shortRef, shortSha, elapsedMs, timelineSpan, projectLabel } from "../lib/format";
+import { toState, shortRef, shortSha, elapsedMs, timelineSpan, projectLabel, isFinished } from "../lib/format";
 import { countAnnotations } from "../lib/warnings";
 import { usePoll } from "../lib/hooks";
 import { AppBar } from "../components/AppBar";
@@ -10,6 +10,7 @@ import { Artifacts } from "../components/Artifacts";
 import { JobList } from "../components/JobList";
 import { JobLog } from "../components/JobLog";
 import { RunActions } from "../components/RunActions";
+import { RerunButton } from "../components/RerunButton";
 import { StatusIcon, StatePill } from "../components/StatusIcon";
 import { Card } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
@@ -165,36 +166,51 @@ export function RunDetail() {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            <RunActions
-              run={headerRun}
-              onCancelled={() => {
-                runsList.refresh();
-                attempts.refresh();
-              }}
-              onDeleted={() => navigate("/")}
-            />
-            {attemptList.length > 1 && (
-            <div className="flex items-center gap-1.5">
-              <span className="eyebrow">Attempt</span>
-              {attemptList
-                .slice()
-                .sort((a, b) => a.attempt - b.attempt)
-                .map((a) => (
-                  <button
-                    key={a.attempt}
-                    onClick={() => setAttemptNo(a.attempt)}
-                    className={cn(
-                      "h-11 w-11 rounded-md font-mono text-xs sm:h-8 sm:w-8",
-                      a.attempt === activeAttempt
-                        ? "bg-accent text-white"
-                        : "border border-line text-fg-muted hover:text-fg",
-                    )}
-                  >
-                    {a.attempt}
-                  </button>
-                ))}
+          <div className="flex flex-col items-end gap-3">
+            {/* Actions row: re-run a finished run alongside cancel/delete (each state-gated). */}
+            <div className="flex items-center gap-2">
+              {isFinished(headerState) && (
+                <RerunButton
+                  runId={runId}
+                  size="md"
+                  onDone={() => {
+                    // Surface the new attempt (and the run's flip back to running) at once.
+                    attempts.refresh();
+                    runsList.refresh();
+                  }}
+                />
+              )}
+              <RunActions
+                run={headerRun}
+                onCancelled={() => {
+                  runsList.refresh();
+                  attempts.refresh();
+                }}
+                onDeleted={() => navigate("/")}
+              />
             </div>
+
+            {attemptList.length > 1 && (
+              <div className="flex items-center gap-1.5">
+                <span className="eyebrow">Attempt</span>
+                {attemptList
+                  .slice()
+                  .sort((a, b) => a.attempt - b.attempt)
+                  .map((a) => (
+                    <button
+                      key={a.attempt}
+                      onClick={() => setAttemptNo(a.attempt)}
+                      className={cn(
+                        "h-11 w-11 rounded-md font-mono text-xs sm:h-8 sm:w-8",
+                        a.attempt === activeAttempt
+                          ? "bg-accent text-white"
+                          : "border border-line text-fg-muted hover:text-fg",
+                      )}
+                    >
+                      {a.attempt}
+                    </button>
+                  ))}
+              </div>
             )}
           </div>
         </div>

@@ -6,6 +6,18 @@ import { renderWithRouter } from "../test/helpers";
 
 afterEach(() => vi.useRealTimers());
 
+describe("RunRow re-run affordance", () => {
+  it("offers a Re-run on a finished run", () => {
+    renderWithRouter(<RunRow run={{ id: 42, status: "completed", result: "succeeded" }} />);
+    expect(screen.getByLabelText("Re-run run 42")).toBeTruthy();
+  });
+
+  it("hides the Re-run while a run is still in progress", () => {
+    renderWithRouter(<RunRow run={{ id: 42, status: "inProgress", result: null }} />);
+    expect(screen.queryByLabelText("Re-run run 42")).toBeNull();
+  });
+});
+
 describe("RunRow", () => {
   it("renders full metadata: title, repo, ref, sha, event and relative time", () => {
     vi.useFakeTimers();

@@ -324,6 +324,29 @@ export async function deleteRun(id: number): Promise<void> {
   if (!res.ok) throw new Error(`delete run ${id} → ${res.status} ${res.statusText}`);
 }
 
+/**
+ * Re-run a finished run on the fleet. The bundled Runner.Server exposes a native
+ * re-run that re-queues the recorded workflow (retained per attempt: full YAML +
+ * event + ref/sha) as a NEW ATTEMPT of the same run — GitHub's "Re-run"
+ * semantics — so the re-run stays attributed to the same project and is linked
+ * to the original by id. Anonymous POST is accepted through the front proxy (the
+ * endpoint needs no management JWT, unlike the Agent* reads).
+ *
+ *   POST /_apis/v1/Message/rerunworkflow/{id}   re-run the whole workflow
+ *   POST /_apis/v1/Message/rerunFailed/{id}     re-run only the failed jobs
+ *
+ * Limitation: a workflow that checks out the *dispatched local working tree*
+ * cannot be reproduced from the hub — that tree lived on the dispatching machine
+ * and was never retained here; such a re-run's checkout step fails. Re-run those
+ * from the checkout with `ndh dispatch`.
+ */
+export async function rerunWorkflow(runId: number, opts: { failed?: boolean } = {}): Promise<void> {
+  const verb = opts.failed ? "rerunFailed" : "rerunworkflow";
+  const path = `/_apis/v1/Message/${verb}/${runId}`;
+  const res = await fetch(path, { method: "POST" });
+  if (!res.ok) throw new Error(`POST ${path} → ${res.status} ${res.statusText}`);
+}
+
 // ── Settings (read-only view of secrets/variables) ──────────────────────────
 export interface ConfigInfo {
   /** Where secrets live: keychain / libsecret / file. */
