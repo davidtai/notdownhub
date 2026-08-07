@@ -61,9 +61,21 @@ async function front(hubPort: number): Promise<{ port: number; close: () => Prom
   return { port, close: () => new Promise((r) => server.close(() => r())) };
 }
 
+// NOTE (#105, determinism): no waiting is needed anywhere in this file. On every path these
+// tests exercise, the fake hub pushes to `seen` BEFORE it sends its response, and the front
+// only answers the client after that response: serveRerun awaits the schedule2 POST before its
+// 200, and the plain proxy pipes the hub's response through. So by the time `post()` resolves,
+// the capture is already in `seen` — the awaited response IS the synchronization. The old
+// `until()` poll here (10ms setTimeout loop, silent 2s expiry — written for a fire-and-forget
+// draft of serveRerun that no longer exists) provided no ordering; what it did do was convert
+// any transient upstream failure (proxy()'s 502 "hub unavailable" backstop, seen only under a
+// loaded full-suite run) into a 2-second stall followed by a TypeError on `seen[0]`, because
+// the response status was never checked. Hence: no timers, `agent: false` so no test can reuse
+// a pooled keep-alive socket to a recycled port, and every test asserts status + capture count
+// so a one-off infra failure is reported instantly at the right line.
 function post(port: number, path: string): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const r = http.request({ host: "127.0.0.1", port, path, method: "POST" }, (res) => {
+    const r = http.request({ host: "127.0.0.1", port, path, method: "POST", agent: false }, (res) => {
       let b = "";
       res.on("data", (d) => (b += d));
       res.on("end", () => resolve({ status: res.statusCode ?? 0, body: b }));
@@ -71,12 +83,6 @@ function post(port: number, path: string): Promise<{ status: number; body: strin
     r.on("error", reject);
     r.end();
   });
-}
-
-/** Wait until the fake hub captured `n` requests (the schedule2 replay is fired after our 200). */
-async function until(fn: () => boolean, ms = 2000): Promise<void> {
-  const t0 = Date.now();
-  while (!fn() && Date.now() - t0 < ms) await new Promise((r) => setTimeout(r, 10));
 }
 
 test("platform defaults: every hosted label maps to -self-hosted, self-hosted itself is absent", () => {
@@ -103,7 +109,8 @@ test("rerunworkflow is replayed via schedule2?runid with the default mapping and
     assert.equal(res.status, 200);
     assert.deepEqual(JSON.parse(res.body), { ok: true, runId: 5, attempt: 2 });
 
-    await until(() => seen.length > 0);
+    // serveRerun awaited the schedule2 POST before answering, so the replay is captured.
+    assert.equal(seen.length, 1);
     const [replay] = seen;
     const u = new URL(replay.url, "http://x");
     assert.equal(u.pathname, "/_apis/v1/Message/schedule2");
@@ -133,8 +140,8 @@ test("rerunFailed replays with failed=true and does not reset artifacts (native 
   const f = await front(hub.port);
   try {
     const res = await post(f.port, "/_apis/v1/Message/rerunFailed/5");
-    assert.equal(res.status, 200);
-    await until(() => seen.length > 0);
+    assert.equal(res.status, 200, res.body);
+    assert.equal(seen.length, 1);
     const u = new URL(seen[0].url, "http://x");
     assert.equal(u.searchParams.get("failed"), "true");
     assert.equal(u.searchParams.get("resetArtifacts"), "false");
@@ -149,8 +156,9 @@ test("onLatestCommit=true is not replayed — the native endpoint serves it", as
   const hub = await fakeHub(seen);
   const f = await front(hub.port);
   try {
-    await post(f.port, "/_apis/v1/Message/rerunworkflow/5?onLatestCommit=true");
-    await until(() => seen.length > 0);
+    const res = await post(f.port, "/_apis/v1/Message/rerunworkflow/5?onLatestCommit=true");
+    assert.equal(res.status, 200, res.body);
+    assert.equal(seen.length, 1);
     assert.match(seen[0].url, /rerunworkflow\/5\?onLatestCommit=true/);
   } finally {
     await f.close();
@@ -169,8 +177,8 @@ test("unreadable attempts fall back to the native re-run proxy (pre-#92 behavior
   const f = await front(hub.port);
   try {
     const res = await post(f.port, "/_apis/v1/Message/rerunworkflow/5");
-    assert.equal(res.status, 200);
-    await until(() => seen.length > 0);
+    assert.equal(res.status, 200, res.body);
+    assert.equal(seen.length, 1);
     assert.match(seen[0].url, /rerunworkflow\/5$/);
   } finally {
     await f.close();
@@ -188,8 +196,9 @@ test("an attempt with no stored workflow YAML falls back to the native re-run pr
   });
   const f = await front(hub.port);
   try {
-    await post(f.port, "/_apis/v1/Message/rerunworkflow/5");
-    await until(() => seen.length > 0);
+    const res = await post(f.port, "/_apis/v1/Message/rerunworkflow/5");
+    assert.equal(res.status, 200, res.body);
+    assert.equal(seen.length, 1);
     assert.match(seen[0].url, /rerunworkflow\/5$/);
   } finally {
     await f.close();
@@ -222,7 +231,8 @@ test("dispatch: a proxied schedule2 without platform gets the default mapping ap
   const f = await front(hub.port);
   try {
     const res = await post(f.port, "/_apis/v1/Message/schedule2?Repository=acme%2Fwidget");
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 200, res.body);
+    assert.equal(seen.length, 1);
     const u = new URL(seen[0].url, "http://x");
     assert.deepEqual(u.searchParams.getAll("platform"), PLATFORM_DEFAULTS);
     assert.equal(u.searchParams.get("Repository"), "acme/widget");
@@ -237,7 +247,9 @@ test("dispatch: an explicit -P mapping passes through the proxy untouched", asyn
   const hub = await fakeHub(seen);
   const f = await front(hub.port);
   try {
-    await post(f.port, "/_apis/v1/Message/schedule2?platform=ubuntu-latest%3Dcatthehacker%2Fubuntu%3Aact-latest");
+    const res = await post(f.port, "/_apis/v1/Message/schedule2?platform=ubuntu-latest%3Dcatthehacker%2Fubuntu%3Aact-latest");
+    assert.equal(res.status, 200, res.body);
+    assert.equal(seen.length, 1);
     const u = new URL(seen[0].url, "http://x");
     assert.deepEqual(u.searchParams.getAll("platform"), ["ubuntu-latest=catthehacker/ubuntu:act-latest"]);
   } finally {
