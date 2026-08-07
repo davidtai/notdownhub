@@ -438,3 +438,70 @@ describe("Runs timing enrichment (#96)", () => {
     expect(metaCalls(fn).some((u) => u.includes("900"))).toBe(true);
   });
 });
+
+// ── #132: in-progress rows show their active jobs, aliased ───────────────────
+describe("Runs running-jobs enrichment (#132)", () => {
+  const LIVE = { id: 5, fileName: "ci.yml", displayName: "CI", owner: "acme", repo: "widget", status: "inProgress", result: null };
+
+  const aliasCalls = (fn: ReturnType<typeof mockFetch>) =>
+    fn.mock.calls.map((c) => String(c[0])).filter((u) => u.includes("/api/local/job-aliases"));
+
+  it("renders the aliased running-jobs line from ONE page-level alias fetch", async () => {
+    const fn = mockFetch((url) => {
+      if (url.includes("/workflow/runs")) {
+        const p = Number(url.match(/page=(\d+)/)?.[1] ?? 0);
+        return { body: p === 0 ? [LIVE] : [] };
+      }
+      if (url.includes("/api/local/runs-meta"))
+        return { body: { 5: { startedAt: "2020-01-01T00:00:00.000Z", runningJobs: [{ key: "build", name: "build" }] } } };
+      if (url.includes("/api/local/job-aliases"))
+        return { body: [{ project: "acme/widget", jobKey: "build", alias: "Compile" }] };
+      return undefined;
+    });
+    renderRuns();
+
+    await waitFor(() => expect(screen.getByText("Compile")).toBeTruthy());
+    expect(screen.getByText("running:")).toBeTruthy();
+    expect(screen.getByText("Compile").getAttribute("title")).toBe("Original: build");
+    // ONE alias fetch covered the whole page — never one per row, and the whole
+    // store came back (the endpoint's only filter is a single ?project=).
+    expect(aliasCalls(fn)).toEqual(["/api/local/job-aliases"]);
+  });
+
+  it("updates the line when the next poll hands over to another job, and drops it on completion", async () => {
+    // Mutable backend state: the meta answer changes across polls, like a real
+    // run handing over from 'build' to 'test' and then finishing.
+    let phase: "build" | "test" | "done" = "build";
+    mockFetch((url) => {
+      if (url.includes("/workflow/runs")) {
+        const p = Number(url.match(/page=(\d+)/)?.[1] ?? 0);
+        return { body: p === 0 ? [LIVE] : [] };
+      }
+      if (url.includes("/api/local/runs-meta")) {
+        const meta =
+          phase === "build"
+            ? { startedAt: "2020-01-01T00:00:00.000Z", runningJobs: [{ key: "build", name: "build" }] }
+            : phase === "test"
+              ? { startedAt: "2020-01-01T00:00:00.000Z", runningJobs: [{ key: "test", name: "test" }] }
+              : { startedAt: "2020-01-01T00:00:00.000Z", finishedAt: "2020-01-01T00:01:00.000Z", durationMs: 60_000 };
+        return { body: { 5: meta } };
+      }
+      if (url.includes("/api/local/job-aliases")) return { body: [] };
+      return undefined;
+    });
+    renderRuns();
+
+    await waitFor(() => expect(screen.getByText("build")).toBeTruthy());
+
+    // Second job takes over → the next poll's batch answer replaces the line.
+    phase = "test";
+    await waitFor(() => expect(screen.getByText("test")).toBeTruthy(), { timeout: 10_000 });
+    expect(screen.queryByText("build")).toBeNull();
+
+    // Run finishes → runningJobs disappears from the meta and the line goes with
+    // it (never stale-forever), replaced by the finished-run duration.
+    phase = "done";
+    await waitFor(() => expect(screen.queryByText(/running:/)).toBeNull(), { timeout: 10_000 });
+    expect(screen.queryByText("test")).toBeNull();
+  }, 30_000); // three real poll cycles (2.5s apart) drive the hand-over
+});

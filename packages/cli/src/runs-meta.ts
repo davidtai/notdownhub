@@ -10,10 +10,12 @@ import { readRunMeta } from "./agents-info.js";
   from. This endpoint serves that source to the browser in ONE DB read per request:
   the page asks for all its visible run ids at once, never one request per row.
 
-  Response: { "<id>": { startedAt?, finishedAt?, durationMs? } } with ISO-8601 UTC
-  times. An id the DB has no Job records for (still queued, never picked up, or
-  simply unknown) is absent from the map — the UI falls back rather than being fed
-  a fabricated time. An in-progress run has startedAt but no finishedAt/durationMs.
+  Response: { "<id>": { startedAt?, finishedAt?, durationMs?, runningJobs? } }
+  with ISO-8601 UTC times. An id the DB has no Job records for (never picked up,
+  or simply unknown) is absent from the map — the UI falls back rather than being
+  fed a fabricated time. An in-progress run has startedAt but no
+  finishedAt/durationMs, plus `runningJobs` (#132): the active/queued jobs of its
+  current attempt, so the runs list can say WHICH job is executing right now.
 */
 
 export interface RunMetaWire {
@@ -23,6 +25,13 @@ export interface RunMetaWire {
   finishedAt?: string;
   /** Wall-clock startedAt→finishedAt; absent until the run finishes. */
   durationMs?: number;
+  /**
+   * Active/queued jobs of the run's CURRENT attempt (#132) — only while that
+   * attempt is in progress; a finished run never carries the field (backward
+   * compatible). `key` is the stable YAML job key #114 aliases are stored
+   * under; `name` the original display name.
+   */
+  runningJobs?: { key: string; name: string }[];
 }
 
 /** Upper bound on ids per request — several UI pages' worth, and a flood stop. */
@@ -81,6 +90,7 @@ export async function serveRunsMeta(idsParam: string | null, res: ServerResponse
     if (startedAt) entry.startedAt = startedAt;
     if (finishedAt) entry.finishedAt = finishedAt;
     if (m.durationMs !== undefined) entry.durationMs = m.durationMs;
+    if (m.runningJobs?.length) entry.runningJobs = m.runningJobs;
     if (Object.keys(entry).length > 0) out[id] = entry;
   }
   res.writeHead(200, { "content-type": "application/json" });

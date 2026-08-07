@@ -1,6 +1,7 @@
+import { Fragment } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { GitBranch, GitCommitHorizontal } from "lucide-react";
-import type { RunTimeMeta, WorkflowRun } from "../lib/api";
+import { aliasFor, type JobAlias, type RunTimeMeta, type WorkflowRun } from "../lib/api";
 import { toState, shortRef, shortSha, projectLabel, isFinished } from "../lib/format";
 import { runTimeCell } from "../lib/runmeta";
 import { StatusIcon, WarningMarker } from "./StatusIcon";
@@ -16,20 +17,30 @@ import { Badge } from "./ui/badge";
  * marker so a green-but-noisy run stands out at a glance. `meta` is the run's
  * real execution timing from the batch runs-meta endpoint (issue #96): a running
  * run reads "running for …", a finished one its finish-relative time + duration,
- * with the absolute timestamps on hover.
+ * with the absolute timestamps on hover. On an IN-PROGRESS row, `meta` also
+ * carries the current attempt's active jobs (#132), rendered as a compact
+ * "running: …" line through the #114 alias layer (`aliases`): the alias is
+ * shown, the original job name sits in the tooltip, and past two jobs the rest
+ * collapse into "+N more". Finished rows never show the line.
  */
+/** How many active jobs the running line spells out before "+N more". */
+export const MAX_RUNNING_JOBS_SHOWN = 2;
+
 export function RunRow({
   run,
   onMutated,
   onRerun,
   warnings = 0,
   meta,
+  aliases = [],
 }: {
   run: WorkflowRun;
   onMutated?: () => void;
   onRerun?: () => void;
   warnings?: number;
   meta?: RunTimeMeta;
+  /** #114 display aliases (whole store; lookups are scoped to this run's project). */
+  aliases?: JobAlias[];
 }) {
   const navigate = useNavigate();
   const state = toState(run.status, run.result);
@@ -38,6 +49,11 @@ export function RunRow({
   const repo = projectLabel(run);
   const when = runTimeCell(state, meta, run.createdOn);
   const title = run.displayName || run.fileName || `Run ${run.id}`;
+  // #132: the current attempt's active jobs — meaningful only while the run is
+  // actually in progress (stale meta on a just-finished run must not render).
+  const runningJobs = state === "running" ? (meta?.runningJobs ?? []) : [];
+  const shownJobs = runningJobs.slice(0, MAX_RUNNING_JOBS_SHOWN);
+  const moreJobs = runningJobs.length - shownJobs.length;
 
   return (
     <div className="flex items-center gap-2 pr-3 transition-colors hover:bg-raised focus-within:bg-raised">
@@ -75,6 +91,27 @@ export function RunRow({
               </span>
             )}
           </div>
+          {/* #132: which job(s) an in-progress run is on right now, aliased (#114). */}
+          {shownJobs.length > 0 && (
+            <div className="mt-1 truncate text-[12px] text-fg-muted">
+              <span className="text-fg-subtle">running: </span>
+              {shownJobs.map((j, i) => {
+                const alias = aliasFor(aliases, repo, j.key);
+                return (
+                  <Fragment key={`${j.key}:${j.name}`}>
+                    {i > 0 && ", "}
+                    <span
+                      className="font-medium text-fg"
+                      title={alias ? `Original: ${j.name}` : undefined}
+                    >
+                      {alias ?? j.name}
+                    </span>
+                  </Fragment>
+                );
+              })}
+              {moreJobs > 0 && <span className="text-fg-subtle"> +{moreJobs} more</span>}
+            </div>
+          )}
         </div>
 
         {when && (

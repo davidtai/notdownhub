@@ -14,6 +14,10 @@ import { freshHome, startServer } from "./helpers.js";
   runs list. Covers: batching (one request answers many ids from one DB read),
   the local-only gate (403), unknown-id tolerance, malformed-ids 400, the
   in-progress shape (startedAt only), and the no-DB degradation to {}.
+  #132 adds `runningJobs` for runs whose latest attempt is in progress: the
+  attempt's active/queued jobs as { key, name } — covered below with a
+  full-schema DB (WorkflowRunAttempt + job identities), including
+  current-attempt-only scoping, finished-run absence, and old-schema tolerance.
 */
 
 /** Seed a hub.db with the Job timeline shape readRunMeta reads (matches fleet.test.ts). */
@@ -31,6 +35,58 @@ function makeHubDb(home: string): void {
   // Run 2: in progress — a Job record with a start but no finish yet.
   db.exec(`INSERT INTO Jobs VALUES ('j2','TL2',2)`);
   db.exec(`INSERT INTO TimeLineRecords VALUES ('r2','TL2','Job','runner-b','2026-08-07 07:00:00.000000',NULL)`);
+  db.close();
+}
+
+/**
+ * Seed a hub.db with the FULL job/attempt shape the #132 runningJobs read uses:
+ * WorkflowRunAttempt (attempt number + Status; 4 = Completed) plus Jobs rows
+ * carrying name/WorkflowIdentifier/WorkflowRunAttemptId. Column subsets match
+ * the real runner.server schema (verified against a live hub.db).
+ */
+function makeRichHubDb(home: string): void {
+  const dir = join(home, "hub");
+  mkdirSync(dir, { recursive: true });
+  const db = new DatabaseSync(join(dir, "hub.db"));
+  db.exec(`CREATE TABLE Jobs (JobId TEXT, TimeLineId TEXT, runid INTEGER, WorkflowRunAttemptId INTEGER, name TEXT, WorkflowIdentifier TEXT)`);
+  db.exec(
+    `CREATE TABLE TimeLineRecords (Id TEXT, TimelineId TEXT, RecordType TEXT, WorkerName TEXT, StartTime TEXT, FinishTime TEXT)`,
+  );
+  db.exec(`CREATE TABLE WorkflowRunAttempt (Id INTEGER, WorkflowRunId INTEGER, Attempt INTEGER, Status INTEGER)`);
+
+  // Run 1: IN PROGRESS (attempt 1, Status 1). Three jobs: 'build' finished,
+  // 'test' running (started, no finish), 'deploy' queued (no timeline record yet).
+  db.exec(`INSERT INTO WorkflowRunAttempt VALUES (11, 1, 1, 1)`);
+  db.exec(`INSERT INTO Jobs VALUES ('j1a','TLA',1,11,'build','build')`);
+  db.exec(`INSERT INTO Jobs VALUES ('j1b','TLB',1,11,'test','_test')`);
+  db.exec(`INSERT INTO Jobs VALUES ('j1c','TLC',1,11,'deploy','deploy')`);
+  db.exec(`INSERT INTO TimeLineRecords VALUES ('r1a','TLA','Job','runner-a','2026-08-07 06:00:00.000000','2026-08-07 06:00:05.000000')`);
+  db.exec(`INSERT INTO TimeLineRecords VALUES ('r1b','TLB','Job','runner-a','2026-08-07 06:00:05.000000',NULL)`);
+
+  // Run 2: FINISHED (attempt 1, Status 4 = Completed) — must never carry runningJobs.
+  db.exec(`INSERT INTO WorkflowRunAttempt VALUES (21, 2, 1, 4)`);
+  db.exec(`INSERT INTO Jobs VALUES ('j2a','TLD',2,21,'only','only')`);
+  db.exec(`INSERT INTO TimeLineRecords VALUES ('r2a','TLD','Job','runner-b','2026-08-07 07:00:00.000000','2026-08-07 07:00:01.000000')`);
+
+  // Run 3: RE-RUN — attempt 1 (Status 4) left an unfinished-looking job behind;
+  // attempt 2 (Status 1) is the CURRENT one with 'fresh' running. Only attempt 2's
+  // job may be reported.
+  db.exec(`INSERT INTO WorkflowRunAttempt VALUES (31, 3, 1, 4)`);
+  db.exec(`INSERT INTO WorkflowRunAttempt VALUES (32, 3, 2, 1)`);
+  db.exec(`INSERT INTO Jobs VALUES ('j3a','TLE',3,31,'stale','stale')`);
+  db.exec(`INSERT INTO Jobs VALUES ('j3b','TLF',3,32,'fresh','fresh')`);
+  db.exec(`INSERT INTO TimeLineRecords VALUES ('r3a','TLE','Job','runner-a','2026-08-07 08:00:00.000000',NULL)`);
+  db.exec(`INSERT INTO TimeLineRecords VALUES ('r3b','TLF','Job','runner-b','2026-08-07 08:10:00.000000',NULL)`);
+
+  // Run 4: QUEUED — attempt in progress, one job, no timeline records at all.
+  // Its meta entry exists purely for runningJobs (no times fabricated). The job
+  // has no WorkflowIdentifier, so the name doubles as the alias key. A twin row
+  // with the same identity (matrix leg replay) must collapse to one entry, and a
+  // row with neither name nor identifier is skipped.
+  db.exec(`INSERT INTO WorkflowRunAttempt VALUES (41, 4, 1, 0)`);
+  db.exec(`INSERT INTO Jobs VALUES ('j4a','TLG',4,41,'solo',NULL)`);
+  db.exec(`INSERT INTO Jobs VALUES ('j4b','TLG2',4,41,'solo',NULL)`);
+  db.exec(`INSERT INTO Jobs VALUES ('j4c','TLG3',4,41,NULL,NULL)`);
   db.close();
 }
 
@@ -93,6 +149,58 @@ test("GET /api/local/runs-meta: one request answers the whole batch; unknown ids
     // Run 999 (unknown): tolerated — absent from the map, not an error.
     assert.equal("999" in body, false);
     assert.deepEqual(Object.keys(body).sort(), ["1", "2"]);
+  } finally {
+    await f.close();
+    await hub.close();
+  }
+});
+
+// ── #132 runningJobs: active jobs of the current attempt ─────────────────────
+test("GET /api/local/runs-meta: one batched request reports runningJobs for every in-progress run", async () => {
+  const home = freshHome();
+  makeRichHubDb(home);
+  const hub = await startServer((_q, r) => r.end());
+  const f = await front(hub.port);
+  try {
+    // ONE request answers all four runs — the endpoint never queries per run.
+    const res = await req(f.port, "/api/local/runs-meta?ids=1,2,3,4");
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    // Run 1 (in progress): the running job AND the queued job (no timeline record
+    // yet) are listed with their alias keys; the finished 'build' job is not.
+    assert.deepEqual(body["1"].runningJobs, [
+      { key: "_test", name: "test" },
+      { key: "deploy", name: "deploy" },
+    ]);
+    assert.equal(body["1"].startedAt, "2026-08-07T06:00:00.000Z");
+    // Run 2 (finished): backward-compatible shape — no runningJobs field at all.
+    assert.equal("runningJobs" in body["2"], false);
+    assert.equal(body["2"].durationMs, 1000);
+    // Run 3 (re-run): ONLY the current attempt's job — attempt 1's leftover
+    // unfinished record must not resurface as "running".
+    assert.deepEqual(body["3"].runningJobs, [{ key: "fresh", name: "fresh" }]);
+    // Run 4 (queued, never started): entry exists purely for runningJobs — no
+    // fabricated times; the name doubles as key when WorkflowIdentifier is null,
+    // the identical twin row collapses, and the nameless row is skipped.
+    assert.deepEqual(body["4"], { runningJobs: [{ key: "solo", name: "solo" }] });
+  } finally {
+    await f.close();
+    await hub.close();
+  }
+});
+
+test("GET /api/local/runs-meta: hub DB without attempt/job-identity columns still serves timing (no runningJobs)", async () => {
+  const home = freshHome();
+  makeHubDb(home); // the minimal pre-#132 schema: no WorkflowRunAttempt table
+  const hub = await startServer((_q, r) => r.end());
+  const f = await front(hub.port);
+  try {
+    const res = await req(f.port, "/api/local/runs-meta?ids=1,2");
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body["1"].durationMs, 4100); // timing intact
+    assert.equal("runningJobs" in body["1"], false);
+    assert.equal("runningJobs" in body["2"], false); // even for the in-progress run
   } finally {
     await f.close();
     await hub.close();
