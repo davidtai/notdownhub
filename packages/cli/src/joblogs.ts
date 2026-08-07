@@ -22,7 +22,8 @@ type Db = any; // node:sqlite DatabaseSync — typed loosely; the module is expe
 
 export const RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 
-function joblogsDbPath(): string {
+/** Path to the joblogs database for the current NDH_HOME. Exposed so the run-control paths use the same file. */
+export function joblogsDbPath(): string {
   return join(ndhHome(), "hub", "joblogs.db");
 }
 
@@ -32,6 +33,9 @@ export async function openDb(path: string, readOnly = false): Promise<Db> {
   const { DatabaseSync } = await import("node:sqlite");
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(path, { readOnly });
+  // A short busy timeout lets an occasional writer (the tee + a run-delete) coexist without
+  // an immediate SQLITE_BUSY; both live in the hub process, so contention is rare and brief.
+  db.exec("PRAGMA busy_timeout=2000");
   if (!readOnly) {
     // WAL lets the retrieval endpoint read while the tee writes, and survives a hard kill.
     db.exec("PRAGMA journal_mode=WAL");
@@ -52,6 +56,17 @@ export async function openDb(path: string, readOnly = false): Promise<Db> {
          timeline_id TEXT PRIMARY KEY,
          run_id INTEGER,
          updated_at INTEGER NOT NULL
+       )`,
+    );
+    // Tombstones for truly-deleted runs. The engine (Runner.Server) exposes no run-deletion
+    // endpoint and we never write its database, so a deleted run is recorded here — the DB we
+    // own — and the front enforces it (filtered from the runs list, 404 on detail). Because this
+    // table is persisted, a deleted run stays gone across hub restarts (the old "hidden runs come
+    // back" bug). Retention prune leaves it alone: a tombstone is tiny and must outlive the logs.
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS deleted_runs (
+         run_id INTEGER PRIMARY KEY,
+         deleted_at INTEGER NOT NULL
        )`,
     );
     try {
@@ -178,6 +193,102 @@ export function pruneOldRuns(db: Db, cutoffMs: number): number {
     db.exec("ROLLBACK");
     throw e;
   }
+}
+
+// ── true delete (tombstone + log purge) ──────────────────────────────────────
+/**
+ * Purge every persisted log row for a run. The tee often can't resolve a run_id at write time
+ * (it arrives before the Jobs row exists), so most rows are keyed only by timeline_id with a NULL
+ * run_id. We therefore purge by run_id AND by the run's timeline ids (resolved from the hub DB),
+ * plus the matching streams rows. One statement each; returns the number of job_logs rows removed.
+ */
+export function purgeRunLogs(db: Db, runId: number, timelineIds: string[] = []): number {
+  const tl = [...new Set(timelineIds.filter(Boolean))];
+  const inLogs = tl.length ? ` OR timeline_id IN (${tl.map(() => "?").join(",")})` : "";
+  const info = db.prepare(`DELETE FROM job_logs WHERE run_id = ?${inLogs}`).run(runId, ...tl);
+  db.prepare(`DELETE FROM streams WHERE run_id = ?${inLogs}`).run(runId, ...tl);
+  return Number(info.changes ?? 0);
+}
+
+/**
+ * Truly delete a run from the hub's point of view: purge its persisted logs and record a
+ * tombstone so the front treats it as gone everywhere (list, detail, logs) forever — including
+ * after a restart. Returns how many log rows were purged. One transaction: either both land or
+ * neither does, so a run is never left half-deleted.
+ */
+export function markRunDeleted(db: Db, runId: number, timelineIds: string[] = [], now = Date.now): number {
+  db.exec("BEGIN");
+  try {
+    const purged = purgeRunLogs(db, runId, timelineIds);
+    db.prepare("INSERT OR REPLACE INTO deleted_runs(run_id, deleted_at) VALUES(?, ?)").run(runId, now());
+    db.exec("COMMIT");
+    return purged;
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/**
+ * The timeline ids belonging to a run, from the hub's own DB (read-only, tolerant). Jobs.TimeLineId
+ * is stored upper-cased while the console feed (and thus our job_logs/streams) is lower-case, so we
+ * normalize to lower-case to match. Returns [] if the DB or table can't be read.
+ */
+export async function resolveRunTimelines(hubDb: string, runId: number): Promise<string[]> {
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(hubDb, { readOnly: true });
+    try {
+      const rows = db.prepare("SELECT TimeLineId AS tl FROM Jobs WHERE runid = ?").all(runId) as { tl: string | null }[];
+      return rows.map((r) => r.tl).filter((t): t is string => !!t).map((t) => t.toLowerCase());
+    } finally {
+      db.close();
+    }
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Open the joblogs DB writable, resolve the run's timelines from the hub DB, then tombstone +
+ * purge the run and close. Returns rows purged.
+ */
+export async function deleteRun(
+  dbPath: string,
+  runId: number,
+  opts: { hubDbPath?: string } = {},
+): Promise<{ logsPurged: number }> {
+  const timelineIds = await resolveRunTimelines(opts.hubDbPath ?? hubDbPath(), runId);
+  const db = await openDb(dbPath);
+  try {
+    return { logsPurged: markRunDeleted(db, runId, timelineIds) };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * The set of tombstoned run ids, read-only. Returns an empty set if the DB (or the table, on a
+ * pre-feature database) can't be read — deletion is additive, so an unreadable tombstone store
+ * simply means "nothing is deleted" rather than an error the front has to handle.
+ */
+export async function readDeletedRunIds(dbPath: string): Promise<Set<number>> {
+  try {
+    const db = await openDb(dbPath, true);
+    try {
+      const rows = db.prepare("SELECT run_id FROM deleted_runs").all() as { run_id: number }[];
+      return new Set(rows.map((r) => r.run_id));
+    } finally {
+      db.close();
+    }
+  } catch {
+    return new Set();
+  }
+}
+
+/** Whether a single run has been tombstoned (read-only; false on any read failure). */
+export async function isRunDeleted(dbPath: string, runId: number): Promise<boolean> {
+  return (await readDeletedRunIds(dbPath)).has(runId);
 }
 
 /**

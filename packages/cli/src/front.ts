@@ -7,9 +7,10 @@ import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { download, exists, log, ndhHome } from "./lib.js";
 import { getAgentsInfo } from "./agents-info.js";
-import { serveJobLogs } from "./joblogs.js";
+import { serveJobLogs, isRunDeleted, joblogsDbPath } from "./joblogs.js";
 import { getConfigInfo } from "./config-info.js";
 import { listArtifacts, parseArtifactApiPath, parseArtifactPrettyUrl, serveArtifactDownload } from "./artifacts.js";
+import { serveRunCancel, serveRunDelete, serveFilteredRuns, serveProjectDelete } from "./runctl.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -105,6 +106,7 @@ async function handleRequest(
 ): Promise<void> {
   try {
     const url = new URL(req.url ?? "/", "http://localhost");
+    let m: RegExpMatchArray | null;
     if (url.pathname.startsWith("/mirror/")) {
       await serveMirror(url.pathname, res, opts.githubToken);
     } else if (url.pathname === "/api/local/join-info") {
@@ -177,6 +179,51 @@ async function handleRequest(
       }
       const { runId, artifactId } = parseArtifactPrettyUrl(url.pathname)!;
       await serveArtifactDownload(`http://127.0.0.1:${opts.hubPort}`, runId, artifactId, res);
+    } else if ((m = url.pathname.match(/^\/api\/local\/runs\/(\d+)\/cancel$/)) && req.method === "POST") {
+      // Cancel a run through the engine's own cancellation endpoint. Mutating + UI-originated,
+      // so it rides the same local-only / basic-auth gate as the rest of /api/local.
+      // Default = forceCancelWorkflow: the engine's soft cancelWorkflow re-evaluates each job's
+      // `if:` and skips jobs without one, so it does not stop a normal running job (verified) —
+      // force reliably terminates the run and is the recovery path for an orphaned dispatch.
+      // `?soft=1` selects the graceful cancelWorkflow for callers that want GitHub's semantics.
+      if (!uiAccessAllowed(req, opts)) {
+        denyUi(res, opts);
+        return;
+      }
+      const graceful = url.searchParams.get("soft") === "1";
+      await serveRunCancel(opts.hubPort, Number(m[1]), !graceful, res);
+    } else if ((m = url.pathname.match(/^\/api\/local\/runs\/(\d+)$/)) && req.method === "DELETE") {
+      // True delete: tombstone + purge persisted logs. Same gate as cancel.
+      if (!uiAccessAllowed(req, opts)) {
+        denyUi(res, opts);
+        return;
+      }
+      await serveRunDelete(Number(m[1]), res);
+    } else if (url.pathname === "/api/local/runs" && req.method === "DELETE") {
+      // Bulk delete every run of a project — the #55 Projects page "Remove" action and
+      // `ndh run delete --project`. Contract: DELETE /api/local/runs?project=<owner/repo>.
+      if (!uiAccessAllowed(req, opts)) {
+        denyUi(res, opts);
+        return;
+      }
+      await serveProjectDelete(opts.hubPort, url.searchParams.get("project"), res);
+    } else if (url.pathname === "/api/local/runs" && req.method === "OPTIONS") {
+      // Capability probe for the Projects page: a non-404 here tells the UI the project-delete
+      // backend exists so it can reveal the Remove control. No data, so it is not gated.
+      res.writeHead(204, { allow: "DELETE, OPTIONS" });
+      res.end();
+    } else if (req.method === "GET" && url.pathname === "/_apis/v1/Message/workflow/runs") {
+      // Runs list, proxied with tombstoned runs filtered out (for every reader). Not gated: the
+      // list is a read, same as proxying it straight through — deletion is just enforced here.
+      await serveFilteredRuns(opts.hubPort, url.search, res);
+    } else if (
+      req.method === "GET" &&
+      (m = url.pathname.match(/^\/_apis\/v1\/Message\/workflow\/run\/(\d+)(?:\/.*)?$/)) &&
+      (await isRunDeleted(joblogsDbPath(), Number(m[1])))
+    ) {
+      // A deleted run's detail (run, attempts, jobs) 404s so the UI shows "gone", not stale data.
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "run deleted", runId: Number(m[1]) }));
     } else if (opts.uiDir && !uiAccessAllowed(req, opts) && isUiPath(url.pathname)) {
       denyUi(res, opts);
     } else if (opts.uiDir && (await serveUi(opts.uiDir, url.pathname, res))) {

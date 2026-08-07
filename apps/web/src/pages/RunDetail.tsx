@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, GitBranch, GitCommitHorizontal } from "lucide-react";
-import { getRuns, getAttempts, getJobs, getTimeline, getArtifacts, type Job, type TimelineRecord } from "../lib/api";
+import { getRuns, getAttempts, getJobs, getTimeline, getArtifacts, type Job, type TimelineRecord, type WorkflowRun } from "../lib/api";
 import { toState, shortRef, shortSha, elapsedMs, timelineSpan, projectLabel } from "../lib/format";
 import { usePoll } from "../lib/hooks";
 import { AppBar } from "../components/AppBar";
 import { Artifacts } from "../components/Artifacts";
 import { JobList } from "../components/JobList";
 import { JobLog } from "../components/JobLog";
+import { RunActions } from "../components/RunActions";
 import { StatusIcon, StatePill } from "../components/StatusIcon";
 import { Card } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
@@ -16,11 +17,16 @@ import { cn } from "../lib/utils";
 export function RunDetail() {
   const { id } = useParams<{ id: string }>();
   const runId = Number(id);
+  const navigate = useNavigate();
 
   const runsList = usePoll(() => getRuns(0), 5000);
   const attempts = usePoll(() => getAttempts(runId), 3000, [runId]);
 
   const summary = useMemo(() => (runsList.data ?? []).find((r) => r.id === runId), [runsList.data, runId]);
+
+  // A deleted run is filtered from the list and its detail 404s (getAttempts throws). Distinguish
+  // that from "still loading" so we can show a clear tombstone instead of an empty, stuck page.
+  const notFound = !runsList.initial && !summary && !attempts.initial && attempts.error !== null;
 
   const attemptList = attempts.data ?? [];
   const [attemptNo, setAttemptNo] = useState<number | null>(null);
@@ -83,6 +89,28 @@ export function RunDetail() {
   const project = summary ? projectLabel(summary) : null;
   const title = summary?.displayName || summary?.fileName || `Run ${runId}`;
 
+  // The run object the header actions act on: the list summary when present, else the current
+  // attempt's status/result so a run only reachable by deep link still gets the right controls.
+  const headerRun: WorkflowRun = summary ?? { id: runId, status: attempt?.status ?? null, result: attempt?.result ?? null };
+
+  if (notFound) {
+    return (
+      <div className="min-h-full">
+        <AppBar />
+        <main className="mx-auto max-w-[1160px] px-4 py-6 sm:px-6">
+          <Link to="/" className="mb-4 inline-flex items-center gap-1.5 text-[13px] text-fg-muted hover:text-fg">
+            <ArrowLeft size={14} />
+            Runs
+          </Link>
+          <div className="px-6 py-16 text-center">
+            <p className="text-sm font-medium text-fg">Run #{runId} not found</p>
+            <p className="mt-1.5 text-[13px] text-fg-muted">It may have been deleted.</p>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-full">
       <AppBar />
@@ -124,7 +152,16 @@ export function RunDetail() {
             </div>
           </div>
 
-          {attemptList.length > 1 && (
+          <div className="flex items-center gap-3">
+            <RunActions
+              run={headerRun}
+              onCancelled={() => {
+                runsList.refresh();
+                attempts.refresh();
+              }}
+              onDeleted={() => navigate("/")}
+            />
+            {attemptList.length > 1 && (
             <div className="flex items-center gap-1.5">
               <span className="eyebrow">Attempt</span>
               {attemptList
@@ -145,7 +182,8 @@ export function RunDetail() {
                   </button>
                 ))}
             </div>
-          )}
+            )}
+          </div>
         </div>
 
         {/* Jobs + steps/logs */}
