@@ -13,6 +13,7 @@ import { listArtifacts, parseArtifactApiPath, parseArtifactPrettyUrl, serveArtif
 import { serveRunCancel, serveRunDelete, serveFilteredRuns, serveProjectDelete } from "./runctl.js";
 import { serveProjects } from "./projects.js";
 import { servePlaceholderCrud, serveJobAliasCrud } from "./frontstore.js";
+import { serveSecretsCrud, serveVarsCrud } from "./config-crud.js";
 import { appendDefaultPlatform, serveRerun } from "./rerunmap.js";
 import { serveRunsMeta } from "./runs-meta.js";
 import { serveLocalcheckout } from "./localcheckout.js";
@@ -151,6 +152,23 @@ async function handleRequest(
       const config = await getConfigInfo().catch(() => ({ backend: "unknown", secrets: [], vars: [] }));
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(config));
+    } else if (url.pathname === "/api/local/secrets") {
+      // #145: Settings-page writes, through the SAME store `ndh secrets` uses (active
+      // backend + scope model honored). Mutating + UI-operator-originated, so it rides
+      // the same gate as the rest of /api/local. Values stay write-only: reads remain
+      // on /api/local/config (names + scopes), and no response here echoes a value.
+      if (!uiAccessAllowed(req, opts)) {
+        denyUi(res, opts);
+        return;
+      }
+      await serveSecretsCrud(req, url, res);
+    } else if (url.pathname === "/api/local/vars") {
+      // #145: same write surface for `ndh vars` (vars are not secret; config lists values).
+      if (!uiAccessAllowed(req, opts)) {
+        denyUi(res, opts);
+        return;
+      }
+      await serveVarsCrud(req, url, res);
     } else if (url.pathname === "/api/local/projects") {
       // Distinct projects across the FULL run history (issue #90), aggregated hub-side so the
       // Projects page never derives its list from one runs page. Planned placeholders (#113)

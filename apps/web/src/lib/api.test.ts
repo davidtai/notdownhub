@@ -24,6 +24,11 @@ import {
   aliasFor,
   getProjects,
   getRunsMeta,
+  addSecret,
+  deleteSecret,
+  addVar,
+  deleteVar,
+  validEnvName,
 } from "./api";
 import { mockFetch, routes } from "../test/helpers";
 
@@ -417,6 +422,59 @@ describe("job aliases (#114)", () => {
     expect(call[0]).toContain("jobKey=the%20build");
     mockFetch(routes({ "/api/local/job-aliases": { throw: true } }));
     expect(await clearJobAlias("a/b", "x")).toBe(false);
+  });
+
+  it("settings writes (#145): addSecret POSTs the value byte-exactly, incl. trailing newline", async () => {
+    const fn = mockFetch(routes({ "/api/local/secrets": { body: { ok: true } } }));
+    const value = "-----BEGIN KEY-----\nline2\n"; // typed trailing newline stays
+    const r = await addSecret("DEPLOY_KEY", value, "global");
+    expect(r).toEqual({ ok: true, status: 200, error: null });
+    const call = fn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[0]).toBe("/api/local/secrets");
+    expect(call[1].method).toBe("POST");
+    expect(JSON.parse(call[1].body as string)).toEqual({ name: "DEPLOY_KEY", value, scope: "global" });
+  });
+
+  it("settings writes: deleteSecret / addVar / deleteVar hit their endpoints with encoded params", async () => {
+    let fn = mockFetch(routes({ "/api/local/secrets": { body: { ok: true, removed: true } } }));
+    expect((await deleteSecret("NPM_TOKEN", "acme/x")).ok).toBe(true);
+    let call = fn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[0]).toBe("/api/local/secrets?name=NPM_TOKEN&scope=acme%2Fx");
+    expect(call[1].method).toBe("DELETE");
+
+    fn = mockFetch(routes({ "/api/local/vars": { body: { ok: true } } }));
+    expect((await addVar("DEPLOY_TARGET", "staging", "global")).ok).toBe(true);
+    call = fn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[1].method).toBe("POST");
+    expect(JSON.parse(call[1].body as string)).toEqual({ name: "DEPLOY_TARGET", value: "staging", scope: "global" });
+
+    fn = mockFetch(routes({ "/api/local/vars": { body: { ok: true, removed: false } } }));
+    expect((await deleteVar("DEPLOY_TARGET")).ok).toBe(true);
+    call = fn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[0]).toBe("/api/local/vars?name=DEPLOY_TARGET&scope=global");
+  });
+
+  it("settings writes: the hub's error message passes through verbatim; deny/network map to status", async () => {
+    const hint = "keychain write failed: locked\nheadless/SSH — run 'ndh secrets backend file'";
+    mockFetch(routes({ "/api/local/secrets": { status: 500, body: { ok: false, error: hint } } }));
+    expect(await addSecret("A", "v")).toEqual({ ok: false, status: 500, error: hint });
+
+    // The gate's deny body is plain text, not JSON — fall back to the HTTP status.
+    mockFetch(routes({ "/api/local/secrets": { status: 403, body: null } }));
+    expect((await addSecret("A", "v")).error).toBe("HTTP 403");
+
+    mockFetch(routes({ "/api/local/vars": { throw: true } }));
+    const r = await addVar("A", "v");
+    expect(r.ok).toBe(false);
+    expect(r.status).toBe(0);
+  });
+
+  it("validEnvName mirrors the CLI's env-identifier rule", () => {
+    expect(validEnvName("NPM_TOKEN")).toBe(true);
+    expect(validEnvName("_x9")).toBe(true);
+    expect(validEnvName("9BAD")).toBe(false);
+    expect(validEnvName("has-dash")).toBe(false);
+    expect(validEnvName("")).toBe(false);
   });
 
   it("aliasFor scopes by project and returns null without a match or project", () => {

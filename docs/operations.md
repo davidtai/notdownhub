@@ -673,7 +673,9 @@ ndh secrets set DEPLOY_KEY < deploy_key.pem
 ```
 
 A trailing newline in piped input is part of the secret and is kept. The
-hidden prompt drops only the final Enter keypress.
+hidden prompt drops only the final Enter keypress. The hub UI's Settings page
+can also add and delete secrets and variables. Its form follows the piped
+rule: the value is stored exactly as typed, with no newline added or removed.
 
 `ndh secrets get NAME` reveals a value; it is the only command that prints one.
 `ndh secrets list` shows names and scopes, never values.
