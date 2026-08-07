@@ -5,6 +5,7 @@ import {
   getJobs,
   getTimeline,
   getAgents,
+  removeAgent,
   getJobLogs,
   getConfig,
   getJoinInfo,
@@ -55,6 +56,19 @@ describe("getAgents", () => {
   it("treats a null body as empty", async () => {
     mockFetch(routes({ "/api/local/agents": { body: null } }));
     expect(await getAgents()).toEqual([]);
+  });
+});
+
+describe("removeAgent", () => {
+  it("issues a DELETE to /_apis/v1/Agent/{poolId}/{agentId}", async () => {
+    const fn = mockFetch(routes({ "/_apis/v1/Agent/1/7": { status: 204 } }));
+    await removeAgent(1, 7);
+    expect(fn).toHaveBeenCalledWith("/_apis/v1/Agent/1/7", { method: "DELETE" });
+  });
+
+  it("throws with the status on a non-OK response", async () => {
+    mockFetch(routes({ "/_apis/v1/Agent/1/7": { status: 403 } }));
+    await expect(removeAgent(1, 7)).rejects.toThrow(/403/);
   });
 });
 

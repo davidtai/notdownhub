@@ -91,6 +91,8 @@ test("getAgentsInfo (DB path): merges labels, liveness and busy into active/idle
     assert.equal(byName["runner-a"].busy, true);
     assert.deepEqual(byName["runner-a"].labels, ["self-hosted", "macOS", "ARM64"]);
     assert.equal(byName["runner-a"].maxParallelism, 2);
+    // poolId is carried through so the UI can address the unregister endpoint.
+    assert.equal(byName["runner-a"].poolId, 1);
     // runner-b: online, no in-progress job -> idle
     assert.equal(byName["runner-b"].state, "idle");
     assert.equal(byName["runner-b"].ephemeral, true);
@@ -113,6 +115,7 @@ test("getAgentsInfo (fallback): no hub DB -> agents from the hub API, no labels,
     const info = await getAgentsInfo(hub.port, async () => "jwt");
     assert.equal(info.length, 1);
     assert.equal(info[0].name, "api-runner");
+    assert.equal(info[0].poolId, 1); // pool comes from the iterated AgentPools entry
     assert.equal(info[0].state, "idle"); // online, busy unknown -> idle
     assert.deepEqual(info[0].labels, []);
     assert.equal(info[0].busy, false);

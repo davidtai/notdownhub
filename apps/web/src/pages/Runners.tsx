@@ -1,12 +1,13 @@
-import { useMemo } from "react";
-import { Cpu, Layers, TriangleAlert } from "lucide-react";
-import { getAgents, type RunnerInfo } from "../lib/api";
+import { useMemo, useState } from "react";
+import { Cpu, Layers, Trash2, TriangleAlert, X } from "lucide-react";
+import { getAgents, removeAgent, type RunnerInfo } from "../lib/api";
 import { usePoll } from "../lib/hooks";
 import { AppBar } from "../components/AppBar";
 import { AddRunner } from "../components/AddRunner";
 import { RunnerStateDot } from "../components/StatusIcon";
 import { Card } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
 
 const STATE_WORD: Record<RunnerInfo["state"], string> = {
   active: "Active",
@@ -21,10 +22,114 @@ function osShort(os?: string): string {
   return words.length > 30 ? words.slice(0, 30) + "…" : words;
 }
 
+/**
+ * Confirm + perform an agent removal. Copy reflects verified hub behavior: the DELETE
+ * unregisters the agent (the row disappears at once), but does NOT touch the runner's
+ * machine — a listener still running there keeps running and will not re-register on its
+ * own, so its instance directory is cleaned separately with `ndh runner remove`.
+ */
+function RemoveDialog({
+  runner,
+  onClose,
+  onRemoved,
+}: {
+  runner: RunnerInfo;
+  onClose: () => void;
+  onRemoved: () => void;
+}) {
+  const [removing, setRemoving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function confirm() {
+    if (runner.poolId == null) {
+      setError("This hub did not report the runner's pool, so it can't be unregistered from here. Use `ndh runner remove` on the runner's machine.");
+      return;
+    }
+    setRemoving(true);
+    setError(null);
+    try {
+      await removeAgent(runner.poolId, runner.id);
+      onRemoved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setRemoving(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+      onClick={removing ? undefined : onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="remove-runner-title"
+        className="w-full max-w-md rounded-lg border border-line bg-surface p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <h2 id="remove-runner-title" className="text-base font-semibold text-fg">
+            Remove runner
+          </h2>
+          <button
+            aria-label="Close"
+            onClick={onClose}
+            disabled={removing}
+            className="rounded p-1 text-fg-subtle hover:bg-raised hover:text-fg disabled:opacity-50"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="mt-3 space-y-2.5 text-[13px] text-fg-muted">
+          <p>
+            Unregister <span className="font-mono font-medium text-fg">{runner.name}</span> from this hub? It disappears
+            from the list right away.
+          </p>
+          <p>
+            This only removes it from the hub. It does not touch the runner&apos;s machine: if the listener is still
+            running there it keeps running (idle, receiving no work) and won&apos;t reappear here on its own.
+          </p>
+          <p>
+            To stop the listener and delete its instance directory, run{" "}
+            <code className="rounded bg-raised px-1 py-0.5 font-mono text-[12px] text-fg">
+              ndh runner remove {runner.name}
+            </code>{" "}
+            on that machine.
+          </p>
+        </div>
+
+        {error && (
+          <div className="mt-3 flex items-start gap-2 rounded-md border border-fail/30 bg-fail/10 px-3 py-2 text-[12px] text-fail">
+            <TriangleAlert size={14} className="mt-0.5 shrink-0" />
+            <span className="break-words">Couldn&apos;t remove the runner: {error}</span>
+          </div>
+        )}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="outline" size="sm" onClick={onClose} disabled={removing}>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={confirm}
+            disabled={removing}
+            className="bg-fail text-white hover:brightness-110"
+          >
+            {removing ? "Removing…" : "Remove"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Runners() {
   const agents = usePoll(() => getAgents(), 3000);
   const list = useMemo(() => agents.data ?? [], [agents.data]);
   const activeCount = list.filter((a) => a.state !== "offline").length;
+  const [pending, setPending] = useState<RunnerInfo | null>(null);
 
   return (
     <div className="min-h-full">
@@ -82,6 +187,14 @@ export function Runners() {
                         <span className="ml-auto shrink-0 text-[12px] font-medium text-fg-muted">
                           {STATE_WORD[r.state]}
                         </span>
+                        <button
+                          aria-label={`Remove ${r.name}`}
+                          title="Remove runner"
+                          onClick={() => setPending(r)}
+                          className="shrink-0 rounded p-1 text-fg-subtle transition-colors hover:bg-fail/10 hover:text-fail"
+                        >
+                          <Trash2 size={14} />
+                        </button>
                       </div>
                       <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-fg-muted">
                         {osShort(r.os) && <span className="font-mono">{osShort(r.os)}</span>}
@@ -115,6 +228,17 @@ export function Runners() {
           </div>
         </div>
       </main>
+
+      {pending && (
+        <RemoveDialog
+          runner={pending}
+          onClose={() => setPending(null)}
+          onRemoved={() => {
+            setPending(null);
+            agents.refresh();
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -153,10 +153,19 @@ async function handleRequest(
     } else if (opts.uiDir && (await serveUi(opts.uiDir, url.pathname, res))) {
       // served static UI
     } else {
-      // Status APIs (agents/pools) demand a management JWT even for reads; grant it to
-      // anonymous GETs only, so the UI can render runner status without holding secrets.
+      // The hub's Agent* endpoints demand a management JWT even for reads; grant it to
+      // anonymous callers only, so the UI can act without holding secrets. Two shapes:
+      //   - reads: any GET under /_apis/v1/Agent(Pools)?/  (runner list + status)
+      //   - remove: the single DELETE /_apis/v1/Agent/{poolId}/{agentId} the Runners page
+      //     issues to unregister a runner — the same AgentManagement scope the registration
+      //     token already carries (config.sh remove uses the identical path).
+      // A client-supplied Authorization is never overwritten.
       let bearer: string | null = null;
-      if (req.method === "GET" && !req.headers.authorization && /^\/_apis\/v1\/Agent(Pools)?\//i.test(url.pathname + "/")) {
+      const wantsAgentJwt =
+        !req.headers.authorization &&
+        ((req.method === "GET" && /^\/_apis\/v1\/Agent(Pools)?\//i.test(url.pathname + "/")) ||
+          (req.method === "DELETE" && /^\/_apis\/v1\/Agent\/[^/]+\/[^/]+\/?$/i.test(url.pathname)));
+      if (wantsAgentJwt) {
         bearer = await mint().catch(() => null);
       }
       proxy(req, res, opts.hubPort, bearer);
