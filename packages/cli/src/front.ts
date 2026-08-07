@@ -12,6 +12,7 @@ import { getConfigInfo } from "./config-info.js";
 import { listArtifacts, parseArtifactApiPath, parseArtifactPrettyUrl, serveArtifactDownload } from "./artifacts.js";
 import { serveRunCancel, serveRunDelete, serveFilteredRuns, serveProjectDelete } from "./runctl.js";
 import { serveProjects } from "./projects.js";
+import { appendDefaultPlatform, serveRerun } from "./rerunmap.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -221,6 +222,25 @@ async function handleRequest(
       // backend exists so it can reveal the Remove control. No data, so it is not gated.
       res.writeHead(204, { allow: "DELETE, OPTIONS" });
       res.end();
+    } else if (
+      req.method === "POST" &&
+      (m = url.pathname.match(/^\/_apis\/v1\/Message\/(rerunworkflow|rerunFailed)\/(\d+)\/?$/i)) &&
+      url.searchParams.get("onLatestCommit") !== "true"
+    ) {
+      // #92: the engine's native re-run re-queues the stored workflow with NO platform mapping,
+      // so any run dispatched with (or needing) `-P ubuntu-latest=-self-hosted` re-runs into
+      // "no runner registered for ubuntu-latest". Replay it through schedule2?runid=<id> with the
+      // hub's default mapping instead (see rerunmap.ts). Not gated, exactly like the proxied
+      // native endpoint it replaces — `ndh run rerun` calls it from remote machines. On any
+      // shape we cannot replay (unreadable attempts, no stored YAML, onLatestCommit) fall back
+      // to the native endpoint — the pre-#92 behavior.
+      if (!(await serveRerun(opts.hubPort, Number(m[2]), /failed/i.test(m[1]), res))) {
+        proxy(req, res, opts.hubPort);
+      }
+    } else if (req.method === "POST" && url.pathname.match(/^\/_apis\/v1\/Message\/schedule2\/?$/i)) {
+      // Dispatch without an explicit -P gets the same default mapping, appended to the proxied
+      // query (never overriding a supplied one). Body streams through untouched.
+      proxy(req, res, opts.hubPort, null, appendDefaultPlatform(req.url ?? url.pathname));
     } else if (req.method === "GET" && url.pathname === "/_apis/v1/Message/workflow/runs") {
       // Runs list, proxied with tombstoned runs filtered out (for every reader). Not gated: the
       // list is a read, same as proxying it straight through — deletion is just enforced here.
@@ -272,12 +292,18 @@ export function startFront(opts: FrontOptions): http.Server {
   return server;
 }
 
-function proxy(req: http.IncomingMessage, res: http.ServerResponse, hubPort: number, bearer: string | null = null): void {
+function proxy(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  hubPort: number,
+  bearer: string | null = null,
+  pathOverride?: string,
+): void {
   const headers = bearer ? { ...req.headers, authorization: `Bearer ${bearer}` } : req.headers;
   const upstream = http.request(
     // Host header passes through untouched: the hub mints runner tenant URLs from it,
     // so it must stay the public-facing host:port, not the internal one.
-    { host: "127.0.0.1", port: hubPort, path: req.url, method: req.method, headers },
+    { host: "127.0.0.1", port: hubPort, path: pathOverride ?? req.url, method: req.method, headers },
     (up) => {
       res.writeHead(up.statusCode ?? 502, up.headers);
       // Flush headers immediately so a streaming response (SSE console feed, runner long-poll)

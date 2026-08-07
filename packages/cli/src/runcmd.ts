@@ -5,22 +5,23 @@ import { hubProbeAmbiguousMessage, hubUnreachableMessage, isDefinitiveDown, log,
 import { initFileLog } from "./filelog.js";
 import { currentRepoSlug, withRunnerSecrets } from "./secrets.js";
 import { withRunnerVars } from "./vars.js";
+import { HOSTED_LABELS } from "./platform.js";
 
 function dockerAvailable(): boolean {
   return spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
 }
 
-/** Default runs-on mappings: hosted labels run on this machine (or in docker for linux images when available). */
+/**
+ * Default runs-on mappings for the one-shot local `ndh run`: hosted labels run on this machine
+ * (or in docker for linux images when available). The label list is shared with the hub-side
+ * default mapping (platform.ts / rerunmap.ts) so client and hub can never drift apart.
+ */
 function defaultPlatformArgs(argv: string[], docker: () => boolean = dockerAvailable): string[] {
   if (argv.includes("-P") || argv.includes("--platform")) return [];
   const linuxTarget = docker() ? "catthehacker/ubuntu:act-latest" : "-self-hosted";
   return [
     "-P", "self-hosted=-self-hosted",
-    "-P", `ubuntu-latest=${linuxTarget}`,
-    "-P", `ubuntu-24.04=${linuxTarget}`,
-    "-P", `ubuntu-22.04=${linuxTarget}`,
-    "-P", "macos-latest=-self-hosted",
-    "-P", "windows-latest=-self-hosted",
+    ...HOSTED_LABELS.flatMap((label) => ["-P", `${label}=${label.startsWith("ubuntu-") ? linuxTarget : "-self-hosted"}`]),
   ];
 }
 

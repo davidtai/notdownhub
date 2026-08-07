@@ -571,7 +571,8 @@ workflow as a new attempt of the same run. The re-run keeps the same project and
 the same ref and sha.
 
 In the UI, open a finished run and select **Re-run**. Each finished row in the
-runs list also carries a **Re-run** control.
+runs list also carries a **Re-run** control. A re-run from the list opens the
+run's detail page, which follows the new attempt live.
 
 From the CLI:
 
@@ -582,6 +583,13 @@ ndh run rerun <run-id> --server http://hub-host:4949 --failed   # re-run only th
 
 The hub retains the workflow and the event for each attempt. So it re-runs from
 its own record, with no checkout on hand.
+
+The hub maps hosted `runs-on` labels to runners with the `self-hosted` label.
+The mapped labels are `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-22.04`,
+`macos-latest`, and `windows-latest`. The map applies to each re-run and to each
+dispatch without `-P/--platform`. An explicit `-P` on dispatch wins for that
+dispatch. A dispatch-time `-P` does not persist, so a re-run always uses the hub
+map. Dispatch again with `-P` when a run needs a container image mapping.
 
 One workflow shape cannot re-run from the hub. A workflow that checks out the
 dispatched local tree needs that tree. The tree lived on the machine that ran
