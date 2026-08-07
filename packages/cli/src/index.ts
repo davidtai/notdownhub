@@ -16,7 +16,7 @@ examples:
   ndh dispatch --server http://hub.tailnet:4949 --event push
   ndh secrets set NPM_TOKEN
 
-docs: https://github.com/OpenSourceWTF/notdownhub.com`;
+docs: https://github.com/davidtai/notdownhub`;
 
 async function version(): Promise<string> {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));

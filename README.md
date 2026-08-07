@@ -45,7 +45,7 @@ notdownhub isn't published to npm yet, so today the way in is clone + build
 (the CLI's bin is `ndh`):
 
 ```bash
-git clone https://github.com/OpenSourceWTF/notdownhub.com
+git clone https://github.com/davidtai/notdownhub
 cd notdownhub.com
 pnpm install && pnpm -r build
 node packages/cli/dist/index.js install   # one-time: downloads the pinned runner stack (~66 MB)
