@@ -1,20 +1,19 @@
 # notdownhub
 
-**GitHub goes down but your CI stays up.**
+**GitHub can be down; your CI is not.**
 
 `ndh` runs your **unmodified** GitHub Actions workflows on infrastructure you
 control — your laptop, one box under a desk, or a fleet of machines behind
 NAT. Same YAML, same `runs-on`, same `actions/checkout@v4`, same matrix and
-`needs:` graph. No re-implemented engine, no forge to stand up, no GitHub
+`needs:` graph. No re-implemented engine. No forge to run. No GitHub
 Enterprise invoice. After the first run it works fully offline.
 
 notdownhub is a thin product wrapper (the `ndh` CLI) around
-[`ChristopherHX/runner.server`](https://github.com/ChristopherHX/runner.server)
-— a maintained, MIT-licensed fork of GitHub's official
-[`actions/runner`](https://github.com/actions/runner) that adds an
-Actions-protocol server and client. Because execution rides on the official
-runner codebase, workflows run with full fidelity rather than a best-effort
-approximation.
+[`ChristopherHX/runner.server`](https://github.com/ChristopherHX/runner.server).
+That project is a maintained, MIT-licensed fork of GitHub's official
+[`actions/runner`](https://github.com/actions/runner). It adds an
+Actions-protocol server and client. Execution runs on the official runner
+codebase, so workflows run with full fidelity, not a best-effort approximation.
 
 ---
 
@@ -29,9 +28,9 @@ approximation.
 | Works offline after warm-up | Yes (caching action mirror) | Partial | Partial | N/A |
 | Cost | Free (MIT) | Free (MIT) | Free (self-host a forge) | $$$ |
 
-`ndh` is for the case in between "just run it on my laptop" and "adopt a whole
-forge": run the CI you already have, locally or across your own machines, with
-nothing pointing at github.com.
+`ndh` fits between two extremes: a one-off local run, and a full forge. It runs
+the CI you already have — locally or across your own machines — with nothing
+pointing at github.com.
 
 ---
 
@@ -72,10 +71,10 @@ ndh run -j build -m os:ubuntu-latest           # one job / one matrix leg
 > `--event`, `-j/--job`, `-m/--matrix`, `-s/--secret`, `--env`, `-P/--platform`,
 > `-C/--directory`, and more).
 
-By default `ubuntu-*` jobs run in a Linux container (`catthehacker/ubuntu:act-latest`)
-if Docker is available, and on the host machine otherwise; `macos-latest`,
-`windows-latest`, and `self-hosted` always run on the host. Override any
-mapping with `-P`, e.g. `-P ubuntu-latest=-self-hosted`.
+By default, `ubuntu-*` jobs run in a Linux container
+(`catthehacker/ubuntu:act-latest`) when Docker is available, and on the host
+otherwise. `macos-latest`, `windows-latest`, and `self-hosted` always run on the
+host. Override any mapping with `-P`, e.g. `-P ubuntu-latest=-self-hosted`.
 
 > **Full install guide:** per-OS prerequisites, what `ndh install` downloads
 > and the `NDH_HOME` layout, the Docker fleet-runner image, air-gapped setup,
@@ -85,8 +84,8 @@ mapping with `-P`, e.g. `-P ubuntu-latest=-self-hosted`.
 
 ## Fleet quickstart
 
-Stand up a persistent coordination hub, then attach runners from anywhere —
-even across NAT (runners are outbound-only long-pollers).
+Start a persistent hub, then attach runners from anywhere — even across NAT
+(runners are outbound-only long-pollers).
 
 **On the hub machine:**
 
@@ -111,18 +110,17 @@ Useful `hub up` flags:
 
 - `--port <n>` — public port (default 4949).
 - `--host <name-or-ip>` — the address the hub advertises to runners for the
-  action mirror. Defaults to the machine's auto-detected primary LAN IPv4 so
-  that *remote* runners can actually reach the mirror (they can't reach the
-  hub's `127.0.0.1`). Override it when the primary NIC guess is wrong or you
-  want runners to use a stable name — e.g. a DNS name (`--host hub.internal`)
-  or a tailnet address (`--host hub.tailnet`).
+  action mirror. The default is the machine's auto-detected primary LAN IPv4, so
+  remote runners can reach the mirror (they cannot reach the hub's `127.0.0.1`).
+  Override it for a wrong NIC guess or a stable name. Examples: a DNS name
+  (`--host hub.internal`) or a tailnet address (`--host hub.tailnet`).
 - `--basic-auth <user:pass>` — the web UI and its pairing endpoint are
   **loopback-only** by default; this admits a non-local operator over HTTP
   Basic (env `NDH_BASIC_AUTH`). The API/runner protocol/mirror are open
   regardless — see the security model in [docs/operations.md](docs/operations.md).
 - `--github-token <pat>` — give the server a PAT.
 - `--no-auth` — disable registration-token auth (open registration).
-- `--no-mirror-rewrite` — don't route `uses:` through the mirror.
+- `--no-mirror-rewrite` — do not route `uses:` through the mirror.
 - `--no-ui` — API only.
 
 **On each runner machine:**
@@ -136,7 +134,7 @@ ndh runner start
 `join` registers this machine (defaults: name `<hostname>-ndh`, labels derived
 from the host OS/arch). `start` begins listening for jobs; with several joined
 runners pass a name (`ndh runner start <name>`), and `ndh runner list` shows
-what's joined.
+what is joined.
 
 **From any repo you want built by the fleet:**
 
@@ -150,15 +148,18 @@ ndh status  --server http://hub.tailnet:4949      # runners + recent runs
 > an auth-on hub always pass the real `--token` the hub printed. The default is
 > only useful against a hub started with `--no-auth`.
 
+No machine to host the hub? You can run it on a small cloud VM. See
+[Run the hub on a VM](docs/operations.md#run-the-hub-on-a-vm), which includes a
+DigitalOcean referral link with $25 of credit to try it.
+
 ---
 
 ## Operations
 
-Running a hub for real — as a launchd/systemd service, choosing `--host`,
-firewalling the ports, backing up `hub.db` and the token, restart &
-auto-reconnect behavior, warming the mirror for offline, upgrading the pinned
-runner, and a symptom→fix troubleshooting table — is covered in the runbook:
-**[docs/operations.md](docs/operations.md)**.
+The runbook covers running a hub in production:
+**[docs/operations.md](docs/operations.md)**. It covers the launchd/systemd
+service, `--host` selection, firewall rules, backups, restart and reconnect
+behavior, mirror warm-up, upgrades, and a troubleshooting table.
 
 ---
 
@@ -205,23 +206,23 @@ multi-machine fleet. Full details, request flows, and the security model:
 
 ---
 
-## Honest caveats (v0.1)
+## Known limits (v0.1)
 
-- **The hub's API, runner protocol, and mirror are unauthenticated in v0.1.**
-  Runner *registration* is token-gated, and the web UI + pairing endpoint
-  (`/api/local/join-info`) are **loopback-only** by default (non-local requests
-  get `403`, or `401` with `--basic-auth user:pass`). The rest of the API is
-  open on port 4949 — treat the hub as a LAN / tailnet tool and don't expose it
-  to the public internet.
-- **Unmodified *official* `actions/runner` binaries can only join a hub on
-  `:443` over TLS.** The official runner drops non-standard ports during
-  registration (verified with `actions/runner` v2.336.0). The **bundled fork's**
-  listener (what `ndh runner join` uses) has no such limit, so any port works
-  for `ndh` runners. See the port-443 finding in the architecture doc.
-- **A runner registration binds to exactly one server.** The same machine can
-  hold an `ndh`-hub-pointed runner *and* a github.com-pointed runner side by
-  side, but there is no cross-dispatch between them (see issues #5, #6).
-- This is v0.1. Interfaces and defaults may change.
+- **The hub API, runner protocol, and mirror are unauthenticated.** Only runner
+  registration is token-gated. The web UI and the pairing endpoint
+  (`/api/local/join-info`) are loopback-only by default. A non-local request
+  gets `403`, or `401` with `--basic-auth user:pass`. The rest of the API is
+  open on port 4949. Treat the hub as a LAN or tailnet tool, and do not expose
+  it to the public internet.
+- **An unmodified official `actions/runner` binary can only join a hub on `:443`
+  over TLS.** The official runner drops non-standard ports at registration
+  (verified with `actions/runner` v2.336.0). The bundled fork listener (used by
+  `ndh runner join`) has no such limit, so any port works for `ndh` runners.
+  See the port-443 finding in the architecture doc.
+- **A runner registration binds to exactly one server.** One machine can hold an
+  `ndh`-hub runner and a github.com runner at the same time. No job crosses
+  between them (see issues #5, #6).
+- This is v0.1. Interfaces and defaults can change.
 
 ---
 
@@ -263,7 +264,7 @@ node packages/cli/dist/index.js --version
 in these docs works verbatim. Full per-OS build prerequisites are in
 [docs/install.md](docs/install.md#from-source).
 
-This repo eats its own dog food: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+This repo runs its own CI on `ndh`: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
 runs the same on GitHub and locally with `ndh`. On a machine without Docker, map
 `ubuntu-latest` to the host:
 
@@ -274,3 +275,6 @@ ndh run -W .github/workflows/ci.yml -P ubuntu-latest=-self-hosted
 Verified end-to-end on a macOS/arm64 host (no Docker): checkout → pnpm/Node 22
 setup → `pnpm install --frozen-lockfile` → `pnpm -r build` → `pnpm -r test` all
 pass.
+
+The docs follow Simplified Technical English (ASD-STE100). Run `pnpm docs:style`
+to check them; CI runs the same check.

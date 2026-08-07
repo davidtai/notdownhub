@@ -1,8 +1,8 @@
 # Installing notdownhub
 
-This guide covers every supported way to get `ndh` onto a machine, what
-`ndh install` actually downloads and where it lives, the Docker fleet-runner
-image, and how to verify an install. For running a hub and fleet day-to-day,
+This guide covers every supported way to install `ndh`. It explains what
+`ndh install` downloads and where the files live. It also covers the Docker
+fleet-runner image and how to verify an install. For hub and fleet operation,
 see [operations.md](operations.md).
 
 Everything below was exercised against the current `main` build on macOS/arm64;
@@ -114,7 +114,7 @@ ndh install
 # [ndh] vendor stack ready
 ```
 
-Run it again and it's a no-op (prints nothing, exits 0) because a completion
+Run it again and it is a no-op (prints nothing, exits 0) because a completion
 marker already exists:
 
 ```bash
@@ -122,7 +122,7 @@ ndh install ; echo "exit=$?"
 # exit=0
 ```
 
-### What's downloaded and pinned
+### What is downloaded and pinned
 
 - **Version:** `runner.server` **v3.14.0**, hard-pinned in
   `packages/cli/src/lib.ts` (`VENDOR_VERSION`). Upgrading it is a code change
@@ -147,17 +147,17 @@ override by exporting `NDH_HOME=/some/path`). After installing and running a hub
 | `vendor/runner.server-3.14.0/` | extracted bundle: `Runner.Server`, `Runner.Client`, `Runner.Listener`, plus a `.ndh-complete` marker | **Yes** — recreate with `ndh install` |
 | `cache/runner.server-<rid>-3.14.0.tar.gz` | the downloaded archive (kept so re-extract is offline) | **Yes** |
 | `hub/hub.db` (+ `-wal`, `-shm`) | SQLite: registered runners + workflow runs | **Back up** — this is your fleet state |
-| `hub/runner-token` | registration token, mode `0600` | **Back up** — it's a secret |
+| `hub/runner-token` | registration token, mode `0600` | **Back up** — it is a secret |
 | `hub/logs/`, `runners/<name>/logs/`, `logs/` | daily-rotated `0600` logs (hub / runner / one-shot run+dispatch) | **Yes** — auto-pruned (14-day default) |
 | `runners/<name>/` | per-runner instance: `bin/` (a bundle copy) + `.runner` + `.credentials` + `.credentials_rsaparams` (the runner's private key, `0600`) + `_work/` + `_diag/` | Recreatable via `ndh runner join` |
 | `mirror/<owner>/<repo>/<kind>-<ref>.tgz` | cached action archives | Disposable online; **back up for offline** |
 | `secrets-index.json`, `secrets.json`, `secrets.key` | `ndh secrets` store (file backend; macOS uses the Keychain instead) — see below | `secrets.json`/`.key` are **secret** |
 
-> This is the common subset. For the **exhaustive** inventory — including files
-> written *outside* `NDH_HOME` (ASP.NET DataProtection keys in `~/.aspnet`,
-> ephemeral secret files in `$TMPDIR/ndh-secrets`, macOS Keychain entries), each
-> with purpose, sensitivity, and safe-to-delete guidance — see
-> **[docs/files.md](files.md)**.
+> This is the common subset. The **exhaustive** inventory is in
+> **[docs/files.md](files.md)**. It also lists files written *outside*
+> `NDH_HOME`: ASP.NET DataProtection keys in `~/.aspnet`, ephemeral secret files
+> in `$TMPDIR/ndh-secrets`, and macOS Keychain entries. Each entry gives purpose,
+> sensitivity, and safe-to-delete guidance.
 
 ### `--force`, proxies, and tokens
 
@@ -166,10 +166,10 @@ override by exporting `NDH_HOME=/some/path`). After installing and running a hub
 - **`NDH_VENDOR_URL`** overrides the download URL entirely (internal mirror,
   air-gapped artifact server, a locally verified copy). Point it at a
   `runner.server-<rid>.tar.gz` you control.
-- **Proxies:** the download uses Node's built-in `fetch`. On Node versions that
-  honor proxy environment variables it will use them; the reliable, version-independent
-  escape hatch behind a restrictive proxy is to pre-place the archive and set
-  `NDH_VENDOR_URL` (or drop it straight into `cache/` with the exact filename above).
+- **Proxies:** the download uses Node's built-in `fetch`. Some Node versions
+  honor proxy environment variables and use them. Behind a restrictive proxy,
+  the reliable method is to pre-place the archive and set `NDH_VENDOR_URL`. You
+  can also drop the archive into `cache/` with the exact filename above.
 - **`GITHUB_TOKEN`** does **not** affect this download (GitHub Releases assets
   are anonymous and high-limit). It matters only for the hub's action *mirror*
   (see [operations.md → Mirror](operations.md#mirror-operations)).

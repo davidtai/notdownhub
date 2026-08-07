@@ -1,10 +1,9 @@
 # Generated files reference
 
-Every file and directory `ndh` — or the `runner.server` binaries it launches —
-creates, where it lives, what it holds, how sensitive it is, and whether it's
-safe to delete. Verified empirically by running a hub, a runner, a fleet
-dispatch, and `ndh secrets` against a scratch `NDH_HOME` and inspecting the
-result.
+This is every file and directory that `ndh`, or the `runner.server` binaries it
+launches, creates. Each entry gives the path, purpose, sensitivity, and whether
+you can delete it. The list was verified by running a hub, a runner, a fleet
+dispatch, and `ndh secrets` against a scratch `NDH_HOME`.
 
 **Sensitivity legend:** **secret** = protect like a credential · **state** =
 operational data worth keeping/backing up · **disposable** = regenerated on
@@ -35,12 +34,11 @@ lands here.
 | `hub/runner-token` (mode `0600`) | The runner registration token. Anyone holding it can register runners. | **secret** | Deleting makes the next `hub up` mint a new token — every runner must then re-join. |
 | `hub/logs/hub-YYYY-MM-DD.log` (file `0600`, dir `0700`) | Daily hub log: `[ndh]` lines **and** teed `Runner.Server` output, ANSI-stripped. | state (diagnostic) | Yes — old days are auto-pruned (14-day default) anyway. |
 
-> Empirically, for a simple fleet job the hub working dir held **only** the
-> `hub.db*`, `logs/`, and `runner-token` above — no artifact/cache storage
-> directory was created. `Runner.Server` materializes artifact/cache storage
-> under its working dir **only when a workflow actually uses**
-> `actions/upload-artifact` / `actions/cache`; treat any such directory that
-> appears under `hub/` as disposable per-run storage.
+> For a basic fleet job, the hub working dir held **only** the `hub.db*`,
+> `logs/`, and `runner-token` above. No artifact or cache storage directory was
+> created. `Runner.Server` creates artifact and cache storage under its working
+> dir only when a workflow uses `actions/upload-artifact` or `actions/cache`.
+> Treat any such directory under `hub/` as disposable per-run storage.
 
 ### Runners (`ndh runner join` / `start`)
 
@@ -52,7 +50,7 @@ One directory per runner under `runners/<name>/`:
 | `runners/<name>/.credentials` (`0644`) | Credential **metadata** (auth scheme, client id) — points at the key file below; not the key itself. | state | Delete only alongside a re-join. |
 | `runners/<name>/.credentials_rsaparams` (`0600`) | The runner's **RSA private key** used to authenticate to the hub. | **secret** | No — losing/leaking it means re-join (and the old registration should be replaced). |
 | `runners/<name>/bin/` | A copy of the runner bundle (+ `.ndh-complete`) — the listener runs from here. | disposable | Yes — `ndh runner join` re-copies it. |
-| `runners/<name>/_work/` | Per-job workspaces: `_PipelineMapping/`, `_temp/`, `_tool/` (hosted-tool cache), and `<repo>/<repo>/` checkouts. Can grow large. | disposable | Yes, between jobs — it's rebuilt per run. |
+| `runners/<name>/_work/` | Per-job workspaces: `_PipelineMapping/`, `_temp/`, `_tool/` (hosted-tool cache), and `<repo>/<repo>/` checkouts. Can grow large. | disposable | Yes, between jobs — it is rebuilt per run. |
 | `runners/<name>/_diag/` | Runner/worker diagnostic logs (`Runner_*.log`, `Worker_*.log`, `blocks/`, `pages/`). | state (diagnostic) | Yes. |
 | `runners/<name>/logs/runner-YYYY-MM-DD.log` (`0600`, dir `0700`) | The `ndh runner start` daily tee log (ndh lines + listener output). | state (diagnostic) | Yes — auto-pruned. |
 
@@ -73,7 +71,7 @@ On macOS the default secrets backend is the **Keychain** (below), so
 
 ## Outside `NDH_HOME`
 
-These are easy to miss because they don't live under `~/.notdownhub`.
+These files do not live under `~/.notdownhub`, so integrators can overlook them.
 
 | Path | Created by | Purpose | Sensitivity | Safe to delete? |
 |---|---|---|---|---|
@@ -85,14 +83,13 @@ These are easy to miss because they don't live under `~/.notdownhub`.
 
 ## Quick "what do I back up vs. wipe?"
 
-- **Back up:** `hub/hub.db*` + `hub/runner-token` (fleet + token), your secrets
-  store (macOS Keychain, or `secrets.json` **and** `secrets.key`), and `mirror/`
-  if you need offline. `runners/<name>/.credentials_rsaparams` if you want a
-  runner to keep its identity without re-joining.
+- **Back up** these: `hub/hub.db*` and `hub/runner-token` (the fleet and token);
+  your secrets store; and `mirror/` for offline use. Also back up
+  `runners/<name>/.credentials_rsaparams` to keep a runner's identity.
 - **Safe to wipe anytime:** `vendor/`, `cache/`, every `logs/` and `_diag/`
   directory, and `runners/<name>/_work/`. Also `~/.aspnet/DataProtection-Keys`
   for a throwaway/dev hub.
-- **Never appears if healthy:** a leftover `$TMPDIR/ndh-secrets/*.env` — it's
+- **Never appears if healthy:** a leftover `$TMPDIR/ndh-secrets/*.env` — it is
   shredded after each run.
 
 See [install.md](install.md) for the install-time subset of this tree and

@@ -42,3 +42,6 @@ jobs:
 
       - name: Test all packages
         run: pnpm -r test
+
+      - name: Check doc style (Simplified Technical English)
+        run: pnpm run docs:style
