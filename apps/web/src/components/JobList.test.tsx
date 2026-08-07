@@ -1,0 +1,77 @@
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
+import { JobList } from "./JobList";
+import type { Job } from "../lib/api";
+
+function job(over: Partial<Job>): Job {
+  return {
+    jobId: "j",
+    requestId: 1,
+    timeLineId: "tl",
+    name: "job",
+    workflowIdentifier: "wf",
+    matrix: null,
+    runid: 1,
+    attempt: 1,
+    status: "completed",
+    result: "succeeded",
+    ...over,
+  };
+}
+
+const jobs: Job[] = [
+  // plain job
+  job({ jobId: "p1", workflowIdentifier: "build", name: "build" }),
+  // matrix group WITH a parent
+  job({ jobId: "tp", workflowIdentifier: "test", name: "test", status: "inprogress", result: null }),
+  job({ jobId: "l1", workflowIdentifier: "test", name: "test (linux)", matrix: '{"os":"linux"}' }),
+  job({ jobId: "l2", workflowIdentifier: "test", name: "test (mac)", matrix: '{"os":"mac"}' }),
+  // matrix group WITHOUT a parent
+  job({ jobId: "n1", workflowIdentifier: "lint", name: "lint", matrix: '{"os":"x"}' }),
+  // empty workflowIdentifier → keyed by name
+  job({ jobId: "e1", workflowIdentifier: "", name: "empty-key" }),
+];
+
+const durations: Record<string, number> = {
+  p1: 500, // "500ms", tiny pct clamps to 4
+  l1: 5000, // "5.0s"
+  l2: 65000, // "1m 05s" (also the longest)
+  n1: 15000, // "15s"
+  e1: 0, // no duration, no bar
+};
+
+describe("JobList", () => {
+  it("groups plain jobs, matrix legs (with and without a parent) and formats durations", () => {
+    const onSelect = vi.fn();
+    render(<JobList jobs={jobs} durations={durations} selectedJobId="l1" onSelect={onSelect} />);
+
+    // plain + empty-key jobs
+    expect(screen.getByText("build")).toBeTruthy();
+    expect(screen.getByText("empty-key")).toBeTruthy();
+
+    // matrix parent header + legs, labelled from the matrix
+    expect(screen.getByText("test")).toBeTruthy();
+    expect(screen.getByText("os: linux")).toBeTruthy();
+    expect(screen.getByText("os: mac")).toBeTruthy();
+
+    // parent-less group falls back to the identifier as its header
+    expect(screen.getByText("lint")).toBeTruthy();
+    expect(screen.getByText("os: x")).toBeTruthy();
+
+    // durations across fmtMs branches
+    expect(screen.getByText("500ms")).toBeTruthy();
+    expect(screen.getByText("5.0s")).toBeTruthy();
+    expect(screen.getByText("1m 05s")).toBeTruthy();
+    expect(screen.getByText("15s")).toBeTruthy();
+
+    // selected leg is marked
+    expect(screen.getByText("os: linux").closest("button")?.getAttribute("aria-current")).toBe("true");
+  });
+
+  it("invokes onSelect with the clicked job", () => {
+    const onSelect = vi.fn();
+    render(<JobList jobs={jobs} durations={durations} selectedJobId={null} onSelect={onSelect} />);
+    fireEvent.click(screen.getByText("build"));
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ jobId: "p1" }));
+  });
+});
