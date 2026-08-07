@@ -130,6 +130,7 @@ test("hubUp: spawns Runner.Server, tees its output, wires signals + exit, starts
     host: "h",
     basicAuth: undefined,
     tls: undefined,
+    githubToken: undefined,
   });
 
   // child output is teed to the hub log file
@@ -153,6 +154,33 @@ test("hubUp: spawns Runner.Server, tees its output, wires signals + exit, starts
   child.emit("exit", null);
   assert.deepEqual(exits, [5, 1]);
 
+  fl.reset();
+});
+
+test("hubUp: flipped options (tls, no-auth, no-mirror, basic-auth) exercise the other log branches", async () => {
+  freshHome();
+  const child = new FakeChild();
+  let frontOpts: { tls?: unknown; basicAuth?: unknown; runnerToken?: unknown } = {};
+  const code = await hub.hubUp(
+    opts({ host: "h", tls: true, auth: false, mirrorRewrite: false, basicAuth: "u:p" }),
+    {
+      ensure: async () => 0,
+      spawn: () => child as never,
+      startFront: (o) => {
+        frontOpts = o as typeof frontOpts;
+        return null;
+      },
+      startTee: () => ({ stop() {} }),
+      onSignal: () => {},
+      exit: () => {},
+      block: async () => 0,
+    },
+  );
+  assert.equal(code, 0);
+  // tls resolved (self-signed), auth off → no token, basic-auth parsed
+  assert.ok(frontOpts.tls, "tls material present");
+  assert.equal(frontOpts.runnerToken, undefined, "no-auth → no registration token");
+  assert.equal(frontOpts.basicAuth, "u:p");
   fl.reset();
 });
 
