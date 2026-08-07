@@ -186,6 +186,10 @@ function proxy(req: http.IncomingMessage, res: http.ServerResponse, hubPort: num
     { host: "127.0.0.1", port: hubPort, path: req.url, method: req.method, headers },
     (up) => {
       res.writeHead(up.statusCode ?? 502, up.headers);
+      // Flush headers immediately so a streaming response (SSE console feed, runner long-poll)
+      // establishes at once — the browser's EventSource fires `open` on headers, not first byte,
+      // and each upstream chunk is piped straight through with no buffering/compression added.
+      res.flushHeaders?.();
       up.pipe(res);
       // If the upstream response dies mid-body (dropped SSE / long-poll), reset the client socket
       // so the consumer sees a broken connection immediately instead of hanging on a half-response.

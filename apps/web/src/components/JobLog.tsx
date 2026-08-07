@@ -77,7 +77,10 @@ export function JobLog({
     es.onerror = () => setConnected(false);
     const onLog = (ev: MessageEvent) => {
       try {
-        const data = JSON.parse(ev.data) as { record?: { value?: string[]; stepId?: string } };
+        const data = JSON.parse(ev.data) as { timelineId?: string; record?: { value?: string[]; stepId?: string } };
+        // The hub multiplexes every job's console onto one feed; keep only this job's timeline
+        // (the `?timelineId=` query param is advisory — the hub does not filter server-side).
+        if (data.timelineId && data.timelineId !== job.timeLineId) return;
         const value = data.record?.value;
         if (!value?.length) return;
         const cur = stepsRef.current;
@@ -103,9 +106,12 @@ export function JobLog({
     };
   }, [job?.timeLineId, jobActive]);
 
-  // Historical fallback: a finished job whose live stream yielded nothing.
+  // Once the job is finished, load the persisted (complete) console from the hub DB and show it.
+  // The live buffer is ephemeral and lossy — lines can arrive attributed to the job record before
+  // steps load, or flush right as the job ends and the stream closes — so a watched-to-completion
+  // job must fall back to the retained log instead of whatever the live stream happened to capture.
   useEffect(() => {
-    if (!job || jobActive || hasLive) return;
+    if (!job || jobActive) return;
     let alive = true;
     setHistorical("loading");
     getJobLogs(runId, job.timeLineId).then((r) => {
@@ -114,7 +120,7 @@ export function JobLog({
     return () => {
       alive = false;
     };
-  }, [job?.timeLineId, jobActive, hasLive, runId]);
+  }, [job?.timeLineId, jobActive, runId]);
 
   // Auto-expand the running step so its output is visible without a click.
   useEffect(() => {
@@ -145,7 +151,8 @@ export function JobLog({
       return next;
     });
 
-  const liveMode = hasLive || jobActive;
+  // Stream while the job is active; a finished job renders the retained (complete) log instead.
+  const liveMode = jobActive;
   const retained = typeof historical === "object" ? historical : null;
 
   return (
@@ -264,6 +271,15 @@ export function JobLog({
                 );
               })}
             </ul>
+
+            {/* Live lines the hub attributed to the job (not a specific step) — e.g. a burst
+                flushed before the step records loaded. Shown so they are never orphaned. */}
+            {liveMode && liveByStep[FALLBACK_KEY]?.length ? (
+              <section className="border-t border-line">
+                <p className="eyebrow px-3 pb-1 pt-2.5">Job output</p>
+                <LogGroups lines={liveByStep[FALLBACK_KEY]} />
+              </section>
+            ) : null}
 
             {!liveMode &&
               (historical === "loading" ? (
