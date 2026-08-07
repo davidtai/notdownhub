@@ -187,9 +187,11 @@ function libsecretGet(scope: string, name: string): string | null {
     stdio: ["ignore", "pipe", "ignore"],
   });
   if (r.status !== 0) return null;
-  // secret-tool prints the raw secret without a trailing newline of its own,
-  // but tolerate one in case a shim adds it.
-  return r.stdout.toString().replace(/\n$/, "");
+  // `secret-tool lookup` writes the stored secret to stdout VERBATIM — no trailing newline of
+  // its own. Return the bytes exactly: stripping a trailing "\n" here would silently drop a
+  // newline that is part of the value (e.g. a PEM key or piped file that ends in one), breaking
+  // the exact-byte round-trip the keychain and file backends honor (#135).
+  return r.stdout.toString();
 }
 
 function libsecretDelete(scope: string, name: string): void {
