@@ -51,9 +51,12 @@ async function buildProgram(): Promise<Command> {
     .allowUnknownOption()
     .allowExcessArguments()
     .argument("[args...]", "passed verbatim to Runner.Client (e.g. -W .github/workflows/ci.yml --event push)")
+    /* c8 ignore start -- fallback only: main() intercepts `run` before commander parses, so this
+       action body is never executed; the registration exists purely for --help / `ndh help run`. */
     .action(async (args: string[]) => {
       process.exitCode = await runCmd(args);
     });
+  /* c8 ignore stop */
 
   program
     .command("dispatch")
@@ -62,9 +65,11 @@ async function buildProgram(): Promise<Command> {
     .allowUnknownOption()
     .allowExcessArguments()
     .argument("[args...]", "e.g. --server http://hub:4949 --event push (passed verbatim to Runner.Client)")
+    /* c8 ignore start -- fallback only: main() intercepts `dispatch` before commander parses. */
     .action(async (args: string[]) => {
       process.exitCode = await dispatchCmd(args);
     });
+  /* c8 ignore stop */
 
   registerHub(program);
   registerRunner(program);

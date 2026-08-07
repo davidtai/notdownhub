@@ -1,0 +1,11 @@
+{
+  "//": "Coverage runs on the compiled dist/*.js (source-map remapped to src/*.ts for display) so numbers/line-refs are reported against the TypeScript sources. tsconfig has sourceMap:true. include/exclude filter on the pre-remap dist path. c8 sets NODE_V8_COVERAGE, so CLI subprocesses spawned by the tests (execFileSync) also contribute. See README.md > Test coverage.",
+  "all": false,
+  "include": ["dist/**/*.js"],
+  "exclude": ["dist/test/**", "**/*.d.ts"],
+  "reporter": ["text", "text-summary"],
+  "lines": 95,
+  "branches": 90,
+  "functions": 90,
+  "statements": 95
+}

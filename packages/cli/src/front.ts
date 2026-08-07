@@ -30,8 +30,8 @@ export interface FrontOptions {
 }
 
 /** The UI (and its join-info endpoint) is local-only: the operator at the hub machine. */
-function isLoopback(req: http.IncomingMessage): boolean {
-  const a = req.socket.remoteAddress ?? "";
+function isLoopback(addr: string | undefined): boolean {
+  const a = addr ?? "";
   return a === "127.0.0.1" || a === "::1" || a === "::ffff:127.0.0.1";
 }
 
@@ -45,7 +45,7 @@ function basicAuthOk(req: http.IncomingMessage, expected: string): boolean {
 
 /** Loopback always; otherwise Basic auth when configured. Gates UI + join-info only. */
 function uiAccessAllowed(req: http.IncomingMessage, opts: FrontOptions): boolean {
-  if (isLoopback(req)) return true;
+  if (isLoopback(req.socket.remoteAddress)) return true;
   return Boolean(opts.basicAuth) && basicAuthOk(req, opts.basicAuth!);
 }
 
@@ -84,47 +84,58 @@ function managementJwt(hubPort: number, runnerToken: string | undefined) {
  *   everything else                                  streamed through to Runner.Server (API, runner
  *                                                    protocol, SSE) so no CORS and one port to expose
  */
+/** Mint a management JWT: the async factory returned by managementJwt(). */
+type Mint = () => Promise<string | null>;
+
+/** Route a single request (extracted from startFront so the branch decisions are unit-testable). */
+async function handleRequest(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  opts: FrontOptions,
+  mint: Mint,
+): Promise<void> {
+  try {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (url.pathname.startsWith("/mirror/")) {
+      await serveMirror(url.pathname, res);
+    } else if (url.pathname === "/api/local/join-info") {
+      // Pairing info for the UI. The token must not leak to arbitrary readers — a remote
+      // reader could register rogue runners with it. Loopback always; basic auth if configured.
+      if (!uiAccessAllowed(req, opts)) {
+        denyUi(res, opts);
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          host: opts.host ?? "localhost",
+          port: opts.port,
+          token: opts.runnerToken ?? null,
+          authEnabled: Boolean(opts.runnerToken),
+        }),
+      );
+    } else if (opts.uiDir && !uiAccessAllowed(req, opts) && isUiPath(url.pathname)) {
+      denyUi(res, opts);
+    } else if (opts.uiDir && (await serveUi(opts.uiDir, url.pathname, res))) {
+      // served static UI
+    } else {
+      // Status APIs (agents/pools) demand a management JWT even for reads; grant it to
+      // anonymous GETs only, so the UI can render runner status without holding secrets.
+      let bearer: string | null = null;
+      if (req.method === "GET" && !req.headers.authorization && /^\/_apis\/v1\/Agent(Pools)?\//i.test(url.pathname + "/")) {
+        bearer = await mint().catch(() => null);
+      }
+      proxy(req, res, opts.hubPort, bearer);
+    }
+  } catch (err) {
+    res.statusCode = 500;
+    res.end(String(err));
+  }
+}
+
 export function startFront(opts: FrontOptions): http.Server {
   const mint = managementJwt(opts.hubPort, opts.runnerToken);
-  const server = http.createServer(async (req, res) => {
-    try {
-      const url = new URL(req.url ?? "/", "http://localhost");
-      if (url.pathname.startsWith("/mirror/")) {
-        await serveMirror(url.pathname, res);
-      } else if (url.pathname === "/api/local/join-info") {
-        // Pairing info for the UI. The token must not leak to arbitrary readers — a remote
-        // reader could register rogue runners with it. Loopback always; basic auth if configured.
-        if (!uiAccessAllowed(req, opts)) {
-          denyUi(res, opts);
-          return;
-        }
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(
-          JSON.stringify({
-            host: opts.host ?? "localhost",
-            port: opts.port,
-            token: opts.runnerToken ?? null,
-            authEnabled: Boolean(opts.runnerToken),
-          }),
-        );
-      } else if (opts.uiDir && !uiAccessAllowed(req, opts) && isUiPath(url.pathname)) {
-        denyUi(res, opts);
-      } else if (opts.uiDir && (await serveUi(opts.uiDir, url.pathname, res))) {
-        // served static UI
-      } else {
-        // Status APIs (agents/pools) demand a management JWT even for reads; grant it to
-        // anonymous GETs only, so the UI can render runner status without holding secrets.
-        let bearer: string | null = null;
-        if (req.method === "GET" && !req.headers.authorization && /^\/_apis\/v1\/Agent(Pools)?\//i.test(url.pathname + "/")) {
-          bearer = await mint().catch(() => null);
-        }
-        proxy(req, res, opts.hubPort, bearer);
-      }
-    } catch (err) {
-      res.statusCode = 500;
-      res.end(String(err));
-    }
-  });
+  const server = http.createServer((req, res) => handleRequest(req, res, opts, mint));
   // Runner protocol long-polls (~50s holds); never kill slow requests.
   server.requestTimeout = 0;
   server.headersTimeout = 120_000;
@@ -187,7 +198,10 @@ async function serveMirror(pathname: string, res: http.ServerResponse): Promise<
   const safe = (s: string) => s.replace(/[^A-Za-z0-9._-]/g, "_");
   const file = join(ndhHome(), "mirror", safe(owner), safe(repo), `${kind}-${safe(ref)}.tgz`);
   if (!(await exists(file))) {
-    const src = `https://api.github.com/repos/${owner}/${repo}/${kind}/${ref}`;
+    // Upstream is overridable (NDH_MIRROR_UPSTREAM) so the mirror can point at a private GitHub
+    // Enterprise host or a local fixture in tests; defaults to public GitHub.
+    const upstream = process.env.NDH_MIRROR_UPSTREAM ?? "https://api.github.com";
+    const src = `${upstream.replace(/\/$/, "")}/repos/${owner}/${repo}/${kind}/${ref}`;
     log(`mirror miss — fetching ${owner}/${repo}@${ref} (${kind})`);
     await mkdir(dirname(file), { recursive: true });
     const headers: Record<string, string> = { "user-agent": "notdownhub" };
@@ -207,3 +221,6 @@ async function serveMirror(pathname: string, res: http.ServerResponse): Promise<
 export function uiDistDir(): string {
   return join(dirname(fileURLToPath(import.meta.url)), "..", "ui-dist");
 }
+
+/** Exposed for tests: the local-only UI access gates + the extracted request router. */
+export const __test = { isLoopback, basicAuthOk, uiAccessAllowed, denyUi, isUiPath, handleRequest };

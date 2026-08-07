@@ -2,6 +2,7 @@ import type { Command } from "commander";
 import { cp, mkdir, readdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import type { SpawnOptions } from "node:child_process";
 import { ensureVendor } from "./vendor.js";
 import { exists, fail, log, ndhHome, run, vendorDir } from "./lib.js";
 import { initFileLog } from "./filelog.js";
@@ -24,6 +25,16 @@ interface JoinOptions {
   name: string;
   labels: string;
   token: string;
+}
+
+/**
+ * Injectable seams so the join/start orchestration (per-runner dir layout, URL normalization,
+ * configure argv) is testable without the vendored listener binary or a 200MB copy.
+ */
+export interface RunnerDeps {
+  ensure?: () => Promise<unknown>;
+  run?: (cmd: string, args: string[], opts?: SpawnOptions) => Promise<number>;
+  copyVendor?: (dir: string) => Promise<void>;
 }
 
 export function registerRunner(program: Command): void {
@@ -65,18 +76,23 @@ export function registerRunner(program: Command): void {
     });
 }
 
-async function join_(hubUrl: string, opts: JoinOptions): Promise<number> {
-  await ensureVendor();
+async function defaultCopyVendor(dir: string): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  await cp(vendorDir(), join(dir, "bin"), { recursive: true });
+}
+
+async function join_(hubUrl: string, opts: JoinOptions, deps: RunnerDeps = {}): Promise<number> {
+  await (deps.ensure ?? ensureVendor)();
+  const runner = deps.run ?? run;
 
   // Each runner needs its own directory: the listener stores .runner/.credentials beside its binary.
   const dir = runnerDir(opts.name);
   if (!(await exists(listenerExe(dir)))) {
     log(`preparing runner instance at ${dir} ...`);
-    await mkdir(dir, { recursive: true });
-    await cp(vendorDir(), join(dir, "bin"), { recursive: true });
+    await (deps.copyVendor ?? defaultCopyVendor)(dir);
   }
   const url = new URL("runner/server", hubUrl.endsWith("/") ? hubUrl : `${hubUrl}/`).toString();
-  const code = await run(
+  const code = await runner(
     listenerExe(dir),
     [
       "configure", "--unattended",
@@ -95,7 +111,8 @@ async function join_(hubUrl: string, opts: JoinOptions): Promise<number> {
   return 0;
 }
 
-async function start(name?: string): Promise<number> {
+async function start(name?: string, deps: RunnerDeps = {}): Promise<number> {
+  const runner = deps.run ?? run;
   if (!name) {
     const runners = await listNames();
     if (runners.length !== 1) fail(`specify which runner: ${runners.join(", ") || "(none joined yet)"}`);
@@ -105,7 +122,7 @@ async function start(name?: string): Promise<number> {
   if (!(await exists(listenerExe(dir)))) fail(`runner '${name}' not found — join a hub first`);
   log(`logging to ${initFileLog(join(dir, "logs"), "runner")} (daily rotation)`);
   log(`runner '${name}' listening for jobs (ctrl-c to stop)`);
-  return run(listenerExe(dir), ["run"], { cwd: dir });
+  return runner(listenerExe(dir), ["run"], { cwd: dir });
 }
 
 async function listNames(): Promise<string[]> {
@@ -120,3 +137,6 @@ async function list(): Promise<number> {
   for (const n of await listNames()) console.log(n);
   return 0;
 }
+
+/** Exposed for tests. */
+export const __test = { join_, start, listenerExe, defaultName, defaultLabels };

@@ -15,8 +15,11 @@ let stream: WriteStream | null = null;
 let currentDay: string | null = null;
 let currentPath: string | null = null;
 
+// Clock seam: tests override this to drive the midnight rollover deterministically.
+let nowFn: () => Date = () => new Date();
+
 function today(): string {
-  return new Date().toISOString().slice(0, 10);
+  return nowFn().toISOString().slice(0, 10);
 }
 
 function openForToday(): void {
@@ -65,3 +68,20 @@ export function fileLogLine(line: string): void {
 export function fileLogPath(): string | null {
   return currentPath;
 }
+
+/** Test-only seams: inject the clock and reset the module singleton between cases. */
+export const __test = {
+  setNow(fn: (() => Date) | null): void {
+    nowFn = fn ?? (() => new Date());
+  },
+  reset(): void {
+    stream?.end();
+    logDir = null;
+    logPrefix = "ndh";
+    keepDays = 14;
+    stream = null;
+    currentDay = null;
+    currentPath = null;
+    nowFn = () => new Date();
+  },
+};

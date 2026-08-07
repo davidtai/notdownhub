@@ -334,6 +334,9 @@ export async function readSecretValue(valueFlag: string | undefined): Promise<st
   return promptHidden("value (input hidden): ");
 }
 
+/* c8 ignore start -- interactive hidden-input prompt: needs a real raw-mode TTY (setRawMode + keypress
+   handling), which the test harness has no way to drive. The non-TTY (--value / piped stdin) paths in
+   readSecretValue ARE covered; only this terminal path is excluded. */
 function promptHidden(prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const stdin = process.stdin;
