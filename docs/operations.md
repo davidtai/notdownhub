@@ -244,9 +244,9 @@ ndh runner join http://hub-host:4949 --token <token> \
 - **Defaults:** `--name` defaults to `<hostname>-ndh`; `--labels` defaults to
   `self-hosted,<OS>,<arch>` derived from the host.
 - `join` copies the bundle into `runners/<name>/bin/` and configures with
-  `--replace`. Joining a name that already exists is refused (it would silently
-  clobber a live runner); pass `--re-join` to refresh one — it unregisters the
-  old instance, re-copies the current bundle, and configures fresh, all in place.
+  `--replace`. Joining a name that already exists is refused, because it would
+  clobber a live registration. Pass `--re-join` to refresh one: it unregisters
+  the old instance, re-copies the current bundle, and configures fresh in place.
 
 ### Starting (and starting at boot)
 
