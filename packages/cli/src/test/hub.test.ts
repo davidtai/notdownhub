@@ -254,13 +254,13 @@ function captureErr() {
   return { text: () => lines.join("\n"), restore: () => (console.error = orig) };
 }
 
-test("hubUp: pre-flight refuses (exit 1) without spawning when the public port is busy", async () => {
-  freshHome();
+test("hubUp: #82 — a non-ndh holder on the public port reports 'in use by another process', not hub down", async () => {
+  freshHome(); // no pid file → the port holder is not our hub
   let spawned = false;
   const cap = captureErr();
   const code = await hub.hubUp(opts({ host: "h" }), {
     ensure: async () => 0,
-    portFree: async (p) => p !== 4949, // public port taken
+    portFree: async (p) => p !== 4949, // public port taken by something else
     spawn: () => {
       spawned = true;
       return new FakeChild() as never;
@@ -272,17 +272,18 @@ test("hubUp: pre-flight refuses (exit 1) without spawning when the public port i
   cap.restore();
   assert.equal(code, 1);
   assert.equal(spawned, false, "nothing spawned when a port is busy");
-  assert.match(cap.text(), /a hub is already running on :4949 — run 'ndh hub down' first \(or pass --port\)/);
+  assert.match(cap.text(), /:4949 is in use by another process — free it or pass --port/);
+  assert.doesNotMatch(cap.text(), /hub down/); // must NOT suggest the dangerous / useless remedy
   fl.reset();
 });
 
-test("hubUp: pre-flight also refuses when only the internal hub port is busy", async () => {
+test("hubUp: #82 — a non-ndh holder on the internal hub port also reports 'in use by another process'", async () => {
   freshHome();
   let spawned = false;
   const cap = captureErr();
   const code = await hub.hubUp(opts({ host: "h" }), {
     ensure: async () => 0,
-    portFree: async (p) => p !== 4950, // internal port taken
+    portFree: async (p) => p !== 4950, // internal port taken by something else
     spawn: () => {
       spawned = true;
       return new FakeChild() as never;
@@ -294,11 +295,36 @@ test("hubUp: pre-flight also refuses when only the internal hub port is busy", a
   cap.restore();
   assert.equal(code, 1);
   assert.equal(spawned, false);
-  assert.match(cap.text(), /a hub is already running on :4950/);
+  assert.match(cap.text(), /:4950 is in use by another process/);
   fl.reset();
 });
 
-test("hubUp: writes the pid file once the front is listening", async () => {
+test("hubUp: pre-flight says 'a hub is already running' only when our own verified hub holds the port", async () => {
+  freshHome();
+  let spawned = false;
+  const cap = captureErr();
+  const code = await hub.hubUp(opts({ host: "h" }), {
+    ensure: async () => 0,
+    portFree: async (p) => p !== 4949, // our own hub is on 4949
+    // Pid file records a hub on 4949/4950; its front pid is live with a matching identity.
+    readPid: () => ({ frontPid: 111, childPid: 222, port: 4949, hubPort: 4950, identity: { "111": "sig-111" } }),
+    psProbe: (pid) => (pid === 111 ? "sig-111" : null),
+    spawn: () => {
+      spawned = true;
+      return new FakeChild() as never;
+    },
+    startFront: () => null,
+    startTee: () => ({ stop() {} }),
+    block: async () => 0,
+  });
+  cap.restore();
+  assert.equal(code, 1);
+  assert.equal(spawned, false);
+  assert.match(cap.text(), /a hub is already running on :4949 — run 'ndh hub down' first \(or pass --port\)/);
+  fl.reset();
+});
+
+test("hubUp: writes the pid file (with per-pid identity) once the front is listening", async () => {
   const home = freshHome();
   const child = new FakeChild();
   child.pid = 9999;
@@ -306,6 +332,8 @@ test("hubUp: writes the pid file once the front is listening", async () => {
   await hub.hubUp(opts({ host: "h" }), {
     ensure: async () => 0,
     portFree: async () => true,
+    // Deterministic identity so we do not depend on a real `ps` for these two pids.
+    psProbe: (pid) => `SIG-${pid}`,
     spawn: () => child as never,
     startFront: () => server,
     startTee: () => ({ stop() {} }),
@@ -319,6 +347,9 @@ test("hubUp: writes the pid file once the front is listening", async () => {
   assert.equal(rec.childPid, 9999);
   assert.equal(rec.port, 4949);
   assert.equal(rec.hubPort, 4950);
+  // The signature `hub down` verifies against is captured for BOTH pids at write time.
+  assert.equal(rec.identity[String(process.pid)], `SIG-${process.pid}`);
+  assert.equal(rec.identity["9999"], "SIG-9999");
   fl.reset();
 });
 
@@ -371,16 +402,24 @@ test("hubDown: malformed / partial pid files are treated as no hub running", asy
   cap.restore();
 });
 
+// A pid file whose recorded identity matches what the fake probe reports for the same pids.
+const REC = { frontPid: 111, childPid: 222, port: 5999, hubPort: 6000, identity: { "111": "sig-111", "222": "sig-222" } };
+/** Fake `ps`: report each pid's live signature from a map; a missing pid is "gone" (null). */
+function fakeProbe(live: Record<number, string>) {
+  return (pid: number) => live[pid] ?? null;
+}
+
 test("hubDown: reads a real pid file (default reader), signals both, verifies ports, removes it", async () => {
   const home = freshHome();
   mkdirSync(join(home, "hub"), { recursive: true });
-  writeFileSync(join(home, "hub", "hub.pid"), JSON.stringify({ frontPid: 111, childPid: 222, port: 5999, hubPort: 6000 }));
+  writeFileSync(join(home, "hub", "hub.pid"), JSON.stringify(REC));
   const killed: [number, string][] = [];
   let removed = false;
   const cap = captureErr();
   const code = await hub.hubDown({
-    // readPid omitted → exercises the default readPidFile success path
-    alive: () => killed.length === 0, // alive before any SIGTERM, dead afterwards
+    // readPid omitted → exercises the default readPidFile success path.
+    // Match before SIGTERM, then report both gone so the SIGKILL escalation is skipped.
+    psProbe: (pid) => (killed.length === 0 ? `sig-${pid}` : null),
     kill: (pid, sig) => killed.push([pid, sig]),
     removePid: () => (removed = true),
     portFree: async () => true,
@@ -397,13 +436,13 @@ test("hubDown: reads a real pid file (default reader), signals both, verifies po
   assert.match(cap.text(), /hub stopped/);
 });
 
-test("hubDown: escalates to SIGKILL when a process ignores SIGTERM, warns if a port lingers", async () => {
+test("hubDown: escalates to SIGKILL when a matched process ignores SIGTERM, warns if a port lingers", async () => {
   freshHome();
   const killed: [number, string][] = [];
   const cap = captureErr();
   const code = await hub.hubDown({
-    readPid: () => ({ frontPid: 111, childPid: 222, port: 5999, hubPort: 6000 }),
-    alive: () => true, // never dies
+    readPid: () => REC,
+    psProbe: fakeProbe({ 111: "sig-111", 222: "sig-222" }), // stay alive with matching identity throughout
     kill: (pid, sig) => killed.push([pid, sig]),
     removePid: () => {},
     portFree: async () => false, // ports stay busy → warning branch
@@ -420,12 +459,72 @@ test("hubDown: escalates to SIGKILL when a process ignores SIGTERM, warns if a p
   assert.match(cap.text(), /warning: :5999 is still in use/);
 });
 
-test("hubDown: stale pid file with a single busy port refuses (exit 1) and names it", async () => {
+test("hubDown: #79 — a reused pid (same number, different identity) is NEVER signalled, only reported", async () => {
   freshHome();
   const cap = captureErr();
   const code = await hub.hubDown({
+    readPid: () => REC,
+    // Both pids are alive, but the OS reused them: their live signatures differ from the recorded ones.
+    psProbe: fakeProbe({ 111: "innocent-sleep", 222: "some-other-daemon" }),
+    kill: () => assert.fail("must not signal a pid whose identity does not match"),
+    removePid: () => assert.fail("must not clear a pid file whose (busy) ports may belong elsewhere"),
+    portFree: async () => false, // the ports are held by the unrelated reusers
+    sleep: async () => {},
+  });
+  cap.restore();
+  assert.equal(code, 1);
+  assert.match(cap.text(), /refusing to signal hub front \(pid 111\)/);
+  assert.match(cap.text(), /refusing to signal Runner\.Server \(pid 222\)/);
+  assert.match(cap.text(), /pid reused or unverifiable/);
+  assert.match(cap.text(), /stale pid file/);
+});
+
+test("hubDown: a legacy pid file with no recorded identity refuses to signal live pids", async () => {
+  freshHome();
+  const cap = captureErr();
+  const code = await hub.hubDown({
+    // No `identity` field (written by an older binary, or the exact shape from the #79 repro).
     readPid: () => ({ frontPid: 111, childPid: 222, port: 5999, hubPort: 6000 }),
-    alive: () => false, // both recorded pids gone → stale
+    psProbe: fakeProbe({ 111: "sig-111", 222: "sig-222" }), // alive, but nothing to verify against
+    kill: () => assert.fail("unverifiable pids must not be signalled"),
+    portFree: async () => true, // ports free → treated as a clearable stale file
+    removePid: () => {},
+    sleep: async () => {},
+  });
+  cap.restore();
+  assert.equal(code, 0);
+  assert.match(cap.text(), /refusing to signal hub front \(pid 111\)/);
+  assert.match(cap.text(), /cleared a stale pid file/);
+});
+
+test("hubDown: SIGKILL is skipped when a matched pid dies + is reused during the grace window", async () => {
+  freshHome();
+  const killed: [number, string][] = [];
+  let phase = 0; // 0 = before grace (matches), 1 = after grace (reused → mismatch)
+  const cap = captureErr();
+  const code = await hub.hubDown({
+    readPid: () => ({ frontPid: 111, childPid: -1, port: 5999, hubPort: 6000, identity: { "111": "sig-111" } }),
+    psProbe: (pid) => (pid === 111 ? (phase === 0 ? "sig-111" : "reused-by-someone-else") : null),
+    kill: (pid, sig) => killed.push([pid, sig]),
+    removePid: () => {},
+    portFree: async () => true,
+    sleep: async () => {
+      phase = 1; // the pid was reused while we waited out the grace period
+    },
+  });
+  cap.restore();
+  assert.equal(code, 0);
+  // SIGTERM was sent (it still matched then); SIGKILL is withheld because identity no longer matches.
+  assert.deepEqual(killed, [[111, "SIGTERM"]]);
+  assert.match(cap.text(), /hub stopped/);
+});
+
+test("hubDown: stale pid file (pids gone) with a single busy port refuses (exit 1) and names it", async () => {
+  freshHome();
+  const cap = captureErr();
+  const code = await hub.hubDown({
+    readPid: () => REC,
+    psProbe: fakeProbe({}), // both recorded pids gone → stale
     portFree: async (p) => p !== 5999, // only the public port lingers
     kill: () => assert.fail("must not kill on a stale pid file"),
     removePid: () => assert.fail("must not clear a stale-but-busy pid file"),
@@ -441,8 +540,8 @@ test("hubDown: stale pid file with both ports busy uses the plural phrasing", as
   freshHome();
   const cap = captureErr();
   const code = await hub.hubDown({
-    readPid: () => ({ frontPid: 111, childPid: 222, port: 5999, hubPort: 6000 }),
-    alive: () => false,
+    readPid: () => REC,
+    psProbe: fakeProbe({}),
     portFree: async () => false, // both lingering
     sleep: async () => {},
   });
@@ -456,8 +555,8 @@ test("hubDown: stale pid file with free ports clears it, reports no hub running,
   let removed = false;
   const cap = captureErr();
   const code = await hub.hubDown({
-    readPid: () => ({ frontPid: 111, childPid: -1, port: 5999, hubPort: 6000 }), // childPid<=0 is filtered out
-    alive: () => false,
+    readPid: () => ({ frontPid: 111, childPid: -1, port: 5999, hubPort: 6000, identity: { "111": "sig-111" } }), // childPid<=0 is filtered out
+    psProbe: fakeProbe({}), // gone
     portFree: async () => true,
     removePid: () => (removed = true),
     sleep: async () => {},
@@ -466,6 +565,24 @@ test("hubDown: stale pid file with free ports clears it, reports no hub running,
   assert.equal(code, 0);
   assert.equal(removed, true);
   assert.match(cap.text(), /cleared a stale pid file/);
+});
+
+test("classifyTargets: splits recorded pids into matched / mismatched, dropping gone ones", () => {
+  const rec = { frontPid: 111, childPid: 222, port: 1, hubPort: 2, identity: { "111": "sig-111", "222": "sig-222" } };
+  // 111 matches, 222 is reused (different live signature); a childPid<=0 is filtered before probing.
+  const r = hub.classifyTargets(rec, fakeProbe({ 111: "sig-111", 222: "reused" }));
+  assert.deepEqual(r.matched, [{ label: "hub front", pid: 111, sig: "sig-111" }]);
+  assert.deepEqual(r.mismatched, [{ label: "Runner.Server", pid: 222 }]);
+  // Gone pid → neither list.
+  const gone = hub.classifyTargets(rec, fakeProbe({ 111: "sig-111" }));
+  assert.deepEqual(gone.mismatched, []);
+  assert.equal(gone.matched.length, 1);
+});
+
+test("defaultPsProbe: returns a signature for this process, null for a gone pid", () => {
+  const sig = hub.defaultPsProbe(process.pid);
+  assert.ok(sig && sig.length > 0, "our own process has a signature");
+  assert.equal(hub.defaultPsProbe(2147483646), null); // no such process
 });
 
 test("portFree: false while a port is held, true once released", async () => {

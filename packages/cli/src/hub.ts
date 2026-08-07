@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { spawn, type SpawnOptions } from "node:child_process";
+import { spawn, spawnSync, type SpawnOptions } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
@@ -100,7 +100,30 @@ export interface HubPidFile {
   childPid: number;
   port: number;
   hubPort: number;
+  /**
+   * Per-pid identity signature captured at `hub up`, keyed by pid string. Each value is the
+   * process start time + command line (`ps -o lstart=,command=`). `hub down` re-reads the live
+   * signature and only signals a pid whose signature still matches — so a stale pid file whose
+   * pid the OS has reused points `hub down` at a signature mismatch, not an innocent process.
+   * Absent in pid files written before this field existed; such pids are treated as unverifiable.
+   */
+  identity?: Record<string, string>;
 }
+
+/**
+ * Probe a process's identity signature: its start time + command line via `ps -o lstart=,command=`.
+ * Returns the trimmed line, or null when the pid is gone (ps exits non-zero or prints nothing).
+ * The start time defends against pid reuse (a reused pid started later); the command line adds a
+ * second, human-meaningful check that the process really is our hub.
+ */
+export type PsProbe = (pid: number) => string | null;
+
+export const defaultPsProbe: PsProbe = (pid) => {
+  const r = spawnSync("ps", ["-o", "lstart=,command=", "-p", String(pid)], { encoding: "utf8" });
+  if (r.status !== 0) return null;
+  const line = (r.stdout ?? "").trim();
+  return line.length ? line : null;
+};
 
 /** Path to the hub pid file for the current NDH_HOME. */
 export function hubPidPath(): string {
@@ -164,6 +187,36 @@ function readPidFile(path: string): HubPidFile | null {
   }
 }
 
+/** One signal target: a labelled pid, plus (once verified) the signature it must keep matching. */
+interface Target {
+  label: string;
+  pid: number;
+  sig?: string;
+}
+
+/**
+ * Split a pid file's recorded processes into ones we may safely signal and ones we must not.
+ *  - `matched`:    the pid is alive AND its live signature equals the one recorded at `hub up`.
+ *  - `mismatched`: the pid is alive but its signature differs, or none was recorded (legacy file).
+ *                  The pid was reused, or we cannot verify it — either way it is not ours to kill.
+ *  - gone pids (no live signature) are dropped: nothing to signal for a stale entry.
+ */
+export function classifyTargets(rec: HubPidFile, probe: PsProbe): { matched: Required<Target>[]; mismatched: Target[] } {
+  const targets: Target[] = [
+    { label: "hub front", pid: rec.frontPid },
+    { label: "Runner.Server", pid: rec.childPid },
+  ].filter((t) => t.pid > 0);
+  const matched: Required<Target>[] = [];
+  const mismatched: Target[] = [];
+  for (const t of targets) {
+    const recorded = rec.identity?.[String(t.pid)];
+    const live = probe(t.pid);
+    if (recorded && live && live === recorded) matched.push({ ...t, sig: recorded });
+    else if (live) mismatched.push(t);
+  }
+  return { matched, mismatched };
+}
+
 /**
  * Injectable seams: the real CLI uses node's spawn + the real front + process signals/exit and
  * blocks forever; tests swap these to observe the assembled env/argv without the 200MB bundle.
@@ -181,6 +234,10 @@ export interface HubDeps {
   /** Persist / drop the pid file so `ndh hub down` can find these processes. */
   writePid?: (path: string, data: HubPidFile) => void;
   removePid?: (path: string) => void;
+  /** Read the current pid file (pre-flight, to tell our own hub from an unrelated port holder). */
+  readPid?: (path: string) => HubPidFile | null;
+  /** Probe a pid's identity signature. Defaults to a real `ps` call. */
+  psProbe?: PsProbe;
 }
 
 export interface HubPlan {
@@ -302,10 +359,19 @@ async function hubUp(opts: HubUpOptions, deps: HubDeps = {}): Promise<number> {
 
   // Pre-flight: refuse before spawning anything if either port is already taken, so a second
   // `hub up` prints one human line and exits 1 instead of orphaning a fresh Runner.Server child.
+  // Distinguish our own hub from an unrelated port holder: only claim "a hub is already running"
+  // when the pid file records a still-live, identity-verified hub on that exact port. Otherwise the
+  // holder is some other process, so `ndh hub down` cannot free it — point the user at --port.
   const isFree = deps.portFree ?? portFree;
+  const readPid = deps.readPid ?? readPidFile;
+  const probe = deps.psProbe ?? defaultPsProbe;
+  const rec = readPid(join(hubHome, "hub.pid"));
+  const ourHubRunning = rec ? classifyTargets(rec, probe).matched.length > 0 : false;
   for (const p of [port, hubPort]) {
     if (!(await isFree(p))) {
-      log(`a hub is already running on :${p} — run 'ndh hub down' first (or pass --port)`);
+      const isOurPort = ourHubRunning && rec !== null && (rec.port === p || rec.hubPort === p);
+      if (isOurPort) log(`a hub is already running on :${p} — run 'ndh hub down' first (or pass --port)`);
+      else log(`:${p} is in use by another process — free it or pass --port`);
       return 1;
     }
   }
@@ -364,7 +430,16 @@ async function hubUp(opts: HubUpOptions, deps: HubDeps = {}): Promise<number> {
   // Crash safety: record the pid file once the front is actually listening, and — if it fails to
   // bind for any reason (a port stolen between the pre-flight check and now, EACCES, …) — kill the
   // just-spawned Runner.Server child so nothing is left orphaned, then exit 1 with one line.
-  const pidRecord: HubPidFile = { frontPid: process.pid, childPid: child.pid ?? -1, port, hubPort };
+  // Capture each pid's identity signature now, while both processes are known to be alive, so
+  // `hub down` can later refuse to signal a pid the OS has reused for something else.
+  const identity: Record<string, string> = {};
+  for (const pid of [process.pid, child.pid]) {
+    if (typeof pid === "number" && pid > 0) {
+      const sig = probe(pid);
+      if (sig) identity[String(pid)] = sig;
+    }
+  }
+  const pidRecord: HubPidFile = { frontPid: process.pid, childPid: child.pid ?? -1, port, hubPort, identity };
   const server = front as ServerLike | null | undefined;
   if (server && typeof server.on === "function") {
     server.on("listening", () => writePid(pidPath, pidRecord));
@@ -403,10 +478,11 @@ function dropPid(path: string, removePid: (path: string) => void): void {
 export interface HubDownDeps {
   readPid?: (path: string) => HubPidFile | null;
   removePid?: (path: string) => void;
-  alive?: (pid: number) => boolean;
   kill?: (pid: number, sig: NodeJS.Signals) => void;
   portFree?: (port: number) => Promise<boolean>;
   sleep?: (ms: number) => Promise<void>;
+  /** Probe a pid's identity signature. Defaults to a real `ps` call. */
+  psProbe?: PsProbe;
 }
 
 /** How long to wait after SIGTERM before escalating to SIGKILL. */
@@ -414,18 +490,23 @@ const HUB_DOWN_GRACE_MS = 3000;
 
 /**
  * Stop a hub started by `ndh hub up`, using the pid file it wrote. Idempotent: with no pid file it
- * prints "no hub running" and exits 0. If the pid file is stale (the recorded pids are gone) it
- * refuses to guess — it never port-scans and kills blindly — and instead names any port still held.
- * When the pids are live it sends SIGTERM, escalates to SIGKILL after a short grace, then verifies
- * the ports are free.
+ * prints "no hub running" and exits 0.
+ *
+ * Every recorded pid is identity-checked before it is signalled: `hub down` re-reads the live
+ * process signature and only signals a pid whose signature still matches the one `hub up` recorded.
+ * A pid the OS has reused for an unrelated process (stale pid file after a crash / kill -9), or a
+ * pid with no recorded signature, is never signalled — it is reported and left alone. If nothing
+ * verified is running it refuses to guess: it never port-scans and kills blindly, and instead names
+ * any port still held. For verified pids it sends SIGTERM, escalates to SIGKILL after a short grace
+ * (re-checking identity so a pid reused during the grace is not killed), then verifies the ports.
  */
 async function hubDown(deps: HubDownDeps = {}): Promise<number> {
   const readPid = deps.readPid ?? readPidFile;
   const removePid = deps.removePid ?? ((path) => rmSync(path, { force: true }));
-  const alive = deps.alive ?? pidAlive;
   const kill = deps.kill ?? ((pid, sig) => process.kill(pid, sig));
   const isFree = deps.portFree ?? portFree;
   const sleep = deps.sleep ?? ((ms) => new Promise<void>((r) => setTimeout(r, ms)));
+  const probe = deps.psProbe ?? defaultPsProbe;
   const pidPath = hubPidPath();
 
   const rec = readPid(pidPath);
@@ -434,19 +515,21 @@ async function hubDown(deps: HubDownDeps = {}): Promise<number> {
     return 0;
   }
 
-  const targets: { label: string; pid: number }[] = [
-    { label: "hub front", pid: rec.frontPid },
-    { label: "Runner.Server", pid: rec.childPid },
-  ].filter((t) => t.pid > 0);
-  const live = targets.filter((t) => alive(t.pid));
+  const { matched, mismatched } = classifyTargets(rec, probe);
 
-  if (live.length === 0) {
-    // Stale pid file: the recorded processes are gone. Never kill by port-scan — just report.
+  // A pid that is alive but is not the process we started (reused pid, or no recorded identity).
+  // Report it explicitly and NEVER signal it — this is the #79 refuse-to-kill guard.
+  for (const t of mismatched) {
+    log(`refusing to signal ${t.label} (pid ${t.pid}) — it is not the hub we started (pid reused or unverifiable)`);
+  }
+
+  if (matched.length === 0) {
+    // Nothing verified to stop. Never kill by port-scan — just report any port still held.
     const busy: number[] = [];
     for (const p of [rec.port, rec.hubPort]) if (!(await isFree(p))) busy.push(p);
     if (busy.length) {
       log(
-        `stale pid file: recorded pids (${rec.frontPid}, ${rec.childPid}) are not running, but ${busy.map((p) => `:${p}`).join(" and ")} ${busy.length > 1 ? "are" : "is"} still in use by an unknown process — stop it manually`,
+        `stale pid file: no hub process matches the recorded pids, but ${busy.map((p) => `:${p}`).join(" and ")} ${busy.length > 1 ? "are" : "is"} still in use by an unknown process — stop it manually`,
       );
       return 1;
     }
@@ -455,13 +538,15 @@ async function hubDown(deps: HubDownDeps = {}): Promise<number> {
     return 0;
   }
 
-  for (const t of live) {
+  for (const t of matched) {
     kill(t.pid, "SIGTERM");
     log(`sent SIGTERM to ${t.label} (pid ${t.pid})`);
   }
   await sleep(HUB_DOWN_GRACE_MS);
-  for (const t of live) {
-    if (alive(t.pid)) {
+  for (const t of matched) {
+    // Re-verify identity before escalating: if the pid died and was reused during the grace, its
+    // signature no longer matches, so we must not SIGKILL whatever now holds that pid.
+    if (probe(t.pid) === t.sig) {
       kill(t.pid, "SIGKILL");
       log(`${t.label} (pid ${t.pid}) did not exit — sent SIGKILL`);
     }
@@ -477,4 +562,4 @@ async function hubDown(deps: HubDownDeps = {}): Promise<number> {
 }
 
 /** Exposed for tests. */
-export const __test = { prepareHub, hubUp, hubDown, detectLanIp, isValidPort, portFree, pidAlive, hubPidPath };
+export const __test = { prepareHub, hubUp, hubDown, detectLanIp, isValidPort, portFree, pidAlive, hubPidPath, classifyTargets, defaultPsProbe };
