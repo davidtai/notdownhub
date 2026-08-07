@@ -130,18 +130,21 @@ export function unwrap<T>(data: unknown): T[] {
 }
 
 // ── Hub reachability ──────────────────────────────────────────────────────────
-// Connection-level failures a --server URL can hit: the port isn't listening (hub
-// down / wrong port), the host doesn't resolve (wrong --server), or the connection
-// times out. These are the "your hub isn't up" cases we translate into one human line.
-const CONN_ERROR_CODES = new Set([
-  "ECONNREFUSED",
-  "ENOTFOUND",
-  "EAI_AGAIN",
-  "ETIMEDOUT",
-  "EHOSTUNREACH",
-  "ENETUNREACH",
-  "ECONNRESET",
-]);
+// Connection-level failures a --server URL can hit. We split them by what they prove:
+//
+//  - DEFINITIVE_DOWN: the hub is not there — the port isn't listening (down / wrong
+//    port), or the host doesn't resolve / route (wrong --server). Safe to hard-block.
+//  - AMBIGUOUS: a live hub can throw these transiently — a dropped connection, a mid-
+//    TLS reset (ECONNRESET), or a slow first response that trips our probe abort
+//    (ETIMEDOUT / AbortError). Blocking on these can false-block a hub that is up (#85).
+const DEFINITIVE_DOWN_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH"]);
+const AMBIGUOUS_CODES = new Set(["ECONNRESET", "ETIMEDOUT"]);
+const CONN_ERROR_CODES = new Set([...DEFINITIVE_DOWN_CODES, ...AMBIGUOUS_CODES]);
+
+/** True only for codes that definitively prove the hub is not reachable (safe to hard-block). */
+export function isDefinitiveDown(code: string | null | undefined): boolean {
+  return code != null && DEFINITIVE_DOWN_CODES.has(code);
+}
 
 /** The connection-level error code buried in an error (or its `cause` chain), if any. */
 export function connErrorCode(err: unknown): string | null {
@@ -177,6 +180,23 @@ export function hubUnreachableMessage(url: string): string {
   return `can't reach the hub at ${url} — is it up? (ndh hub up) and is --server correct?`;
 }
 
+/** The [ndh] warning for an ambiguous probe (reset/timeout): a live hub can throw these, so we proceed. */
+export function hubProbeAmbiguousMessage(url: string): string {
+  return `hub at ${url} was slow/reset to reach; continuing — the dispatch will surface any real error`;
+}
+
+/**
+ * Default probe timeout (ms). A HEAD to a loopback/LAN hub answers in well under a second,
+ * so 2s is ample; on timeout the caller now proceeds anyway, so a fixed 5s per dispatch is
+ * wasteful. Override with NDH_PROBE_TIMEOUT_MS for slow/remote hubs.
+ */
+export const DEFAULT_PROBE_TIMEOUT_MS = 2000;
+
+function probeTimeoutMs(): number {
+  const raw = Number(process.env.NDH_PROBE_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_PROBE_TIMEOUT_MS;
+}
+
 export interface Reachability {
   ok: boolean;
   /** connection error code when !ok (ECONNREFUSED, ENOTFOUND, …). */
@@ -192,7 +212,7 @@ export interface Reachability {
  * connection fetch error is treated as reachable, so the real command can surface its own
  * precise error rather than a misleading "can't reach the hub".
  */
-export async function probeServer(url: string, timeoutMs = 5000): Promise<Reachability> {
+export async function probeServer(url: string, timeoutMs: number = probeTimeoutMs()): Promise<Reachability> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
