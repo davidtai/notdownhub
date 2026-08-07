@@ -1,3 +1,4 @@
+import path from "node:path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -9,6 +10,7 @@ const HUB = process.env.NDH_DEV_HUB ?? "http://localhost:5959";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  resolve: { alias: { "@": path.resolve(__dirname, "./src") } },
   build: {
     // Consumed by `ndh hub up` (packages/cli/front.ts → uiDistDir()); gitignored.
     outDir: "../../packages/cli/ui-dist",
