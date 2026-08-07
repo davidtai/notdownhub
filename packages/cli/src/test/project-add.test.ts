@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { projectAddCmd, reportRunsOn, setupLines } from "../project-add.js";
+import { projectAddCmd, projectAliasCmd, reportRunsOn, setupLines } from "../project-add.js";
 import { parseWorkflowInfo } from "../workflowinfo.js";
 import { freshHome, startServer, body, runCli, type Fixture } from "./helpers.js";
 
@@ -178,4 +178,78 @@ test("ndh project add --help registers under the project command (CLI wiring)", 
   assert.equal(r.status, 0);
   assert.match(r.stdout, /--workflow <path>/);
   assert.match(r.stdout, /--repository <owner\/repo>/);
+});
+
+// ── #114: ndh project alias ─────────────────────────────────────────────────
+
+/** Fake hub front for the alias route, recording requests. */
+async function aliasHub(status = 200): Promise<Fixture & { seen: { method: string; url: string; body?: unknown }[] }> {
+  const seen: { method: string; url: string; body?: unknown }[] = [];
+  const f = await startServer(async (rq, res) => {
+    const entry: { method: string; url: string; body?: unknown } = { method: rq.method ?? "?", url: rq.url ?? "?" };
+    if (rq.method === "POST") entry.body = JSON.parse((await body(rq)).toString());
+    seen.push(entry);
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: status < 400, removed: true }));
+  });
+  return { ...f, seen };
+}
+
+test("project alias: sets a display alias through the hub's route and says the original is kept", async () => {
+  const hub = await aliasHub();
+  const cap = capture();
+  try {
+    const code = await projectAliasCmd({ project: "acme/app", jobKey: "build", alias: "Compile", server: hub.url });
+    assert.equal(code, 0);
+  } finally {
+    cap.restore();
+    await hub.close();
+  }
+  assert.deepEqual(hub.seen[0].body, { project: "acme/app", jobKey: "build", alias: "Compile" });
+  assert.match(cap.lines.join("\n"), /now displays as 'Compile' \(original kept, shown on hover\)/);
+});
+
+test("project alias --clear: DELETEs the alias so the original name returns", async () => {
+  const hub = await aliasHub();
+  const cap = capture();
+  try {
+    const code = await projectAliasCmd({ project: "acme/app", jobKey: "build", clear: true, server: hub.url });
+    assert.equal(code, 0);
+  } finally {
+    cap.restore();
+    await hub.close();
+  }
+  assert.equal(hub.seen[0].method, "DELETE");
+  assert.match(hub.seen[0].url, /project=acme%2Fapp&jobKey=build/);
+  assert.match(cap.lines.join("\n"), /alias cleared/);
+});
+
+test("project alias: honest failures — bad slug, missing alias, gated hub, unreachable hub", async () => {
+  const cap = capture();
+  try {
+    assert.equal(await projectAliasCmd({ project: "nope", jobKey: "b", alias: "x", server: "http://127.0.0.1:1" }), 1);
+    assert.equal(await projectAliasCmd({ project: "a/b", jobKey: "b", server: "http://127.0.0.1:1" }), 1);
+    const gated = await aliasHub(403);
+    assert.equal(await projectAliasCmd({ project: "a/b", jobKey: "b", alias: "x", server: gated.url }), 1);
+    await gated.close();
+    const erroring = await aliasHub(500);
+    assert.equal(await projectAliasCmd({ project: "a/b", jobKey: "b", alias: "x", server: erroring.url }), 1);
+    await erroring.close();
+    assert.equal(await projectAliasCmd({ project: "a/b", jobKey: "b", alias: "x", server: "http://127.0.0.1:1" }), 1);
+  } finally {
+    cap.restore();
+  }
+  const out = cap.lines.join("\n");
+  assert.match(out, /invalid project slug/);
+  assert.match(out, /pass the alias to set, or --clear/);
+  assert.match(out, /loopback-only/);
+  assert.match(out, /hub returned 500/);
+  assert.match(out, /hub unreachable/);
+});
+
+test("ndh project alias --help registers with --clear (CLI wiring)", async () => {
+  const r = await runCli(["project", "alias", "--help"]);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /--clear/);
+  assert.match(r.stdout, /job-key/);
 });

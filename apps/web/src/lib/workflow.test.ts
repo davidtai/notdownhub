@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseWorkflowTriggers, eventSummary, parseWorkflowFile, labelMatch, slugHint } from "./workflow";
+import { parseWorkflowTriggers, eventSummary, parseWorkflowFile, labelMatch, slugHint, workflowJobs } from "./workflow";
 
 describe("parseWorkflowTriggers", () => {
   it("parses a map form with push branches (list) + workflow_dispatch (null value)", () => {
@@ -203,5 +203,23 @@ describe("slugHint", () => {
     expect(slugHint("url: git@github.com:acme/app.git")).toBe("acme/app");
     expect(slugHint("with:\n  repository: acme/tool\n")).toBe("acme/tool");
     expect(slugHint("name: CI\non: push\n")).toBeNull();
+  });
+});
+
+describe("workflowJobs", () => {
+  it("lists jobs in file order with their declared name (falling back to the key)", () => {
+    const jobs = workflowJobs(
+      ["on: push", "jobs:", "  build:", "    name: Compile it", "    runs-on: x", "  test:", "    runs-on: y"].join("\n"),
+    );
+    expect(jobs).toEqual([
+      { key: "build", name: "Compile it" },
+      { key: "test", name: "test" },
+    ]);
+  });
+  it("returns [] for unparseable YAML or a missing jobs map", () => {
+    expect(workflowJobs(": {[")).toEqual([]);
+    expect(workflowJobs("name: X")).toEqual([]);
+    expect(workflowJobs("- a")).toEqual([]);
+    expect(workflowJobs("jobs: [a]")).toEqual([]);
   });
 });

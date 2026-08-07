@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { logsCmd, watchCmd, formatRunLogs, frameLines, pickLatestAttempt, resolveRun } from "../logs.js";
+import { logsCmd, watchCmd, formatRunLogs, frameLines, pickLatestAttempt, resolveRun, aliasedJobName } from "../logs.js";
 
 function captureOut(): { logs: string[]; errs: string[]; restore: () => void } {
   const logs: string[] = [];
@@ -286,6 +286,40 @@ test("watchCmd: an unreachable hub prints the [ndh] line, exit 1", async () => {
     });
     assert.equal(code, 1);
     assert.match(cap.errs.join("\n"), /can't reach the hub/);
+  } finally {
+    cap.restore();
+  }
+});
+
+// ── #114 job display aliases in `ndh logs` ───────────────────────────────────
+
+test("aliasedJobName: 'alias (original)' when the job's key has one; original untouched otherwise", () => {
+  const aliases = new Map([["build", "Compile"]]);
+  assert.equal(aliasedJobName({ name: "build", workflowIdentifier: "build" }, aliases), "Compile (build)");
+  assert.equal(aliasedJobName({ name: "test" }, aliases), "test"); // falls back to name as key, no alias
+  assert.equal(aliasedJobName({ name: "build" }, new Map()), "build");
+  assert.equal(aliasedJobName({}, aliases), undefined); // nameless job stays nameless
+});
+
+test("logsCmd: multi-job headers show 'alias (original)' from the project's alias store", async () => {
+  const cap = captureOut();
+  try {
+    const code = await logsCmd(2, "http://127.0.0.1:6099", {
+      getJson: jsonRoutes({
+        "/_apis/v1/Message/workflow/run/2/attempts": [{ attempt: 1, status: "completed", result: "succeeded" }],
+        "/_apis/v1/Message/workflow/run/2/attempt/1/jobs": [
+          { timeLineId: "TLa", name: "build", workflowIdentifier: "build", repo: "acme/app" },
+          { timeLineId: "TLb", name: "test", workflowIdentifier: "test", repo: "acme/app" },
+        ],
+      }),
+      getJoblogs: async (_b, _r, tl) => ({ retained: true, lines: [tl === "TLa" ? "compiling" : "testing"] }),
+      getAliases: async (_b, project) => {
+        assert.equal(project, "acme/app");
+        return new Map([["build", "Compile"]]);
+      },
+    });
+    assert.equal(code, 0);
+    assert.deepEqual(cap.logs, ["=== Compile (build) ===", "compiling", "=== test ===", "testing"]);
   } finally {
     cap.restore();
   }

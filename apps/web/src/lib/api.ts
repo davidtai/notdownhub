@@ -318,6 +318,65 @@ export async function deleteProjectPlaceholder(slug: string): Promise<Placeholde
   }
 }
 
+// ── Job display aliases (#114) ──────────────────────────────────────────────
+
+/**
+ * One display alias: for `project`, the job keyed `jobKey` (the stable YAML
+ * job key — the engine's `workflowIdentifier`) renders as `alias`. ALIAS,
+ * NEVER OVERRIDE: the engine's job records are untouched, and the original
+ * name stays recoverable (tooltip) until the alias is cleared.
+ */
+export interface JobAlias {
+  project: string;
+  jobKey: string;
+  alias: string;
+}
+
+/** All stored aliases (GET /api/local/job-aliases). Tolerant: [] on any failure. */
+export async function getJobAliases(): Promise<JobAlias[]> {
+  try {
+    const res = await fetch(`/api/local/job-aliases`, { headers: { accept: "application/json" } });
+    if (!res.ok) return [];
+    const rows = (await res.json()) as JobAlias[];
+    return Array.isArray(rows) ? rows : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Set (or replace) a job display alias. Returns whether the hub accepted it. */
+export async function setJobAlias(project: string, jobKey: string, alias: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/local/job-aliases`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ project, jobKey, alias }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Clear a job display alias — the original name shows again everywhere. */
+export async function clearJobAlias(project: string, jobKey: string): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `/api/local/job-aliases?project=${encodeURIComponent(project)}&jobKey=${encodeURIComponent(jobKey)}`,
+      { method: "DELETE", headers: { accept: "application/json" } },
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** The alias for a project + job key from a loaded alias list, or null. */
+export function aliasFor(aliases: JobAlias[], project: string | null, jobKey: string): string | null {
+  if (!project) return null;
+  return aliases.find((a) => a.project === project && a.jobKey === jobKey)?.alias ?? null;
+}
+
 /** The workflow definition recorded with a run: its YAML plus the attempt's timeline id. */
 export interface WorkflowDefinition {
   /** Full workflow YAML the hub retained for the run's latest attempt, or null if none. */

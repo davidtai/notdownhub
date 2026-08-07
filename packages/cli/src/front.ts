@@ -12,7 +12,7 @@ import { getConfigInfo } from "./config-info.js";
 import { listArtifacts, parseArtifactApiPath, parseArtifactPrettyUrl, serveArtifactDownload } from "./artifacts.js";
 import { serveRunCancel, serveRunDelete, serveFilteredRuns, serveProjectDelete } from "./runctl.js";
 import { serveProjects } from "./projects.js";
-import { servePlaceholderCrud } from "./frontstore.js";
+import { servePlaceholderCrud, serveJobAliasCrud } from "./frontstore.js";
 import { appendDefaultPlatform, serveRerun } from "./rerunmap.js";
 import { serveRunsMeta } from "./runs-meta.js";
 import { serveLocalcheckout } from "./localcheckout.js";
@@ -168,6 +168,14 @@ async function handleRequest(
         return;
       }
       await servePlaceholderCrud(req, url, res);
+    } else if (url.pathname === "/api/local/job-aliases") {
+      // CRUD for #114 job display aliases — alias, never override: front-owned display
+      // state, the engine's job records stay untouched. Same gate as the other /api/local.
+      if (!uiAccessAllowed(req, opts)) {
+        denyUi(res, opts);
+        return;
+      }
+      await serveJobAliasCrud(req, url, res);
     } else if (url.pathname === "/api/local/runs-meta") {
       // Batch per-run timing for the runs list/detail (issue #96): startedAt/finishedAt/
       // durationMs keyed by run id, from the hub DB's Job timeline records — the same
