@@ -161,10 +161,10 @@ test("run: verbatim passthrough including default platform args and a leading `-
     ensure: noEnsure,
     repoSlug: () => null,
   });
-  // --repository is injected ahead of the user args (origin-less → local/ fallback);
+  // --repository is injected ahead of the user args (origin-less → davidtai/notdownhub fallback);
   // the user's -P still suppresses the default platform mappings.
   assert.equal(captured[0], "--repository");
-  assert.match(captured[1], /^local\//);
+  assert.equal(captured[1], "davidtai/notdownhub");
   assert.deepEqual(captured.slice(2), ["-P", "ubuntu-latest=node:20", "--event", "push"]);
 });
 

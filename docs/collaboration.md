@@ -26,7 +26,8 @@ ndh run -l                           # list the jobs, run nothing
 
 The run executes your checked-out working tree, with your uncommitted changes.
 A repository without an `origin` remote works; its runs are labeled
-`local/<dirname>`. The full flag set and the platform mappings are in the
+`davidtai/notdownhub` (pass `--repository owner/name` to choose a label). The
+full flag set and the platform mappings are in the
 [README quickstart](../README.md#60-second-quickstart).
 
 Secrets and variables for solo runs live on the same machine:

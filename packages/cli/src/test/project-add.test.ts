@@ -108,9 +108,9 @@ test("project add: derives the slug from the checkout when --repository is absen
     cap.restore();
     await hub.close();
   }
-  // No origin remote → #59's local/<dir> fallback slug, exactly like a dispatch from there.
+  // No origin remote → the davidtai/notdownhub fallback slug, exactly like a dispatch from there.
   const posted = hub.posted[0] as { slug: string };
-  assert.match(posted.slug, /^local\//);
+  assert.equal(posted.slug, "davidtai/notdownhub");
 });
 
 test("project add: honest failures — unreadable file, bad YAML, invalid slug, hub 403, hub down", async () => {

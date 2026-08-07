@@ -90,7 +90,7 @@ export async function projectAddCmd(opts: ProjectAddOptions): Promise<number> {
     return 1;
   }
 
-  const slug = opts.repository ?? projectSlug(currentRepoSlug(opts.cwd), opts.cwd);
+  const slug = opts.repository ?? projectSlug(currentRepoSlug(opts.cwd));
   if (!isValidSlug(slug)) {
     console.error(`invalid project slug '${slug}' — pass --repository owner/repo`);
     return 1;

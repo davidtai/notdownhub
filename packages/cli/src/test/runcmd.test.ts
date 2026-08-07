@@ -48,18 +48,13 @@ test("defaultPlatformArgs: linux images fall back to the host without docker", (
 });
 
 test("projectSlug: uses the origin slug when present", () => {
-  assert.equal(projectSlug("acme/widget", "/anything"), "acme/widget");
+  assert.equal(projectSlug("acme/widget"), "acme/widget");
 });
 
-test("projectSlug: falls back to local/<dirname> (a two-part slug, never Unknown)", () => {
+test("projectSlug: falls back to davidtai/notdownhub (a two-part slug, never Unknown)", () => {
   // A two-part slug is required: the engine records `--repository` verbatim and
   // splits on "/" for the owner, so a bare value would render as Unknown/Unknown.
-  assert.equal(projectSlug(null, "/home/dev/my-project"), "local/my-project");
-});
-
-test("projectSlug: sanitizes odd directory names and never yields an empty repo", () => {
-  assert.equal(projectSlug(null, "/tmp/My Repo!"), "local/My-Repo");
-  assert.equal(projectSlug(null, "/"), "local/workspace");
+  assert.equal(projectSlug(null), "davidtai/notdownhub");
 });
 
 test("repositoryArgs: injects --repository when the user did not", () => {
@@ -90,13 +85,13 @@ test("runCmd: does not duplicate --repository when the user supplies one", async
   assert.ok(!args.includes("acme/widget"));
 });
 
-test("runCmd: falls back to a local/ slug when there is no origin remote", async () => {
+test("runCmd: falls back to davidtai/notdownhub when there is no origin remote", async () => {
   const cap = capture(() => null);
   await runCmd(["-W", "."], cap.deps);
   const args = cap.argv()!;
   const i = args.indexOf("--repository");
   assert.ok(i >= 0);
-  assert.match(args[i + 1], /^local\/.+/);
+  assert.equal(args[i + 1], "davidtai/notdownhub");
 });
 
 test("dispatchCmd: requires --server and injects --repository", async () => {

@@ -105,7 +105,7 @@ export function shSingleQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-/** Keep a slug segment to git-ish safe chars; mirrors projectSlug's sanitizer (runcmd.ts). */
+/** Keep a slug segment to git-ish safe chars (used by deriveRepoSlug below). */
 function slugSegment(raw: string): string {
   return raw.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
 }
