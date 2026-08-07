@@ -173,6 +173,17 @@ test("POST 404 (run present) → exit 1 with a 'no such run' hint", async () => 
   assert.match(c.errs.join(" "), /re-run failed: hub returned 404 Not Found for #99 — no run #99/);
 });
 
+test("a hub refusal (#110) prints the honest reason verbatim", async () => {
+  const c = capture();
+  const reason = "this run's source tree is not on the hub — re-dispatch it from the checkout with 'ndh dispatch'";
+  const { fn } = stubFetch([
+    { ok: true, json: [{ id: 14 }] },
+    { ok: false, status: 409, statusText: "Conflict", json: { ok: false, error: reason, runId: 14 } },
+  ]);
+  assert.equal(await rerunCmd(["14", "--server", "http://h"], { fetch: fn, log: c.log, error: c.error }), 1);
+  assert.match(c.errs.join(" "), /re-run refused for #14: this run's source tree is not on the hub/);
+});
+
 test("POST non-404 error → exit 1 without the run hint", async () => {
   const c = capture();
   const { fn } = stubFetch([{ ok: true, json: [{ id: 2 }] }, { ok: false, status: 500, statusText: "Server Error" }]);

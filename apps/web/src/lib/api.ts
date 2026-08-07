@@ -398,17 +398,30 @@ export async function deleteRun(id: number): Promise<void> {
  *   POST /_apis/v1/Message/rerunworkflow/{id}   re-run the whole workflow
  *   POST /_apis/v1/Message/rerunFailed/{id}     re-run only the failed jobs
  *
- * Limitation: a workflow that checks out the *dispatched local working tree*
- * cannot be reproduced from the hub — that tree lived on the dispatching machine
- * and was never retained here; such a re-run's checkout step fails. Re-run those
- * from the checkout with `ndh dispatch`.
+ * Local dispatches (#110): the hub retains the dispatched tree per run, and the
+ * re-run replay re-wires the localcheckout substitution, so re-runs check out
+ * that retained tree. When the tree is not on the hub (runs from before that
+ * retention) the hub REFUSES with one honest JSON message — surfaced here as the
+ * thrown Error's message so the button can show it verbatim.
  */
 export async function rerunWorkflow(runId: number, opts: { failed?: boolean } = {}): Promise<void> {
   const verb = opts.failed ? "rerunFailed" : "rerunworkflow";
   const path = `/_apis/v1/Message/${verb}/${runId}`;
   const res = await fetch(path, { method: "POST" });
-  if (!res.ok) throw new Error(`POST ${path} → ${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    let reason: string | null = null;
+    try {
+      reason = ((await res.json()) as { error?: string })?.error ?? null;
+    } catch {
+      /* not JSON — keep the generic status line */
+    }
+    if (reason) throw new HubRefusalError(reason);
+    throw new Error(`POST ${path} → ${res.status} ${res.statusText}`);
+  }
 }
+
+/** A deliberate hub-side refusal whose message is meant for the operator's eyes, verbatim. */
+export class HubRefusalError extends Error {}
 
 // ── Settings (read-only view of secrets/variables) ──────────────────────────
 export interface ConfigInfo {

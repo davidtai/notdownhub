@@ -1,5 +1,6 @@
 import type { ServerResponse } from "node:http";
 import { deleteRun, joblogsDbPath, readDeletedRunIds } from "./joblogs.js";
+import { dropTree } from "./treecache.js";
 import { unwrap } from "./lib.js";
 import { projectLabel } from "./status.js";
 
@@ -70,6 +71,7 @@ export async function serveRunDelete(
 ): Promise<void> {
   try {
     const { logsPurged } = await deleteRun(dbPath, runId, { hubDbPath });
+    await dropTree(runId); // the retained dispatch tree (#110) goes with the run
     json(res, 200, { ok: true, runId, logsPurged });
   } catch (err) {
     json(res, 500, { ok: false, error: String(err), runId });
@@ -134,6 +136,7 @@ export async function serveProjectDelete(
   for (const id of ids) {
     try {
       await deleteRun(dbPath, id);
+      await dropTree(id);
       deleted++;
     } catch {
       failed++;

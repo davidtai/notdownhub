@@ -16,6 +16,7 @@ import {
   deleteProjectRuns,
   probeDeleteProjectSupport,
   rerunWorkflow,
+  HubRefusalError,
   getAllRuns,
   getProjects,
   getRunsMeta,
@@ -337,6 +338,13 @@ describe("rerunWorkflow", () => {
   it("throws with the status on a non-OK response", async () => {
     mockFetch(() => ({ status: 404, body: {} }));
     await expect(rerunWorkflow(9)).rejects.toThrow(/rerunworkflow\/9 → 404/);
+  });
+
+  it("surfaces a hub refusal (#110) verbatim as a HubRefusalError", async () => {
+    const reason = "this run's source tree is not on the hub — re-dispatch it from the checkout with 'ndh dispatch'";
+    mockFetch(() => ({ status: 409, body: { ok: false, error: reason, runId: 14 } }));
+    await expect(rerunWorkflow(14)).rejects.toThrow(HubRefusalError);
+    await expect(rerunWorkflow(14)).rejects.toThrow(reason);
   });
 });
 

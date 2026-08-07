@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { RotateCcw } from "lucide-react";
-import { rerunWorkflow } from "../lib/api";
+import { rerunWorkflow, HubRefusalError } from "../lib/api";
 import { Button, type ButtonProps } from "./ui/button";
 import { Tooltip } from "./ui/tooltip";
 import { cn } from "../lib/utils";
@@ -29,7 +29,7 @@ export function RerunButton({
   className?: string;
 }) {
   const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
 
   async function onClick(e: React.MouseEvent) {
     // The runs list wraps each row in a <Link>; keep a re-run from navigating.
@@ -37,20 +37,20 @@ export function RerunButton({
     e.stopPropagation();
     if (busy) return;
     setBusy(true);
-    setFailed(false);
+    setFailed(null);
     try {
       await rerunWorkflow(runId);
       onDone?.();
-    } catch {
-      setFailed(true);
+    } catch (err) {
+      // A hub refusal (#110: "source tree is not on the hub …") is an honest, actionable
+      // message for the operator — show it verbatim. Anything else is a reachability guess.
+      setFailed(err instanceof HubRefusalError ? err.message : "Re-run failed — is the hub reachable?");
     } finally {
       setBusy(false);
     }
   }
 
-  const label = failed
-    ? "Re-run failed — is the hub reachable?"
-    : "Re-run this workflow on the fleet (new attempt of this run)";
+  const label = failed ?? "Re-run this workflow on the fleet (new attempt of this run)";
 
   return (
     <Tooltip label={label} side="bottom">
