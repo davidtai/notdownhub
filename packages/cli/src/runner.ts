@@ -127,7 +127,12 @@ async function start(name?: string, deps: RunnerDeps = {}): Promise<number> {
 
 async function listNames(): Promise<string[]> {
   try {
-    return await readdir(join(ndhHome(), "runners"));
+    const entries = await readdir(join(ndhHome(), "runners"));
+    // Only real runner instances (skip .DS_Store and other stray entries).
+    const checked = await Promise.all(
+      entries.map(async (name) => ((await exists(listenerExe(runnerDir(name)))) ? name : null)),
+    );
+    return checked.filter((n): n is string => n !== null);
   } catch {
     return [];
   }

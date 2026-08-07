@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Command } from "commander";
 import { ndhHome, fail, log } from "./lib.js";
-import { currentRepoSlug, GLOBAL_SCOPE } from "./secrets.js";
+import { currentRepoSlug, GLOBAL_SCOPE, validEnvName } from "./secrets.js";
 
 /**
  * Plain (non-secret) workflow variables — the `vars` context (`${{ vars.NAME }}`).
@@ -38,6 +38,7 @@ async function writeStore(store: VarStore): Promise<void> {
 }
 
 export async function setVar(scope: string, name: string, value: string): Promise<void> {
+  if (!validEnvName(name)) fail(`invalid name '${name}' — use letters, digits, and underscore; must not start with a digit`);
   const store = await readStore();
   (store[scope] ??= {})[name] = value;
   await writeStore(store);

@@ -1,10 +1,10 @@
 import { createWriteStream } from "node:fs";
-import { mkdir, stat, rename } from "node:fs/promises";
+import { mkdir, stat, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync, type SpawnOptions } from "node:child_process";
 import { Readable } from "node:stream";
-import { finished } from "node:stream/promises";
+import { pipeline } from "node:stream/promises";
 import { fileLogActive, fileLogLine, fileLogWrite } from "./filelog.js";
 
 export const VENDOR_VERSION = "3.14.0";
@@ -53,7 +53,14 @@ export async function download(url: string, dest: string, opts: { headers?: Reco
   await mkdir(join(dest, ".."), { recursive: true });
   const tmp = `${dest}.partial`;
   const out = createWriteStream(tmp);
-  await finished(Readable.fromWeb(res.body as import("node:stream/web").ReadableStream).pipe(out));
+  try {
+    // pipeline (unlike .pipe) forwards a source error and destroys both streams, so an
+    // interrupted download rejects cleanly instead of throwing an unhandled 'error' event.
+    await pipeline(Readable.fromWeb(res.body as import("node:stream/web").ReadableStream), out);
+  } catch (err) {
+    await rm(tmp, { force: true }).catch(() => {});
+    throw new Error(`download failed: ${(err as Error).message} for ${url}`);
+  }
   await rename(tmp, dest);
 }
 
@@ -79,11 +86,29 @@ export function run(cmd: string, args: string[], opts: SpawnOptions = {}): Promi
         fileLogWrite(d);
       });
     }
-    child.on("error", reject);
-    child.on("exit", (code, signal) => resolve(signal ? 1 : code ?? 1));
-    for (const sig of ["SIGINT", "SIGTERM"] as const) {
-      process.on(sig, () => child.kill(sig));
+    // Resolve on 'close' (all stdio EOF), not 'exit', so teed 'data' events are fully
+    // delivered before the caller exits — otherwise the tail of the log is truncated.
+    let exitCode = 1;
+    const signals = ["SIGINT", "SIGTERM"] as const;
+    const onSignal: Record<string, () => void> = {};
+    const cleanup = () => {
+      for (const sig of signals) process.removeListener(sig, onSignal[sig]);
+    };
+    for (const sig of signals) {
+      onSignal[sig] = () => child.kill(sig);
+      process.on(sig, onSignal[sig]);
     }
+    child.on("error", (err) => {
+      cleanup();
+      reject(err);
+    });
+    child.on("exit", (code, signal) => {
+      exitCode = signal ? 1 : code ?? 1;
+    });
+    child.on("close", () => {
+      cleanup();
+      resolve(exitCode);
+    });
   });
 }
 

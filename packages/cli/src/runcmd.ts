@@ -50,7 +50,7 @@ export async function dispatchCmd(argv: string[], deps: RunDeps = {}): Promise<n
   const runner = deps.runner ?? run;
   if (!deps.runner) initFileLog(join(ndhHome(), "logs"), "dispatch");
   await (deps.ensure ?? ensureVendor)();
-  if (!argv.includes("--server")) {
+  if (!argv.some((a) => a === "--server" || a.startsWith("--server="))) {
     console.error("usage: ndh dispatch --server http://hub:4949 [Runner.Client args...]");
     return 2;
   }
