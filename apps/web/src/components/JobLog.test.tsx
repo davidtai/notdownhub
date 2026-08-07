@@ -153,6 +153,23 @@ describe("JobLog — live streaming", () => {
     expect(screen.getByText("fallback-routed")).toBeTruthy();
   });
 
+  // #125 regression: live step output rendered invisible because the step fold used
+  // the `collapse` class — Tailwind's `collapse` utility (`visibility: collapse`)
+  // hid every streamed line while the region still took up space. The live path must
+  // wrap step output in the renamed `.fold` container and never in `.collapse`.
+  it("streams step output inside .fold, never a `collapse`-classed wrapper (#125)", () => {
+    mockFetch(() => ({ status: 404 }));
+    const { container } = render(<JobLog runId={1} job={activeJob} records={steps} loading={false} />);
+    const es = MockEventSource.last();
+    act(() => es.emit("log", { record: { value: ["visible line"], stepId: "s2" } }));
+    const line = screen.getByText("visible line");
+    expect(line.className).toContain("text-fg"); // the text-bearing class
+    expect(line.closest(".collapse")).toBeNull(); // the offending #125 combination
+    // The auto-expanded running step's fold is open around the streamed line.
+    expect(line.closest(".fold")?.getAttribute("data-open")).toBe("true");
+    expect(container.querySelector(".collapse, .collapse-inner")).toBeNull();
+  });
+
   it("ignores empty and malformed frames without throwing", () => {
     mockFetch(() => ({ status: 404 }));
     render(<JobLog runId={1} job={activeJob} records={steps} loading={false} />);

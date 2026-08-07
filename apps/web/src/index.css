@@ -170,16 +170,20 @@ h3 {
   animation: ndh-ping 2.4s ease-out infinite;
 }
 
-/* Smooth height collapse for step / group folds (grid 0fr→1fr trick). */
-.collapse {
+/* Smooth height collapse for step / group folds (grid 0fr→1fr trick).
+   NOTE (#125): the class must NOT be named `collapse` — Tailwind ships a `collapse`
+   utility (`visibility: collapse`), and any class name used in the source gets its
+   utility emitted into the build. That utility hid all fold content (text invisible,
+   layout preserved) on live attempt views. `fold` collides with no Tailwind utility. */
+.fold {
   display: grid;
   grid-template-rows: 0fr;
   transition: grid-template-rows 0.2s ease;
 }
-.collapse[data-open="true"] {
+.fold[data-open="true"] {
   grid-template-rows: 1fr;
 }
-.collapse > .collapse-inner {
+.fold > .fold-inner {
   overflow: hidden;
   min-height: 0;
 }
@@ -189,7 +193,7 @@ h3 {
   .dot-pulse {
     animation: none !important;
   }
-  .collapse {
+  .fold {
     transition: none;
   }
 }

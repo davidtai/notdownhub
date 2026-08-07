@@ -67,8 +67,8 @@ function Group({ node, depth }: { node: Extract<LogNode, { kind: "group" }>; dep
           {countLines(node.children)}
         </span>
       </button>
-      <div className="collapse" data-open={open}>
-        <div className="collapse-inner">
+      <div className="fold" data-open={open}>
+        <div className="fold-inner">
           <NodeList nodes={node.children} depth={depth + 1} />
         </div>
       </div>

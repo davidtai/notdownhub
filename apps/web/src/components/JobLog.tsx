@@ -276,8 +276,8 @@ export function JobLog({
                           <span className="tnum shrink-0 font-mono text-[11px] text-fg-subtle">{d}</span>
                         )}
                       </button>
-                      <div className="collapse" data-open={open}>
-                        <div className="collapse-inner">
+                      <div className="fold" data-open={open}>
+                        <div className="fold-inner">
                           {lines.length > 0 ? (
                             <LogGroups lines={lines} />
                           ) : (
