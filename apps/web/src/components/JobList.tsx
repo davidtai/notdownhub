@@ -48,10 +48,6 @@ function groupJobs(jobs: Job[]): Group[] {
   return groups;
 }
 
-function legLabel(job: Job): string {
-  return matrixLabel(job.matrix) ?? job.name;
-}
-
 /**
  * The run's job list. Matrix legs nest under a group header; each leg is
  * selectable. `aliases` (#114, jobKey → alias) swaps the DISPLAYED name only:
@@ -140,19 +136,26 @@ export function JobList({
               </span>
             </div>
             <ul className="ml-3 border-l border-line pl-1">
-              {g.legs.map((leg) => (
-                <li key={leg.jobId}>
-                  <JobRow
-                    job={leg}
-                    label={legLabel(leg)}
-                    selected={selectedJobId === leg.jobId}
-                    ms={durations[leg.jobId] ?? 0}
-                    warnings={warnings[leg.jobId] ?? 0}
-                    longest={longest}
-                    onSelect={onSelect}
-                  />
-                </li>
-              ))}
+              {g.legs.map((leg) => {
+                // A real matrix leg keeps its combination label ("os: linux"). A leg whose
+                // matrix value renders no label (the engine stores "[null]" on replayed
+                // plain jobs) falls back to the job name — which the alias replaces (#114).
+                const combo = matrixLabel(leg.matrix);
+                return (
+                  <li key={leg.jobId}>
+                    <JobRow
+                      job={leg}
+                      label={combo ?? groupAlias ?? leg.name}
+                      original={!combo && groupAlias ? leg.name : null}
+                      selected={selectedJobId === leg.jobId}
+                      ms={durations[leg.jobId] ?? 0}
+                      warnings={warnings[leg.jobId] ?? 0}
+                      longest={longest}
+                      onSelect={onSelect}
+                    />
+                  </li>
+                );
+              })}
             </ul>
           </li>
         );

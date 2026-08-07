@@ -33,7 +33,7 @@ lands here.
 | `hub/hub.db`, `hub/hub.db-wal`, `hub/hub.db-shm` | SQLite: registered runners + workflow-run history. The `-wal`/`-shm` are the write-ahead log and shared-memory index. | **state** | Only with the hub stopped, and you lose the fleet + run history (runners must re-join). Back these up together. |
 | `hub/runner-token` (mode `0600`) | The runner registration token. Anyone holding it can register runners. | **secret** | Deleting makes the next `hub up` mint a new token — every runner must then re-join. |
 | `hub/logs/hub-YYYY-MM-DD.log` (file `0600`, dir `0700`) | Daily hub log: `[ndh]` lines **and** teed `Runner.Server` output, ANSI-stripped. | state (diagnostic) | Yes — old days are auto-pruned (14-day default) anyway. |
-| `hub/frontstate.db` (mode `0600`) | SQLite: front-owned UI state — planned-project placeholders. | state | Yes — planned projects disappear until you add them again. |
+| `hub/frontstate.db` (mode `0600`) | SQLite: front-owned UI state — planned-project placeholders and job display aliases. | state | Yes — planned projects and aliases disappear until you set them again. |
 
 > For a basic fleet job, the hub working dir held **only** the `hub.db*`,
 > `logs/`, and `runner-token` above. No artifact or cache storage directory was
