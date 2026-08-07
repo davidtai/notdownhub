@@ -211,7 +211,7 @@ Facts that apply to a migration:
 
 - A runner registration binds to one server. The same machine can hold a GitHub registration and a notdownhub registration at the same time. Jobs do not cross between the two registrations.
 - The first run downloads each action one time through the hub mirror. Later runs read the actions from the mirror cache.
-- GitHub webhooks do not reach your hub. To start CI, use `ndh dispatch`, a webhook from your git server, or an `on: schedule` trigger. The [operations guide](docs/operations.md) describes each trigger.
+- Webhooks do not reach your hub; it exposes no webhook endpoint. To start CI, use `ndh dispatch`, a `post-receive` hook on your git server (`ndh hook install`), or an `on: schedule` trigger. The [operations guide](docs/operations.md) describes each trigger.
 - The hub stores artifacts and cache data from `actions/upload-artifact` and `actions/cache`.
 - Secrets and variables are stored on the machine you dispatch from, and inject into each run. See [operations.md → Secrets & variables](docs/operations.md#secrets--variables) for scopes, multiline secrets, and how values reach a run.
 

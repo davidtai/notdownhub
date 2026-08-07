@@ -714,7 +714,7 @@ For each backend's exact files and sensitivity, see [files.md](files.md).
 GitHub webhooks do not reach your hub. Start a run through one of three paths:
 
 - `ndh dispatch` from a repo checkout. This is the direct path.
-- A webhook from your git server or forge.
+- A `post-receive` hook on your git server, installed with `ndh hook install`.
 - An `on: schedule` trigger in a workflow.
 
 The three paths are coherent: each one hands a workflow to the hub. The rest of
@@ -783,8 +783,12 @@ The hook needs `ndh` on its PATH. Set an absolute path, or export PATH in the
 hook. The dispatch reads secrets from the server that runs the hook, not from
 the git remote.
 
-A full forge can replace this hook. Gitea and Forgejo can point a webhook at the
-hub instead.
+The hub exposes no webhook endpoint, so a forge cannot call it directly. A
+forge such as Gitea or Forgejo triggers CI through this same hook pattern.
+Point the forge at a bare repo it pushes or mirrors to. Install the hook on
+that bare repo. [collaboration.md](collaboration.md) shows the full team topology
+around that git server. A native webhook endpoint would be a separate future
+feature, not a configuration option today.
 
 ### Branch tracking
 
