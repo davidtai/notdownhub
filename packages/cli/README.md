@@ -1,3 +1,10 @@
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/davidtai/notdownhub/main/assets/brand/logo-dark.svg">
+  <img src="https://raw.githubusercontent.com/davidtai/notdownhub/main/assets/brand/logo-light.svg" alt="notdownhub — a computer carried by balloons" width="120" height="150">
+</picture>
+
 # notdownhub (`ndh`)
 
 **GitHub can go down. Your CI does not have to.**
@@ -8,6 +15,8 @@
 [![website](https://img.shields.io/badge/site-notdownhub.com-f2663b)](https://notdownhub.com)
 
 [**notdownhub.com**](https://notdownhub.com) · [Docs](https://github.com/davidtai/notdownhub/tree/main/docs) · [Repo](https://github.com/davidtai/notdownhub)
+
+</div>
 
 `ndh` runs your **unmodified** GitHub Actions workflows on infrastructure you
 control — your laptop, one box under a desk, or a fleet of machines behind NAT.
