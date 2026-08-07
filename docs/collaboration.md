@@ -246,9 +246,9 @@ ndh watch 5  --server http://hub.internal:4949   # follow a live run's console
 exited when the run completed. On a machine other than the hub, `ndh status`
 lists runner names without labels or live state; the rich view needs the
 hub's own database. `ndh logs <run-id>` reads a loopback-gated endpoint: run
-it on the hub machine, or through an SSH tunnel. On a `--basic-auth` hub the
-current build prints a misleading "no retained logs" message from other
-machines ([#100](https://github.com/davidtai/notdownhub/issues/100)).
+it on the hub machine, or through an SSH tunnel. On a `--basic-auth` hub, a
+remote `ndh logs` reports the auth gate and exits with an error
+([#100](https://github.com/davidtai/notdownhub/issues/100)).
 
 ### Project labels on a git server (current limit)
 
