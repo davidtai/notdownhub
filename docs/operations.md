@@ -488,6 +488,56 @@ a GitHub outage or fully offline.
 
 ---
 
+## Triggering CI
+
+GitHub webhooks do not reach your hub. Start a run through one of three paths:
+
+- `ndh dispatch` from a repo checkout. This is the direct path.
+- A webhook from your git server or forge.
+- An `on: schedule` trigger in a workflow.
+
+The three paths are coherent: each one hands a workflow to the hub. The rest of
+this section covers the git-server path in detail.
+
+### Trigger CI from a git server
+
+A bare git server can trigger CI on a branch update. Add a `post-receive` hook.
+The hook checks out each pushed branch to a temporary work-tree. It then runs
+`ndh dispatch` against your hub for that tree.
+
+This recipe was verified live against a bare repo and a running hub:
+
+```bash
+#!/usr/bin/env bash
+# .git/hooks/post-receive on a bare repo: dispatch CI for each updated branch.
+set -euo pipefail
+
+HUB=http://hub.tailnet:4949
+WORKFLOW=.github/workflows/ci.yml
+
+while read -r _old new ref; do
+  case "$ref" in refs/heads/*) ;; *) continue ;; esac
+  branch=${ref#refs/heads/}
+  work=$(mktemp -d)
+  git --work-tree="$work" checkout -f "$new"
+  ( cd "$work" && ndh dispatch --server "$HUB" -W "$WORKFLOW" --event push )
+  rm -rf "$work"
+  echo "[hook] dispatched $branch"
+done
+```
+
+Make the hook executable (`chmod +x .git/hooks/post-receive`) on the server.
+
+The hook needs `ndh` on its PATH. Set an absolute path, or export PATH in the
+hook. The dispatch reads secrets from the server that runs the hook, not from
+the git remote.
+
+A full forge can replace this hook. Gitea and Forgejo can point a webhook at the
+hub instead. Issue #23 tracks a future `ndh hook install` that will automate the
+hook.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |

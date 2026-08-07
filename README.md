@@ -275,6 +275,16 @@ A ready-to-run sample repo lives in [`examples/demo`](examples/demo) — a matri
 build with `actions/checkout@v4`, job outputs, and a `needs:` graph you can run
 with a single `ndh run`.
 
+## Contributing
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the dev
+setup, the repo layout, and the commit conventions.
+
+Two more documents govern participation:
+
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — the community standards.
+- [SECURITY.md](SECURITY.md) — how to report a vulnerability in private.
+
 ## From source
 
 Contributors (or anyone who wants to run an unreleased build) can clone and
