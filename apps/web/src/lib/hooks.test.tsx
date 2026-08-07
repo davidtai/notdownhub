@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { useInfiniteList, useMediaQuery, usePersistentStrings, usePoll } from "./hooks";
+import {
+  useInfiniteList,
+  useMediaQuery,
+  usePersistentString,
+  usePersistentStrings,
+  usePoll,
+} from "./hooks";
 import { mql } from "../test/helpers";
 
 const Q = "(max-width: 600px)";
@@ -130,6 +136,47 @@ describe("usePersistentStrings", () => {
       throw new Error("blocked");
     });
     expect(renderHook(() => usePersistentStrings(KEY)).result.current[0]).toEqual([]);
+    getSpy.mockRestore();
+  });
+});
+
+describe("usePersistentString", () => {
+  const KEY = "ndh.test.scope";
+  afterEach(() => window.localStorage.clear());
+
+  it("falls back on mount, reads a stored value, and writes through", () => {
+    const first = renderHook(() => usePersistentString(KEY, "all"));
+    expect(first.result.current[0]).toBe("all"); // nothing stored → fallback
+
+    act(() => first.result.current[1]("acme/x"));
+    expect(first.result.current[0]).toBe("acme/x");
+    expect(window.localStorage.getItem(KEY)).toBe("acme/x");
+
+    // A fresh mount (like revisiting the page) restores the stored value.
+    const remount = renderHook(() => usePersistentString(KEY, "all"));
+    expect(remount.result.current[0]).toBe("acme/x");
+  });
+
+  it("removes the key when set back to the fallback", () => {
+    window.localStorage.setItem(KEY, "acme/x");
+    const { result } = renderHook(() => usePersistentString(KEY, "all"));
+    act(() => result.current[1]("all"));
+    expect(window.localStorage.getItem(KEY)).toBeNull();
+  });
+
+  it("degrades to in-memory state when storage throws, and to the fallback when reading throws", () => {
+    const setSpy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+    const { result } = renderHook(() => usePersistentString(KEY, "all"));
+    act(() => result.current[1]("kept"));
+    expect(result.current[0]).toBe("kept");
+    setSpy.mockRestore();
+
+    const getSpy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    expect(renderHook(() => usePersistentString(KEY, "all")).result.current[0]).toBe("all");
     getSpy.mockRestore();
   });
 });
