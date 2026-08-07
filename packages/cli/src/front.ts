@@ -210,13 +210,19 @@ function proxy(req: http.IncomingMessage, res: http.ServerResponse, hubPort: num
   req.pipe(upstream);
 }
 
-/** Paths the static UI would serve — everything except the hub-proxy and mirror prefixes. */
+/**
+ * Paths the static UI would serve — everything except paths the hub itself serves to runners.
+ * These MUST always proxy (never be gated as local-only UI), or a remote runner is refused
+ * resources it needs: the runner protocol (/_apis, /runner), the action mirror (/mirror), and the
+ * generic local-repo checkout action the hub builds for a dispatched repo (/localcheckout*).
+ */
 function isUiPath(pathname: string): boolean {
   return !(
     pathname.startsWith("/_apis/") ||
     pathname.startsWith("/runner/") ||
     pathname.startsWith("/api/") ||
-    pathname.startsWith("/mirror/")
+    pathname.startsWith("/mirror/") ||
+    pathname.startsWith("/localcheckout")
   );
 }
 
