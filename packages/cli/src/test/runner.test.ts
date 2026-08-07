@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostname } from "node:os";
 import { __test as runner } from "../runner.js";
@@ -30,9 +30,8 @@ function seedRunner(home: string, name: string): string {
   return dir;
 }
 
-test("join_: normalizes the hub URL and builds the configure argv (vendor copy skipped when present)", async () => {
+test("join_: a fresh join normalizes the hub URL and builds the configure argv", async () => {
   const home = freshHome();
-  seedRunner(home, "r1");
   let argv: string[] = [];
   let copied = false;
   const code = await runner.join_(
@@ -40,8 +39,11 @@ test("join_: normalizes the hub URL and builds the configure argv (vendor copy s
     { name: "r1", labels: "self-hosted,Linux,X64", token: "tok" },
     {
       ensure: async () => 0,
-      copyVendor: async () => {
+      copyVendor: async (dir) => {
         copied = true;
+        const exe = runner.listenerExe(dir);
+        mkdirSync(join(exe, ".."), { recursive: true });
+        writeFileSync(exe, "x");
       },
       run: async (_cmd, args) => {
         argv = args;
@@ -50,7 +52,7 @@ test("join_: normalizes the hub URL and builds the configure argv (vendor copy s
     },
   );
   assert.equal(code, 0);
-  assert.equal(copied, false, "existing listener -> no re-copy");
+  assert.equal(copied, true, "fresh join copies the bundle");
   assert.ok(argv.includes("configure") && argv.includes("--unattended") && argv.includes("--replace"));
   const url = argv[argv.indexOf("--url") + 1];
   assert.equal(url, "http://hub:4949/runner/server");
@@ -58,23 +60,166 @@ test("join_: normalizes the hub URL and builds the configure argv (vendor copy s
   assert.equal(argv[argv.indexOf("--name") + 1], "r1");
   assert.equal(argv[argv.indexOf("--labels") + 1], "self-hosted,Linux,X64");
   assert.equal(argv[argv.indexOf("--work") + 1], "_work");
+  void home;
 });
 
 test("join_: a trailing slash on the hub URL is handled the same way", async () => {
   const home = freshHome();
-  seedRunner(home, "r2");
   let url = "";
   await runner.join_(
     "http://hub:4949/",
     { name: "r2", labels: "l", token: "t" },
-    { ensure: async () => 0, run: async (_c, a) => ((url = a[a.indexOf("--url") + 1]), 0) },
+    {
+      ensure: async () => 0,
+      copyVendor: async (dir) => {
+        const exe = runner.listenerExe(dir);
+        mkdirSync(join(exe, ".."), { recursive: true });
+        writeFileSync(exe, "x");
+      },
+      run: async (_c, a) => ((url = a[a.indexOf("--url") + 1]), 0),
+    },
   );
   assert.equal(url, "http://hub:4949/runner/server");
+  void home;
 });
 
-test("join_: copies the vendor bundle when the listener is missing, and surfaces a failure code", async () => {
+test("join_: joining an EXISTING name WITHOUT --re-join refuses cleanly — no configure, no copy, no unregister", async () => {
+  const home = freshHome();
+  const dir = seedRunner(home, "taken");
+  let configured = false;
+  let copied = false;
+  let removed = false;
+  const code = await runner.join_(
+    "http://hub:4949",
+    { name: "taken", labels: "l", token: "t" },
+    {
+      ensure: async () => 0,
+      copyVendor: async () => {
+        copied = true;
+      },
+      removeExec: async () => ((removed = true), 0),
+      run: async () => ((configured = true), 0),
+    },
+  );
+  assert.equal(code, 1, "refusal is a non-zero exit, not the raw listener error");
+  assert.equal(configured, false, "the vendored configure never runs (no raw 'already configured')");
+  assert.equal(copied, false);
+  assert.equal(removed, false);
+  assert.equal(existsSync(runner.listenerExe(dir)), true, "the existing instance is left untouched");
+});
+
+test("join_: --re-join unregisters, re-copies the bundle, then configures — in that order", async () => {
+  const home = freshHome();
+  const dir = seedRunner(home, "reup");
+  const order: string[] = [];
+  const code = await runner.join_(
+    "http://hub:4949",
+    { name: "reup", labels: "l", token: "tok", reJoin: true },
+    {
+      ensure: async () => 0,
+      findListener: async () => [],
+      removeExec: async (d, t) => {
+        order.push("remove");
+        assert.equal(d, dir);
+        assert.equal(t, "tok");
+        return 0;
+      },
+      copyVendor: async (d) => {
+        order.push("copy");
+        const exe = runner.listenerExe(d);
+        mkdirSync(join(exe, ".."), { recursive: true });
+        writeFileSync(exe, "fresh");
+      },
+      run: async (_c, args) => {
+        order.push("configure");
+        assert.ok(args.includes("--replace"));
+        return 0;
+      },
+    },
+  );
+  assert.equal(code, 0);
+  assert.deepEqual(order, ["remove", "copy", "configure"], "unregister -> re-copy -> configure");
+  assert.equal(existsSync(runner.listenerExe(dir)), true, "instance is joined after re-join");
+});
+
+test("join_: --re-join with the hub down warns on the failed unregister but still refreshes and re-configures", async () => {
+  const home = freshHome();
+  const dir = seedRunner(home, "hubgone");
+  let copied = false;
+  let configured = false;
+  const code = await runner.join_(
+    "http://hub:4949",
+    { name: "hubgone", labels: "l", token: "t", reJoin: true },
+    {
+      ensure: async () => 0,
+      findListener: async () => [],
+      removeExec: async () => 1, // hub unreachable -> non-zero, tolerated
+      copyVendor: async (d) => {
+        copied = true;
+        const exe = runner.listenerExe(d);
+        mkdirSync(join(exe, ".."), { recursive: true });
+        writeFileSync(exe, "fresh");
+      },
+      run: async () => ((configured = true), 0),
+    },
+  );
+  assert.equal(code, 0, "re-join still succeeds locally when the old hub is unreachable");
+  assert.equal(copied, true, "binaries are refreshed even though unregister failed");
+  assert.equal(configured, true);
+  assert.equal(existsSync(runner.listenerExe(dir)), true);
+});
+
+test("join_: --re-join whose configure fails AFTER the remove cleans up — the instance does not pretend to be joined", async () => {
+  const home = freshHome();
+  const dir = seedRunner(home, "broken");
+  const code = await runner.join_(
+    "http://hub:4949",
+    { name: "broken", labels: "l", token: "t", reJoin: true },
+    {
+      ensure: async () => 0,
+      findListener: async () => [],
+      removeExec: async () => 0,
+      copyVendor: async (d) => {
+        const exe = runner.listenerExe(d);
+        mkdirSync(join(exe, ".."), { recursive: true });
+        writeFileSync(exe, "fresh");
+      },
+      run: async () => 5, // configure fails after we already removed the old instance
+    },
+  );
+  assert.equal(code, 5, "the configure exit code is surfaced");
+  assert.equal(existsSync(dir), false, "half-state cleaned up: dir gone, so list/start won't see a joined runner");
+});
+
+test("join_: --re-join preserves the stored hub certificate across the teardown", async () => {
+  const home = freshHome();
+  const dir = seedRunner(home, "tls");
+  const caFile = join(dir, "ca.pem");
+  writeFileSync(caFile, "CERT-DATA");
+  const code = await runner.join_(
+    "http://hub:4949",
+    { name: "tls", labels: "l", token: "t", reJoin: true },
+    {
+      ensure: async () => 0,
+      findListener: async () => [],
+      removeExec: async () => 0,
+      copyVendor: async (d) => {
+        const exe = runner.listenerExe(d);
+        mkdirSync(join(exe, ".."), { recursive: true });
+        writeFileSync(exe, "fresh");
+      },
+      run: async () => 0,
+    },
+  );
+  assert.equal(code, 0);
+  assert.equal(existsSync(caFile), true, "ca.pem survives the re-join");
+  assert.equal(readFileSync(caFile, "utf8"), "CERT-DATA");
+});
+
+test("join_: copies the vendor bundle when the listener is missing, and surfaces + cleans up a failure", async () => {
   const home = freshHome();
   let copied = false;
+  let instanceDir = "";
   const code = await runner.join_(
     "http://hub:4949",
     { name: "fresh", labels: "l", token: "t" },
@@ -82,6 +227,7 @@ test("join_: copies the vendor bundle when the listener is missing, and surfaces
       ensure: async () => 0,
       copyVendor: async (dir) => {
         copied = true;
+        instanceDir = dir;
         const exe = runner.listenerExe(dir);
         mkdirSync(join(exe, ".."), { recursive: true });
         writeFileSync(exe, "x");
@@ -91,6 +237,7 @@ test("join_: copies the vendor bundle when the listener is missing, and surfaces
   );
   assert.equal(copied, true);
   assert.equal(code, 4, "non-zero configure code is returned, join-success logs skipped");
+  assert.equal(existsSync(instanceDir), false, "a failed fresh join leaves nothing that pretends to be joined");
   void home;
 });
 
