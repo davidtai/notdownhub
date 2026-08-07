@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deriveProjects, projectKind, workflowKey, workflowLabel, workflowFileName } from "./projects";
+import { deriveProjects, projectKind, workflowKey, workflowLabel, workflowFileName, summarizeWorkflows } from "./projects";
 import type { WorkflowRun } from "./api";
 
 const run = (r: Partial<WorkflowRun> & { id: number }): WorkflowRun => ({
@@ -125,5 +125,34 @@ describe("projectKind", () => {
     expect(projectKind({})).toBe("unattributed");
     expect(projectKind({ owner: "acme" })).toBe("unattributed");
     expect(projectKind({ repo: "alpha" })).toBe("unattributed");
+  });
+});
+
+describe("summarizeWorkflows (#per-YAML summary chip)", () => {
+  const wf = (result: string | null) => ({ latestRun: { result } });
+  it("all green -> green tone with full count", () => {
+    expect(summarizeWorkflows([wf("succeeded"), wf("succeeded")])).toEqual({
+      passing: 2,
+      total: 2,
+      tone: "green",
+    });
+  });
+  it("any failure -> red tone, passing count kept", () => {
+    expect(summarizeWorkflows([wf("succeeded"), wf("failed"), wf("succeeded")])).toEqual({
+      passing: 2,
+      total: 3,
+      tone: "red",
+    });
+  });
+  it("no failures but not all green (skip/running) -> yellow", () => {
+    expect(summarizeWorkflows([wf("succeeded"), wf("skipped")])).toEqual({
+      passing: 1,
+      total: 2,
+      tone: "yellow",
+    });
+    expect(summarizeWorkflows([wf(null), wf("succeeded")]).tone).toBe("yellow");
+  });
+  it("empty workflow list -> yellow zero (chip hidden by caller)", () => {
+    expect(summarizeWorkflows([]).total).toBe(0);
   });
 });
