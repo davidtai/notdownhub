@@ -159,7 +159,15 @@ the hub and remove a runner offline.
 ```bash
 ndh dispatch --server http://hub.tailnet:4949 --event push
 ndh status  --server http://hub.tailnet:4949      # runners + recent runs
+ndh logs  <run-id> --server http://hub:4949       # a finished run's job logs
+ndh watch <run-id> --server http://hub:4949       # follow a live run's console
 ```
+
+`logs` and `watch` work on a run started by anything — the git hook, a schedule,
+or another machine. A hook-triggered run is no longer invisible from the CLI.
+`watch` streams the live console and exits when the run completes. `logs` reads
+the persisted job logs, which are loopback-gated on the hub. Run it on the hub
+host, or tunnel the hub port.
 
 > **Auth note:** `ndh runner join` defaults `--token` to the literal
 > `notdownhub`, which will **not** match a hub's random registration token. On

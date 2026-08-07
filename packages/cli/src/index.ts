@@ -9,6 +9,7 @@ import { registerStatus } from "./status.js";
 import { registerSecrets } from "./secrets.js";
 import { registerVars } from "./vars.js";
 import { registerHook } from "./hook.js";
+import { registerLogs } from "./logs.js";
 import { registerArtifacts } from "./artifacts-cmd.js";
 
 const EXAMPLES = `
@@ -82,6 +83,7 @@ async function buildProgram(): Promise<Command> {
   registerSecrets(program);
   registerVars(program);
   registerHook(program);
+  registerLogs(program);
   registerArtifacts(program);
   return program;
 }
