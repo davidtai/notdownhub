@@ -16,8 +16,18 @@ interface Resp {
 }
 
 function req(port: number, path: string, headers: Record<string, string> = {}, host = "127.0.0.1"): Promise<Resp> {
+  return reqm(port, "GET", path, headers, host);
+}
+
+function reqm(
+  port: number,
+  method: string,
+  path: string,
+  headers: Record<string, string> = {},
+  host = "127.0.0.1",
+): Promise<Resp> {
   return new Promise((resolve, reject) => {
-    const r = http.request({ host, port, path, method: "GET", headers }, (res) => {
+    const r = http.request({ host, port, path, method, headers }, (res) => {
       let b = "";
       res.on("data", (d) => (b += d));
       res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: b }));
@@ -184,6 +194,37 @@ test("proxy: non-Agent GET is not given a bearer", async () => {
     const seen = hub.state.last.at(-1)!;
     assert.equal(seen.auth, undefined);
     assert.equal(hub.state.registrations, 0);
+  } finally {
+    await f.close();
+    await hub.close();
+  }
+});
+
+test("proxy: injects a minted Bearer on an anonymous DELETE to an Agent instance (unregister)", async () => {
+  freshHome();
+  const hub = await fakeHub({ token: "jwt-del" });
+  const f = await front({ hubPort: hub.port, runnerToken: "reg-token" });
+  try {
+    const res = await reqm(f.port, "DELETE", "/_apis/v1/Agent/1/42", { host: "public.example:4949" });
+    assert.equal(res.status, 200);
+    const seen = hub.state.last.at(-1)!;
+    assert.equal(seen.host, "public.example:4949", "Host header must pass through untouched");
+    assert.equal(seen.auth, "Bearer jwt-del", "bearer minted + injected for the agent DELETE");
+  } finally {
+    await f.close();
+    await hub.close();
+  }
+});
+
+test("proxy: does NOT inject a Bearer on a DELETE to a non-Agent path", async () => {
+  freshHome();
+  const hub = await fakeHub({ token: "jwt-del" });
+  const f = await front({ hubPort: hub.port, runnerToken: "reg-token" });
+  try {
+    await reqm(f.port, "DELETE", "/_apis/v1/Message/workflow/run/1");
+    const seen = hub.state.last.at(-1)!;
+    assert.equal(seen.auth, undefined);
+    assert.equal(hub.state.registrations, 0, "no mint for a non-agent DELETE");
   } finally {
     await f.close();
     await hub.close();

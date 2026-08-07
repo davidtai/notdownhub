@@ -72,6 +72,8 @@ export interface TimelineRecord {
 /** A runner as reported by the hub's local dashboard endpoint (GET /api/local/agents). */
 export interface RunnerInfo {
   id: number | string;
+  /** Pool the runner belongs to; with `id` it addresses the unregister endpoint. May be absent on older hubs. */
+  poolId?: number;
   name: string;
   version?: string;
   os?: string;
@@ -121,6 +123,18 @@ export function getTimeline(timelineId: string): Promise<TimelineRecord[]> {
 export async function getAgents(): Promise<RunnerInfo[]> {
   const data = await getJson<RunnerInfo[] | { value?: RunnerInfo[] }>(`/api/local/agents`);
   return unwrap(data);
+}
+
+/**
+ * Unregister a runner from the hub. Mirrors `config.sh remove`'s hub step: DELETE
+ * /_apis/v1/Agent/{poolId}/{agentId}. The ndh front injects the management JWT for
+ * this anonymous DELETE (same AgentManagement scope as the read path). This only
+ * removes the agent from the hub — the instance directory on the runner's machine
+ * is cleaned separately with `ndh runner remove`.
+ */
+export async function removeAgent(poolId: number | string, agentId: number | string): Promise<void> {
+  const res = await fetch(`/_apis/v1/Agent/${poolId}/${agentId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`DELETE /_apis/v1/Agent/${poolId}/${agentId} → ${res.status} ${res.statusText}`);
 }
 
 /**

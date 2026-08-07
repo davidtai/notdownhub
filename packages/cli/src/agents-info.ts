@@ -16,6 +16,8 @@ import { hubDbPath, unwrap } from "./lib.js";
 
 export interface AgentInfo {
   id?: number;
+  /** Agent pool the runner belongs to. Needed with `id` to unregister it: DELETE /_apis/v1/Agent/{poolId}/{id}. */
+  poolId?: number;
   name: string;
   version?: string;
   os?: string;
@@ -29,6 +31,7 @@ export interface AgentInfo {
 
 interface BaseAgent {
   id?: number;
+  poolId?: number;
   name: string;
   version?: string;
   os?: string;
@@ -51,7 +54,7 @@ async function readFromDb(): Promise<DbRead | null> {
     try {
       const agents = db
         .prepare(
-          `SELECT t.Id AS id, t.Name AS name, t.Version AS version, t.OSDescription AS os,
+          `SELECT t.Id AS id, a.PoolId AS poolId, t.Name AS name, t.Version AS version, t.OSDescription AS os,
                   t.Ephemeral AS ephemeral, t.MaxParallelism AS maxParallelism
            FROM Agents a JOIN TaskAgentReference t ON a.TaskAgentId = t.Id`,
         )
@@ -110,6 +113,7 @@ async function agentsFromApi(hubPort: number, mint: () => Promise<string | null>
       for (const a of agents as Record<string, unknown>[]) {
         out.push({
           id: a.id as number,
+          poolId: p.id,
           name: a.name as string,
           version: a.version as string,
           os: a.osDescription as string,
@@ -134,6 +138,7 @@ export async function getAgentsInfo(hubPort: number, mint: () => Promise<string 
     const labels = db && a.id !== undefined ? (db.labels.get(a.id) ?? []) : [];
     return {
       id: a.id,
+      poolId: a.poolId,
       name: a.name!,
       version: a.version,
       os: a.os,
