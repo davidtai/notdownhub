@@ -94,6 +94,11 @@ export function createSseParser(onEvent: (ev: SseEvent) => void): (chunk: string
 // and match any final byte so cursor/erase sequences don't leave raw escape bytes behind).
 const ANSI = /\x1b\[[0-9;]*[a-zA-Z]/g;
 
+/** Remove ANSI CSI escape sequences from a log line (the tee stores plain text; `ndh watch` reuses this). */
+export function stripAnsi(s: string): string {
+  return s.replace(ANSI, "");
+}
+
 export interface PendingLine {
   runId: number | null;
   timelineId: string;
