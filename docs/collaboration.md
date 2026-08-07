@@ -261,6 +261,22 @@ default label comes from the bare repo path: `/srv/git/team/app.git` becomes
 `/srv/git/app.git` becomes `git/app`. Pass
 `ndh hook install --repository owner/name` to override the derived label.
 
+### Add a project before its first run
+
+A project normally appears only after its first run. You can register one
+earlier, from its workflow YAML. Use the **Add project** wizard on the
+Projects page, or the CLI:
+
+```bash
+ndh project add -W .github/workflows/ci.yml --server http://hub.internal:4949
+```
+
+Both surfaces parse the file: name, events, branches, and `runs-on` labels.
+Labels are checked against the live fleet, with a warning when none match.
+The project then shows as **planned**, with the exact dispatch command.
+The first run with the same slug absorbs the placeholder. Without
+`--repository`, the slug comes from the checkout's origin remote.
+
 The same label scopes secrets and variables. A server-side value stored with
 `--repo owner/name` injects into that repo's hook runs. Re-run `ndh hook
 install` on a repo with an older generated hook to pick this up.
