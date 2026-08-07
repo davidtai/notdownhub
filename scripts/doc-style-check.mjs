@@ -22,12 +22,23 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const DEFAULT_FILES = [
   "README.md",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  "CODE_OF_CONDUCT.md",
+  ".github/ISSUE_TEMPLATE/bug_report.md",
+  ".github/ISSUE_TEMPLATE/feature_request.md",
+  ".github/pull_request_template.md",
   "docs/install.md",
   "docs/operations.md",
   "docs/architecture.md",
   "docs/files.md",
   "examples/demo/README.md",
 ];
+
+// Files never checked, even when named on the command line. CODE_OF_CONDUCT.md
+// is the Contributor Covenant v2.1, reproduced verbatim. Its licensed wording
+// uses non-STE terms (e.g. "may"), so rewording it would break attribution.
+const EXCLUDE = new Set(["CODE_OF_CONDUCT.md"]);
 
 const MAX_PROCEDURE_WORDS = 20;
 const MAX_DESCRIPTION_WORDS = 25;
@@ -180,9 +191,9 @@ function checkFile(absPath) {
   return violations;
 }
 
-const files = (process.argv.slice(2).length ? process.argv.slice(2) : DEFAULT_FILES).map((f) =>
-  join(ROOT, f),
-);
+const files = (process.argv.slice(2).length ? process.argv.slice(2) : DEFAULT_FILES)
+  .filter((f) => !EXCLUDE.has(f))
+  .map((f) => join(ROOT, f));
 
 let total = 0;
 for (const f of files) {
