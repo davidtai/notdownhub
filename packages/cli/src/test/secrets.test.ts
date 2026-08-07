@@ -195,6 +195,7 @@ test("dispatch: requires --server; passes args verbatim without leaking secrets"
     runner,
     ensure: noEnsure,
     repoSlug: () => null,
+    probe: async () => ({ ok: true }), // hub reachable — exercise the argv/secret-file assembly
   });
   assert.ok(captured.includes("--server"));
   assert.ok(captured.includes("--secret-file"));

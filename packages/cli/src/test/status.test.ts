@@ -121,3 +121,24 @@ test("statusCmd: a non-OK hub response throws (surfaced as a CLI failure)", asyn
     await srv.close();
   }
 });
+
+test("statusCmd: an unreachable hub prints one [ndh] line + the underlying error, exits 1 (#69)", async () => {
+  // A server we start then immediately close gives us a definitely-dead port.
+  const srv = await startServer((_req, res) => res.end());
+  const url = srv.url;
+  await srv.close();
+  const errs: string[] = [];
+  const orig = console.error;
+  console.error = (...a: unknown[]) => errs.push(a.join(" "));
+  try {
+    const code = await statusCmd(url);
+    assert.equal(code, 1);
+    const out = errs.join("\n");
+    assert.match(out, new RegExp(`can't reach the hub at ${url.replace(/[.]/g, "\\.")}`));
+    assert.match(out, /ndh hub up/);
+    assert.match(out, /ECONNREFUSED/); // underlying error kept for debugging
+    assert.doesNotMatch(out, /fetch failed$/m); // the cryptic bare message is gone
+  } finally {
+    console.error = orig;
+  }
+});

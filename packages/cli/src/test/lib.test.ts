@@ -14,6 +14,10 @@ import {
   randomToken,
   log,
   VENDOR_VERSION,
+  connErrorCode,
+  rootErrorMessage,
+  hubUnreachableMessage,
+  probeServer,
 } from "../lib.js";
 import { initFileLog, __test as fl } from "../filelog.js";
 import { freshHome, startServer, makeTarGz } from "./helpers.js";
@@ -160,4 +164,49 @@ test("randomToken is 48 lowercase hex chars", () => {
   const t = randomToken();
   assert.match(t, /^[0-9a-f]{48}$/);
   assert.notEqual(t, randomToken());
+});
+
+// ── hub reachability (#69) ────────────────────────────────────────────────────
+test("connErrorCode digs a connection code out of a cause chain, ignores others", () => {
+  // fetch() wraps the OS error as the `cause` of a "fetch failed" TypeError.
+  const wrapped = new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:6099"), { code: "ECONNREFUSED" }) });
+  assert.equal(connErrorCode(wrapped), "ECONNREFUSED");
+  assert.equal(connErrorCode(Object.assign(new Error("dns"), { code: "ENOTFOUND" })), "ENOTFOUND");
+  assert.equal(connErrorCode(Object.assign(new Error("aborted"), { name: "AbortError" })), "ETIMEDOUT");
+  // A hub that answered with a bad status is NOT a connection error.
+  assert.equal(connErrorCode(new Error("AgentPools: 503")), null);
+  assert.equal(connErrorCode(Object.assign(new Error("weird"), { code: "EACCES" })), null);
+});
+
+test("rootErrorMessage returns the deepest cause message", () => {
+  const wrapped = new TypeError("fetch failed", { cause: new Error("connect ECONNREFUSED 127.0.0.1:6099") });
+  assert.equal(rootErrorMessage(wrapped), "connect ECONNREFUSED 127.0.0.1:6099");
+  assert.equal(rootErrorMessage(new Error("plain")), "plain");
+});
+
+test("hubUnreachableMessage names the URL and the two likely causes", () => {
+  const m = hubUnreachableMessage("http://hub:4949");
+  assert.match(m, /http:\/\/hub:4949/);
+  assert.match(m, /ndh hub up/);
+  assert.match(m, /--server/);
+});
+
+test("probeServer: a listening host is reachable; a dead port is not (real sockets)", async () => {
+  const srv = await startServer((_req, res) => {
+    res.writeHead(200);
+    res.end("ok");
+  });
+  // Reachable: any HTTP answer (even after we close, a live server) counts.
+  assert.deepEqual(await probeServer(srv.url), { ok: true });
+  await srv.close();
+  // Now the port is closed → connection refused.
+  const res = await probeServer(srv.url);
+  assert.equal(res.ok, false);
+  assert.equal(res.code, "ECONNREFUSED");
+  assert.match(String(res.detail), /ECONNREFUSED/);
+});
+
+test("probeServer: a non-connection fetch failure is treated as reachable (let the real command speak)", async () => {
+  // An unparseable URL rejects fetch without a connection code → probe stays optimistic.
+  assert.deepEqual(await probeServer("http://[bad"), { ok: true });
 });
