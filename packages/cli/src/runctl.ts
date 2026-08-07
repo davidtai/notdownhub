@@ -1,7 +1,7 @@
 import type { ServerResponse } from "node:http";
 import { deleteRun, joblogsDbPath, readDeletedRunIds } from "./joblogs.js";
 import { dropTree } from "./treecache.js";
-import { unwrap } from "./lib.js";
+import { hubDbPath, unwrap } from "./lib.js";
 import { projectLabel } from "./status.js";
 
 /**
@@ -27,11 +27,112 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 /** Unwrap a hub runs response that may be a bare array or an OData `{ value: [...] }` envelope. */
 interface RunLike {
   id?: number;
+  result?: string;
 }
 function splitEnvelope(data: unknown): { runs: RunLike[]; wrapped: boolean } {
   if (Array.isArray(data)) return { runs: data as RunLike[], wrapped: false };
   const value = (data as { value?: RunLike[] } | null)?.value;
   return { runs: Array.isArray(value) ? value : [], wrapped: true };
+}
+
+/*
+ * Canceled-vs-failed correction (issue #156).
+ *
+ * The vendored engine (Runner.Server) records the JOB-level result of a canceled
+ * run correctly as `canceled`, but rolls the ATTEMPT/run result up to `failed` —
+ * so a run the operator cancelled is indistinguishable from a genuine failure in
+ * the runs list and the run-detail header. We can't touch the engine, so the
+ * front corrects the roll-up on the read path, from the job results the engine
+ * itself persisted in hub.db (the same DB `ndh status` / runs-meta read).
+ */
+
+/** Result-word forms the engine uses for a genuinely failed run — the only ones we ever rewrite. */
+const FAILED_RESULTS = new Set(["failed", "failure"]);
+
+/** hub.db Job/Attempt `Result` enum (runner.server): the codes the roll-up cares about. */
+function jobResultString(code: number | null): string {
+  switch (code) {
+    case 2:
+      return "failed";
+    case 3:
+      return "canceled";
+    default:
+      return ""; // succeeded / skipped / still-pending → irrelevant to the correction
+  }
+}
+
+/**
+ * GitHub's roll-up of an attempt's job results, limited to the distinction the
+ * engine gets wrong (#156): a genuine job failure still dominates a cancellation,
+ * so a run is only "canceled" when NO job failed and at least one was canceled.
+ * Returns "canceled" in exactly that case, else null (the engine's result stands).
+ */
+export function rollUpResult(jobResults: string[]): "canceled" | null {
+  const norm = jobResults.map((r) => (r ?? "").toLowerCase());
+  if (norm.some((r) => FAILED_RESULTS.has(r))) return null;
+  if (norm.some((r) => r === "canceled" || r === "cancelled")) return "canceled";
+  return null;
+}
+
+/** The canceled-run correction, read from hub.db in one pass; empty when the DB is unavailable. */
+export interface RunResultRollup {
+  /** WorkflowRunAttempt.Id → the corrected result ("canceled") for attempts the engine mislabeled. */
+  byAttemptId: Map<number, "canceled">;
+  /** Run id → the WorkflowRunAttempt.Id of its NEWEST attempt (the one the runs list reflects). */
+  latestAttemptId: Map<number, number>;
+}
+
+/**
+ * Read the per-attempt canceled correction from hub.db: for every attempt, roll
+ * up its jobs' results and record the ones that should read "canceled". Scoped
+ * per attempt (keyed by the attempt row Id the attempts API also exposes as
+ * `id`), so a re-run only ever corrects the attempt the job belongs to. Tolerant:
+ * an unreadable/absent DB (not co-located, old schema) yields no corrections.
+ */
+export async function readRunResultRollup(hubDb: string = hubDbPath()): Promise<RunResultRollup> {
+  const byAttemptId = new Map<number, "canceled">();
+  const latestAttemptId = new Map<number, number>();
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(hubDb, { readOnly: true });
+    try {
+      const attempts = db
+        .prepare(`SELECT Id AS id, WorkflowRunId AS runId, Attempt AS attempt FROM WorkflowRunAttempt`)
+        .all() as unknown as { id: number; runId: number | null; attempt: number }[];
+      const latest = new Map<number, { id: number; attempt: number }>();
+      for (const a of attempts) {
+        if (a.runId == null) continue;
+        const cur = latest.get(a.runId);
+        if (!cur || a.attempt > cur.attempt) latest.set(a.runId, { id: a.id, attempt: a.attempt });
+      }
+      for (const [runId, a] of latest) latestAttemptId.set(runId, a.id);
+
+      const jobs = db
+        .prepare(`SELECT WorkflowRunAttemptId AS attemptId, Result AS result FROM Jobs`)
+        .all() as unknown as { attemptId: number | null; result: number | null }[];
+      const byAttempt = new Map<number, string[]>();
+      for (const j of jobs) {
+        if (j.attemptId == null) continue;
+        const list = byAttempt.get(j.attemptId) ?? byAttempt.set(j.attemptId, []).get(j.attemptId)!;
+        list.push(jobResultString(j.result));
+      }
+      for (const [attemptId, results] of byAttempt) {
+        if (rollUpResult(results) === "canceled") byAttemptId.set(attemptId, "canceled");
+      }
+    } finally {
+      db.close();
+    }
+  } catch {
+    /* no readable hub.db → no corrections (runs render with the engine's own results) */
+  }
+  return { byAttemptId, latestAttemptId };
+}
+
+/** True when a run the engine marked failure-like was actually its NEWEST attempt being canceled. */
+function isMislabeledCancel(result: string | undefined, runId: number | undefined, rollup: RunResultRollup): boolean {
+  if (!result || !FAILED_RESULTS.has(result.toLowerCase()) || runId === undefined) return false;
+  const attemptId = rollup.latestAttemptId.get(runId);
+  return attemptId !== undefined && rollup.byAttemptId.get(attemptId) === "canceled";
 }
 
 /**
@@ -88,6 +189,7 @@ export async function serveFilteredRuns(
   search: string,
   res: ServerResponse,
   dbPath = joblogsDbPath(),
+  hubDb: string = hubDbPath(),
 ): Promise<void> {
   let up: Response;
   try {
@@ -104,7 +206,44 @@ export async function serveFilteredRuns(
   const deleted = await readDeletedRunIds(dbPath);
   const { runs, wrapped } = splitEnvelope(data);
   const kept = runs.filter((r) => r.id === undefined || !deleted.has(r.id));
+  // #156: a canceled run the engine mislabeled `failed` reads `canceled` again.
+  const rollup = await readRunResultRollup(hubDb);
+  for (const r of kept) if (isMislabeledCancel(r.result, r.id, rollup)) r.result = "canceled";
   json(res, 200, wrapped ? { count: kept.length, value: kept } : kept);
+}
+
+/**
+ * GET /_apis/v1/Message/workflow/run/:id/attempts — proxied through with the #156
+ * canceled correction applied per attempt, so a deep-linked run (whose summary is
+ * not on the runs list's first page) still shows "Canceled" in its detail header.
+ * Deleted runs are handled upstream (front.ts 404s them before reaching here).
+ */
+export async function serveRunAttempts(
+  hubPort: number,
+  runId: number,
+  res: ServerResponse,
+  hubDb: string = hubDbPath(),
+): Promise<void> {
+  let up: Response;
+  try {
+    up = await fetch(`http://127.0.0.1:${hubPort}/_apis/v1/Message/workflow/run/${runId}/attempts`);
+  } catch (err) {
+    json(res, 502, { error: `hub unavailable: ${err}` });
+    return;
+  }
+  if (!up.ok) {
+    json(res, up.status, { error: `engine returned ${up.status}` });
+    return;
+  }
+  const data = await up.json().catch(() => []);
+  const { runs: attempts, wrapped } = splitEnvelope(data);
+  const rollup = await readRunResultRollup(hubDb);
+  for (const a of attempts as { id?: number; result?: string }[]) {
+    if (a.result && FAILED_RESULTS.has(a.result.toLowerCase()) && a.id !== undefined && rollup.byAttemptId.get(a.id) === "canceled") {
+      a.result = "canceled";
+    }
+  }
+  json(res, 200, wrapped ? { count: attempts.length, value: attempts } : attempts);
 }
 
 /**
@@ -163,4 +302,4 @@ async function fetchProjectRuns(
 }
 
 /** Exposed for tests. */
-export const __test = { splitEnvelope, fetchProjectRuns };
+export const __test = { splitEnvelope, fetchProjectRuns, jobResultString, isMislabeledCancel };

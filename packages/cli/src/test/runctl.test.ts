@@ -4,7 +4,17 @@ import http from "node:http";
 import { join } from "node:path";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { serveRunCancel, serveRunDelete, serveFilteredRuns, serveProjectDelete, __test } from "../runctl.js";
+import { DatabaseSync } from "node:sqlite";
+import {
+  serveRunCancel,
+  serveRunDelete,
+  serveFilteredRuns,
+  serveRunAttempts,
+  serveProjectDelete,
+  rollUpResult,
+  readRunResultRollup,
+  __test,
+} from "../runctl.js";
 import { openDb, JobLogWriter, isRunDeleted } from "../joblogs.js";
 import { freshHome, startServer, type Fixture } from "./helpers.js";
 
@@ -251,6 +261,169 @@ test("serveProjectDelete: 502 when the hub runs list is unreachable", async () =
   const c = capRes();
   await serveProjectDelete(1, "acme/widget", c.res, tmpDb());
   assert.equal(c.rec.code, 502);
+});
+
+// ── canceled-vs-failed roll-up (#156) ─────────────────────────────────────────
+test("rollUpResult: canceled only when nothing failed, else defers to the engine", () => {
+  assert.equal(rollUpResult(["canceled"]), "canceled");
+  assert.equal(rollUpResult(["succeeded", "cancelled"]), "canceled"); // British spelling too
+  assert.equal(rollUpResult(["failed", "canceled"]), null); // a real failure dominates a cancel
+  assert.equal(rollUpResult(["failure", "canceled"]), null);
+  assert.equal(rollUpResult(["succeeded"]), null); // no cancel → no opinion
+  assert.equal(rollUpResult([]), null);
+});
+
+test("jobResultString: maps only the codes the correction cares about", () => {
+  assert.equal(__test.jobResultString(2), "failed");
+  assert.equal(__test.jobResultString(3), "canceled");
+  assert.equal(__test.jobResultString(0), "");
+  assert.equal(__test.jobResultString(null), "");
+});
+
+/**
+ * Seed a hub.db with the WorkflowRunAttempt + Jobs shape readRunResultRollup reads.
+ * Column subsets match the real runner.server schema (verified against a live hub.db,
+ * where a canceled run's attempt Result=2 (failed) while its job Result=3 (canceled)).
+ */
+function seedRollupDb(): string {
+  const dir = mkdtempSync(join(tmpdir(), "ndh-rollup-"));
+  mkdirSync(join(dir, "hub"), { recursive: true });
+  const p = join(dir, "hub", "hub.db");
+  const db = new DatabaseSync(p);
+  db.exec(`CREATE TABLE WorkflowRunAttempt (Id INTEGER, WorkflowRunId INTEGER, Attempt INTEGER)`);
+  db.exec(`CREATE TABLE Jobs (WorkflowRunAttemptId INTEGER, Result INTEGER, runid INTEGER)`);
+  const attempt = (id: number, run: number | null, n: number) =>
+    db.exec(`INSERT INTO WorkflowRunAttempt VALUES (${id}, ${run === null ? "NULL" : run}, ${n})`);
+  const job = (attemptId: number, result: number, run: number) =>
+    db.exec(`INSERT INTO Jobs VALUES (${attemptId}, ${result}, ${run})`);
+  // Run 100: a single canceled job (engine mislabels the attempt "failed").
+  attempt(1000, 100, 1);
+  job(1000, 3, 100);
+  // Run 101: a genuine failure — must NOT be corrected.
+  attempt(1010, 101, 1);
+  job(1010, 2, 101);
+  // Run 102: a job failed AND another was canceled — the failure dominates.
+  attempt(1020, 102, 1);
+  job(1020, 2, 102);
+  job(1020, 3, 102);
+  // Run 103: a re-run — attempt 1 was canceled, attempt 2 succeeded. Only the NEWEST attempt counts.
+  attempt(1030, 103, 1);
+  job(1030, 3, 103);
+  attempt(1031, 103, 2);
+  job(1031, 0, 103);
+  // An orphan attempt with no run id must be ignored, not crash the read.
+  attempt(9999, null, 1);
+  db.close();
+  return p;
+}
+
+test("readRunResultRollup: rolls up per attempt, scoped to the newest attempt", async () => {
+  const rollup = await readRunResultRollup(seedRollupDb());
+  assert.equal(rollup.byAttemptId.get(1000), "canceled");
+  assert.equal(rollup.byAttemptId.get(1030), "canceled"); // the old, canceled attempt of run 103
+  assert.equal(rollup.byAttemptId.has(1010), false); // a genuine failure is never in the map
+  assert.equal(rollup.byAttemptId.has(1020), false);
+  assert.equal(rollup.latestAttemptId.get(100), 1000);
+  assert.equal(rollup.latestAttemptId.get(103), 1031); // newest attempt, not the canceled one
+});
+
+test("readRunResultRollup: an unreadable DB yields no corrections", async () => {
+  const rollup = await readRunResultRollup(join(tmpdir(), "ndh-nope", "does-not-exist.db"));
+  assert.equal(rollup.byAttemptId.size, 0);
+  assert.equal(rollup.latestAttemptId.size, 0);
+});
+
+test("isMislabeledCancel: only a failure-like NEWEST attempt that actually canceled", async () => {
+  const rollup = await readRunResultRollup(seedRollupDb());
+  assert.equal(__test.isMislabeledCancel("failed", 100, rollup), true);
+  assert.equal(__test.isMislabeledCancel("failure", 100, rollup), true);
+  assert.equal(__test.isMislabeledCancel("failed", 103, rollup), false); // newest attempt succeeded
+  assert.equal(__test.isMislabeledCancel("failed", 101, rollup), false); // a genuine failure
+  assert.equal(__test.isMislabeledCancel("succeeded", 100, rollup), false); // not failure-like
+  assert.equal(__test.isMislabeledCancel(undefined, 100, rollup), false);
+  assert.equal(__test.isMislabeledCancel("failed", undefined, rollup), false);
+  assert.equal(__test.isMislabeledCancel("failed", 777, rollup), false); // unknown run
+});
+
+test("serveFilteredRuns: rewrites a mislabeled canceled run to 'canceled', leaves real failures", async () => {
+  const hub = await runsHub([
+    { id: 100, result: "failed" }, // canceled run the engine called failed
+    { id: 101, result: "failed" }, // genuine failure
+    { id: 102, result: "failed" }, // failure + cancel → still failed
+  ]);
+  const c = capRes();
+  try {
+    await serveFilteredRuns(hub.port, "", c.res, tmpDb(), seedRollupDb());
+    assert.deepEqual(JSON.parse(c.rec.body!), [
+      { id: 100, result: "canceled" },
+      { id: 101, result: "failed" },
+      { id: 102, result: "failed" },
+    ]);
+  } finally {
+    await hub.close();
+  }
+});
+
+/** Fake hub serving a run's attempts payload verbatim (used by serveRunAttempts). */
+async function attemptsHub(payload: unknown, status = 200): Promise<Fixture> {
+  return startServer((_rq, res) => {
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify(payload));
+  });
+}
+
+test("serveRunAttempts: corrects a mislabeled attempt, leaves a genuine failure", async () => {
+  const p = seedRollupDb();
+  const hub = await attemptsHub([{ id: 1000, attempt: 1, result: "failed" }]);
+  const c = capRes();
+  try {
+    await serveRunAttempts(hub.port, 100, c.res, p);
+    assert.deepEqual(JSON.parse(c.rec.body!), [{ id: 1000, attempt: 1, result: "canceled" }]);
+  } finally {
+    await hub.close();
+  }
+  const hub2 = await attemptsHub([{ id: 1010, attempt: 1, result: "failed" }]);
+  const c2 = capRes();
+  try {
+    await serveRunAttempts(hub2.port, 101, c2.res, p);
+    assert.deepEqual(JSON.parse(c2.rec.body!), [{ id: 1010, attempt: 1, result: "failed" }]);
+  } finally {
+    await hub2.close();
+  }
+});
+
+test("serveRunAttempts: preserves the OData envelope and tolerates junk/non-OK/unreachable", async () => {
+  const p = seedRollupDb();
+  const wrapped = await attemptsHub({ count: 1, value: [{ id: 1000, result: "failed" }] });
+  const c = capRes();
+  try {
+    await serveRunAttempts(wrapped.port, 100, c.res, p);
+    assert.deepEqual(JSON.parse(c.rec.body!), { count: 1, value: [{ id: 1000, result: "canceled" }] });
+  } finally {
+    await wrapped.close();
+  }
+  const junk = await startServer((_q, r) => {
+    r.writeHead(200, { "content-type": "application/json" });
+    r.end("not json");
+  });
+  const c2 = capRes();
+  try {
+    await serveRunAttempts(junk.port, 100, c2.res, p);
+    assert.deepEqual(JSON.parse(c2.rec.body!), []);
+  } finally {
+    await junk.close();
+  }
+  const bad = await attemptsHub([], 503);
+  const c3 = capRes();
+  try {
+    await serveRunAttempts(bad.port, 1, c3.res, p);
+    assert.equal(c3.rec.code, 503);
+  } finally {
+    await bad.close();
+  }
+  const c4 = capRes();
+  await serveRunAttempts(1, 1, c4.res, p); // port 1 not listening → 502
+  assert.equal(c4.rec.code, 502);
 });
 
 test("fetchProjectRuns: pages until a short page and matches on project label", async () => {

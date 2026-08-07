@@ -48,6 +48,25 @@ describe("StatePill", () => {
     expect(screen.getByText("Failed")).toBeTruthy();
     expect(screen.queryByText("Passed with warnings")).toBeNull();
   });
+
+  it("renders a canceled run as 'Cancelled', never 'Failed' (#156)", () => {
+    render(<StatePill state="cancelled" />);
+    expect(screen.getByText("Cancelled")).toBeTruthy();
+    expect(screen.queryByText("Failed")).toBeNull();
+  });
+});
+
+describe("StatusIcon canceled distinction (#156)", () => {
+  it("gives the canceled state its own glyph and label, distinct from failed", () => {
+    const { container: canceled, unmount } = render(<StatusIcon state="cancelled" />);
+    expect(screen.getByLabelText("Cancelled")).toBeTruthy();
+    const canceledGlyph = canceled.querySelector("svg")?.getAttribute("class") ?? "";
+    unmount();
+    const { container: failed } = render(<StatusIcon state="fail" />);
+    const failedGlyph = failed.querySelector("svg")?.getAttribute("class") ?? "";
+    // Different color tokens prove the two states are not conflated in the UI.
+    expect(canceledGlyph).not.toEqual(failedGlyph);
+  });
 });
 
 describe("WarningMarker", () => {

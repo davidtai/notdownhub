@@ -165,6 +165,11 @@ async function runsAndCancelHub(runs: { id: number; owner?: string; repo?: strin
       res.writeHead(200);
       return void res.end();
     }
+    const ma = u.pathname.match(/^\/_apis\/v1\/Message\/workflow\/run\/(\d+)\/attempts$/);
+    if (ma) {
+      res.writeHead(200, { "content-type": "application/json" });
+      return void res.end(JSON.stringify([{ id: Number(ma[1]) * 10, attempt: 1, result: "failed" }]));
+    }
     const m = u.pathname.match(/^\/_apis\/v1\/Message\/workflow\/run\/(\d+)$/);
     if (m) {
       res.writeHead(200, { "content-type": "application/json" });
@@ -200,6 +205,22 @@ test("POST /api/local/runs/:id/cancel?soft=1: uses the graceful cancelWorkflow",
     const res = await req(f.port, "/api/local/runs/9/cancel?soft=1", {}, "POST");
     assert.equal(res.status, 200);
     assert.ok(hub.hits.includes("POST /_apis/v1/Message/cancelWorkflow/9"));
+  } finally {
+    await f.close();
+    await hub.close();
+  }
+});
+
+test("GET a live run's attempts routes through the #156 correction (no hub.db → passthrough)", async () => {
+  freshHome();
+  const hub = await runsAndCancelHub([{ id: 5 }]);
+  const f = await front(hub.port);
+  try {
+    // The isolated home has no hub.db, so serveRunAttempts finds no correction and passes the
+    // engine's attempts through unchanged — proving the front branch reaches serveRunAttempts.
+    const res = await req(f.port, "/_apis/v1/Message/workflow/run/5/attempts");
+    assert.equal(res.status, 200);
+    assert.deepEqual(JSON.parse(res.body), [{ id: 50, attempt: 1, result: "failed" }]);
   } finally {
     await f.close();
     await hub.close();

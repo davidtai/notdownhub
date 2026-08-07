@@ -10,7 +10,7 @@ import { getAgentsInfo } from "./agents-info.js";
 import { serveJobLogs, isRunDeleted, joblogsDbPath } from "./joblogs.js";
 import { getConfigInfo } from "./config-info.js";
 import { listArtifacts, parseArtifactApiPath, parseArtifactPrettyUrl, serveArtifactDownload } from "./artifacts.js";
-import { serveRunCancel, serveRunDelete, serveFilteredRuns, serveProjectDelete } from "./runctl.js";
+import { serveRunCancel, serveRunDelete, serveFilteredRuns, serveRunAttempts, serveProjectDelete } from "./runctl.js";
 import { serveProjects } from "./projects.js";
 import { servePlaceholderCrud, serveJobAliasCrud } from "./frontstore.js";
 import { serveSecretsCrud, serveVarsCrud } from "./config-crud.js";
@@ -332,6 +332,13 @@ async function handleRequest(
       // A deleted run's detail (run, attempts, jobs) 404s so the UI shows "gone", not stale data.
       res.writeHead(404, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "run deleted", runId: Number(m[1]) }));
+    } else if (
+      req.method === "GET" &&
+      (m = url.pathname.match(/^\/_apis\/v1\/Message\/workflow\/run\/(\d+)\/attempts\/?$/))
+    ) {
+      // Attempts, proxied with the #156 canceled correction so a deep-linked run's detail header
+      // reads "Canceled" (not "Failed") even when its summary isn't on the runs list's first page.
+      await serveRunAttempts(opts.hubPort, Number(m[1]), res);
     } else if (opts.uiDir && !uiAccessAllowed(req, opts) && isUiPath(url.pathname)) {
       denyUi(res, opts);
     } else if (opts.uiDir && (await serveUi(opts.uiDir, url.pathname, res))) {
