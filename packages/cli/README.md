@@ -274,10 +274,11 @@ Start a persistent hub, then attach runners from anywhere — even across NAT
 (runners are outbound-only long-pollers).
 
 ```bash
-# on the hub machine — one port: web UI + API + runner coordination + mirror
-ndh hub up                       # prints a runner registration token
+# on the hub machine — advertise a host that runners can reach
+ndh hub up --host hub.tailnet    # prints a runner registration token
 
-# on each runner machine
+# on each runner machine (a plain Node container works too)
+npm i -g notdownhub
 ndh runner join http://hub.tailnet:4949 --token <token> --labels self-hosted,linux,X64
 ndh runner start
 
@@ -286,6 +287,13 @@ ndh dispatch --server http://hub.tailnet:4949 --event push
 ndh status   --server http://hub.tailnet:4949     # runners + recent runs
 ndh watch <run-id> --server http://hub.tailnet:4949
 ```
+
+Fleet notes (from a cold-start Docker test):
+
+- **`--host` is required for a networked or Docker fleet.** `ndh hub up` advertises `localhost` by default, which a remote runner or other container cannot reach. Start the hub with `ndh hub up --host <name runners can reach>` — a LAN IP, DNS name, tailnet name, or a Docker service name like `hub`.
+- **The web UI is loopback-only; the API and runner protocol are not.** A cross-network GET `/` returns 403 by default. The REST/Actions API and the runner long-poll protocol stay reachable across the network. That is why `ndh runner join`, `dispatch`, and `status` work cross-machine while the UI does not. To view the UI remotely, use `--basic-auth`, TLS, or an SSH tunnel (see the [security model](https://github.com/davidtai/notdownhub/blob/main/docs/operations.md#security-model-v01)).
+- **A runner can be a plain Node container.** Run `npm i -g notdownhub`, then `ndh runner join <hub> --token <token>` and `ndh runner start`. No custom image is required; the prebuilt Docker runner image is one option.
+- **Getting the token to a runner is manual.** The hub prints the registration token at startup and stores it at `~/.notdownhub/hub/runner-token`. Copy that value into `ndh runner join --token <token>` on the runner.
 
 Teams can trigger CI on `git push` via a `post-receive` hook
 (`ndh hook install`). Full, verified walkthroughs:
