@@ -109,6 +109,38 @@ function readStrings(key: string): string[] {
   }
 }
 
+/**
+ * A single string persisted to localStorage — the scalar counterpart of
+ * usePersistentStrings, for a one-of-N selection like the Settings scope filter.
+ * Reads once on mount; writing the `fallback` value removes the key (so an
+ * unset/default selection leaves no storage behind). All access is guarded:
+ * private-mode or quota failures degrade to in-memory state rather than throwing.
+ */
+export function usePersistentString(key: string, fallback: string): [string, (next: string) => void] {
+  const [value, setValue] = useState<string>(() => readString(key, fallback));
+  const set = useCallback(
+    (next: string) => {
+      setValue(next);
+      try {
+        if (next === fallback) window.localStorage.removeItem(key);
+        else window.localStorage.setItem(key, next);
+      } catch {
+        // Storage unavailable — keep the value in memory for this session.
+      }
+    },
+    [key, fallback],
+  );
+  return [value, set];
+}
+
+function readString(key: string, fallback: string): string {
+  try {
+    return window.localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export interface InfiniteList<T> {
   /** Every item loaded so far, across all revealed pages (deduplicated by key). */
   items: T[];

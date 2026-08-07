@@ -5,6 +5,8 @@ import { Settings } from "./Settings";
 import { ThemeProvider } from "../lib/theme";
 import { mockFetch, routes, type RouteResult } from "../test/helpers";
 
+const SCOPE_KEY = "ndh.filters.settings-scope";
+
 function renderSettings() {
   return render(
     <ThemeProvider>
@@ -25,11 +27,19 @@ type Cfg = {
  * Stateful fetch mock: /api/local/config serves `state`, and a hit on a write
  * endpoint applies `onWrite` first — so the poll refresh after a successful
  * mutation observes the post-write world, like the real store would.
+ * /api/local/projects serves `projects` (the #91 aggregate the picker reads).
  */
-function statefulFetch(state: Cfg, onWrite: (url: string) => RouteResult | void) {
+function statefulFetch(
+  state: Cfg,
+  onWrite: (url: string) => RouteResult | void,
+  projects: { name: string }[] | null = null,
+) {
   return mockFetch((url) => {
     if (url.includes("/api/local/secrets") || url.includes("/api/local/vars")) {
       return onWrite(url) ?? { body: { ok: true } };
+    }
+    if (url.includes("/api/local/projects")) {
+      return projects === null ? { status: 404, body: null } : { body: projects };
     }
     if (url.includes("/api/local/config")) {
       return { body: { ...state, secrets: [...state.secrets], vars: [...state.vars] } };
@@ -39,14 +49,14 @@ function statefulFetch(state: Cfg, onWrite: (url: string) => RouteResult | void)
 }
 
 describe("Settings", () => {
-  it("renders a skeleton, then secrets and variables tables", async () => {
+  it("renders a skeleton, then scope-grouped secrets and variables tables", async () => {
     mockFetch(
       routes({
         "/api/local/config": {
           backend: "keychain",
           secrets: [
             { scope: "global", name: "TOKEN" },
-            { scope: "repo:acme/x", name: "DEPLOY_KEY" },
+            { scope: "acme/x", name: "DEPLOY_KEY" },
           ],
           vars: [{ scope: "global", name: "NODE_ENV", value: "production" }],
         },
@@ -58,10 +68,116 @@ describe("Settings", () => {
     await waitFor(() => expect(screen.getByText("TOKEN")).toBeTruthy());
     expect(screen.getByText("keychain")).toBeTruthy(); // backend badge
     expect(screen.getByText("DEPLOY_KEY")).toBeTruthy();
-    expect(screen.getByText("repo:acme/x")).toBeTruthy(); // non-global scope passes through
     expect(screen.getByText("NODE_ENV")).toBeTruthy();
     expect(screen.getByText("production")).toBeTruthy(); // variable values are shown
+    // Scope shows as a group header (not a per-row column now). Both scopes appear.
     expect(screen.getAllByText("global").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("acme/x").length).toBeGreaterThan(0);
+    // The shared scope filter is present with more than one scope in play.
+    expect(screen.getByLabelText("Filter by scope")).toBeTruthy();
+  });
+
+  it("hides the scope filter when everything is global (nothing to filter)", async () => {
+    mockFetch(
+      routes({
+        "/api/local/config": {
+          backend: "file",
+          secrets: [{ scope: "global", name: "TOKEN" }],
+          vars: [{ scope: "global", name: "NODE_ENV", value: "prod" }],
+        },
+      }),
+    );
+    renderSettings();
+    await waitFor(() => expect(screen.getByText("TOKEN")).toBeTruthy());
+    expect(screen.queryByLabelText("Filter by scope")).toBeNull();
+  });
+
+  it("groups by scope and narrows both lists when a project scope is chosen", async () => {
+    mockFetch(
+      routes({
+        "/api/local/config": {
+          backend: "file",
+          secrets: [
+            { scope: "global", name: "GLOBAL_SECRET" },
+            { scope: "acme/x", name: "X_SECRET" },
+            { scope: "acme/y", name: "Y_SECRET" },
+          ],
+          vars: [
+            { scope: "global", name: "GLOBAL_VAR", value: "g" },
+            { scope: "acme/x", name: "X_VAR", value: "x" },
+          ],
+        },
+      }),
+    );
+    renderSettings();
+    await waitFor(() => expect(screen.getByText("GLOBAL_SECRET")).toBeTruthy());
+    // "all" by default → every row shows.
+    expect(screen.getByText("X_SECRET")).toBeTruthy();
+    expect(screen.getByText("Y_SECRET")).toBeTruthy();
+    expect(screen.getByText("X_VAR")).toBeTruthy();
+
+    // Narrow to acme/x: only its rows remain; vars without acme/x show the empty state.
+    fireEvent.change(screen.getByLabelText("Filter by scope"), { target: { value: "acme/x" } });
+    expect(screen.getByText("X_SECRET")).toBeTruthy();
+    expect(screen.queryByText("GLOBAL_SECRET")).toBeNull();
+    expect(screen.queryByText("Y_SECRET")).toBeNull();
+    expect(screen.getByText("X_VAR")).toBeTruthy();
+    expect(screen.queryByText("GLOBAL_VAR")).toBeNull();
+
+    // Narrow to a scope no list has → both lists show the filtered-empty state.
+    fireEvent.change(screen.getByLabelText("Filter by scope"), { target: { value: "acme/y" } });
+    expect(screen.getByText("Y_SECRET")).toBeTruthy();
+    expect(screen.queryByText("X_SECRET")).toBeNull();
+    expect(screen.getByText(/No variables scoped to/)).toBeTruthy();
+
+    // Back to all.
+    fireEvent.change(screen.getByLabelText("Filter by scope"), { target: { value: "all" } });
+    expect(screen.getByText("GLOBAL_SECRET")).toBeTruthy();
+    expect(screen.getByText("X_VAR")).toBeTruthy();
+  });
+
+  it("persists the scope filter across a remount and writes it to localStorage", async () => {
+    const cfg = {
+      backend: "file",
+      secrets: [
+        { scope: "global", name: "GLOBAL_SECRET" },
+        { scope: "acme/x", name: "X_SECRET" },
+      ],
+      vars: [{ scope: "global", name: "GLOBAL_VAR", value: "g" }],
+    };
+    mockFetch(routes({ "/api/local/config": cfg }));
+
+    const first = renderSettings();
+    await waitFor(() => expect(screen.getByText("X_SECRET")).toBeTruthy());
+    fireEvent.change(screen.getByLabelText("Filter by scope"), { target: { value: "acme/x" } });
+    expect(window.localStorage.getItem(SCOPE_KEY)).toBe("acme/x");
+    first.unmount();
+
+    // A fresh visit restores the saved filter — only acme/x rows show.
+    renderSettings();
+    await waitFor(() => expect(screen.getByText("X_SECRET")).toBeTruthy());
+    expect((screen.getByLabelText("Filter by scope") as HTMLSelectElement).value).toBe("acme/x");
+    expect(screen.queryByText("GLOBAL_SECRET")).toBeNull();
+  });
+
+  it("keeps a saved filter on a now-absent scope visible and resettable", async () => {
+    window.localStorage.setItem(SCOPE_KEY, "gone/away");
+    mockFetch(
+      routes({
+        "/api/local/config": {
+          backend: "file",
+          secrets: [{ scope: "global", name: "TOKEN" }],
+          vars: [],
+        },
+      }),
+    );
+    renderSettings();
+    await waitFor(() =>
+      expect((screen.getByLabelText("Filter by scope") as HTMLSelectElement).value).toBe("gone/away"),
+    );
+    // No secret matches the stale scope → filtered-empty state, not the whole list.
+    expect(screen.getByText(/No secrets scoped to/)).toBeTruthy();
+    expect(screen.queryByText("TOKEN")).toBeNull();
   });
 
   it("shows empty rows where the form is primary and the CLI hint secondary", async () => {
@@ -76,6 +192,8 @@ describe("Settings", () => {
     // Both add forms render even when nothing is stored.
     expect(screen.getByRole("button", { name: "Add secret" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Add variable" })).toBeTruthy();
+    // Nothing to filter → no scope control.
+    expect(screen.queryByLabelText("Filter by scope")).toBeNull();
   });
 
   it("shows an error state when the config endpoint fails", async () => {
@@ -159,7 +277,7 @@ describe("Settings", () => {
     expect(await screen.findByText(new RegExp("run 'ndh secrets backend file'"))).toBeTruthy();
   });
 
-  it("scopes a write to a repository when the scope selector says so", async () => {
+  it("scopes a write to a typed repository via the 'Other repository…' fallback", async () => {
     const state: Cfg = { backend: "file", secrets: [], vars: [] };
     const fn = statefulFetch(state, () => {
       state.vars.push({ scope: "acme/x", name: "DEPLOY_TARGET", value: "prod" });
@@ -186,6 +304,57 @@ describe("Settings", () => {
       scope: "acme/x",
     });
     expect(screen.getByText("prod")).toBeTruthy(); // var values stay visible in the table
+  });
+
+  it("populates the add-form picker from known projects and posts the picked scope", async () => {
+    const state: Cfg = { backend: "file", secrets: [], vars: [] };
+    const fn = statefulFetch(
+      state,
+      () => {
+        state.secrets.push({ scope: "acme/web", name: "PICKED" });
+      },
+      [{ name: "acme/web" }, { name: "acme/api" }, { name: "just-a-name" }],
+    );
+    renderSettings();
+    await waitFor(() => expect(screen.getByText(/No secrets stored\./)).toBeTruthy());
+
+    const select = screen.getByLabelText("New secret scope") as HTMLSelectElement;
+    // Known owner/repo projects are offered; a bare label is not.
+    await waitFor(() =>
+      expect(within(select).getByRole("option", { name: "acme/web" })).toBeTruthy(),
+    );
+    expect(within(select).getByRole("option", { name: "acme/api" })).toBeTruthy();
+    expect(within(select).queryByRole("option", { name: "just-a-name" })).toBeNull();
+
+    // Picking a project attaches the value to that scope directly — no free-text needed.
+    fireEvent.change(select, { target: { value: "acme/web" } });
+    expect(screen.queryByLabelText("New secret repository (owner/name)")).toBeNull();
+    fireEvent.change(screen.getByLabelText("New secret name"), { target: { value: "PICKED" } });
+    fireEvent.change(screen.getByLabelText("New secret value"), { target: { value: "v" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add secret" }));
+
+    await waitFor(() => {
+      const post = fn.mock.calls.find(
+        ([u, i]) => String(u) === "/api/local/secrets" && (i as RequestInit)?.method === "POST",
+      );
+      expect(post).toBeTruthy();
+      expect(JSON.parse((post![1] as RequestInit).body as string)).toEqual({
+        name: "PICKED",
+        value: "v",
+        scope: "acme/web",
+      });
+    });
+
+    // The refresh (GET /api/local/config) now reports it under the repo scope, NOT global:
+    // the new row renders below the acme/web group header, and no global secret was created.
+    await waitFor(() => expect(screen.getByText("PICKED")).toBeTruthy());
+    expect(screen.getAllByText("acme/web").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/No secrets scoped to/)).toBeNull();
+    // Nothing landed in a global group — the whole store is the one repo-scoped secret.
+    expect(fn.mock.calls.every(([u, i]) => {
+      if (String(u) !== "/api/local/secrets" || (i as RequestInit)?.method !== "POST") return true;
+      return JSON.parse((i as RequestInit).body as string).scope !== "global";
+    })).toBe(true);
   });
 
   it("deletes a secret behind a confirm dialog; cancel sends nothing", async () => {
@@ -246,5 +415,20 @@ describe("Settings", () => {
     await waitFor(() => expect(screen.queryByText("NODE_ENV")).toBeNull());
     const del = fn.mock.calls.find(([, i]) => (i as RequestInit)?.method === "DELETE");
     expect(String(del![0])).toBe("/api/local/vars?name=NODE_ENV&scope=global");
+  });
+
+  it("reports a variable delete failure inline without a confirm dialog", async () => {
+    const state: Cfg = {
+      backend: "file",
+      secrets: [],
+      vars: [{ scope: "global", name: "STUCK", value: "v" }],
+    };
+    statefulFetch(state, () => ({ status: 500, body: { ok: false, error: "index write failed" } }));
+    renderSettings();
+    await waitFor(() => expect(screen.getByText("STUCK")).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete variable STUCK (global)" }));
+    expect(await screen.findByText("index write failed")).toBeTruthy();
+    expect(screen.getByText("STUCK")).toBeTruthy(); // nothing removed
   });
 });
