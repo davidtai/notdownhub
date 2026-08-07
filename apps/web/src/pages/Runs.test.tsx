@@ -21,6 +21,11 @@ const CI1 = { id: 1, fileName: "ci.yml", displayName: "CI", status: "completed",
 const CI2 = { id: 2, fileName: "ci.yml", displayName: "CI", status: "completed", result: "succeeded" };
 const REL = { id: 3, fileName: "release.yml", displayName: "Release", status: "completed", result: "succeeded" };
 
+// Runs across two projects, for the project filter.
+const ACME = { id: 10, fileName: "ci.yml", displayName: "CI", owner: "acme", repo: "widget", status: "completed", result: "succeeded" };
+const WIDGET2 = { id: 11, fileName: "release.yml", displayName: "Release", owner: "acme", repo: "widget", status: "completed", result: "succeeded" };
+const LOCAL = { id: 12, fileName: "ci.yml", displayName: "CI", owner: "local", repo: "scratch", status: "completed", result: "succeeded" };
+
 describe("Runs", () => {
   it("shows a skeleton, then groups runs by workflow and filters via the sidebar", async () => {
     mockFetch(routes({ "/workflow/runs": [CI1, CI2, REL] }));
@@ -53,6 +58,35 @@ describe("Runs", () => {
     expect(
       screen.getAllByRole("link").filter((a) => a.getAttribute("href")?.startsWith("/runs/")),
     ).toHaveLength(2);
+  });
+
+  it("filters runs by project and composes with the workflow filter", async () => {
+    mockFetch(routes({ "/workflow/runs": [ACME, WIDGET2, LOCAL] }));
+    renderRuns();
+    await waitFor(() => expect(screen.getByRole("group", { name: "Filter by project" })).toBeTruthy());
+
+    const linksNow = () =>
+      screen.getAllByRole("link").filter((a) => a.getAttribute("href")?.startsWith("/runs/"));
+
+    // Two projects → a project pill for each plus "All projects"; all three runs shown.
+    expect(screen.getByRole("button", { name: /All projects/ })).toBeTruthy();
+    expect(linksNow()).toHaveLength(3);
+
+    // Filter to acme/widget → only its two runs remain.
+    fireEvent.click(screen.getByRole("button", { name: /acme\/widget/ }));
+    expect(linksNow()).toHaveLength(2);
+
+    // Compose with the workflow filter: within acme/widget, keep only Release.
+    fireEvent.click(screen.getByRole("button", { name: /Release/ }));
+    expect(linksNow()).toHaveLength(1);
+    expect(screen.getByRole("link", { name: /Release/ }).getAttribute("href")).toBe("/runs/11");
+  });
+
+  it("hides the project filter when every run belongs to one project", async () => {
+    mockFetch(routes({ "/workflow/runs": [CI1, CI2, REL] }));
+    renderRuns();
+    await waitFor(() => expect(screen.getAllByText("CI").length).toBeGreaterThan(0));
+    expect(screen.queryByRole("group", { name: "Filter by project" })).toBeNull();
   });
 
   it("shows the empty state when the hub has no runs", async () => {

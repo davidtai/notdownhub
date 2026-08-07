@@ -9,6 +9,14 @@ interface Agent {
   [k: string]: unknown;
 }
 
+/** The project a run belongs to — `owner/repo`, or whichever half the run carries. */
+export function projectLabel(run: { owner?: string; repo?: string }): string {
+  const owner = run.owner?.trim();
+  const repo = run.repo?.trim();
+  if (owner && repo) return `${owner}/${repo}`;
+  return repo || owner || "local";
+}
+
 async function getJson<T>(base: string, path: string): Promise<T> {
   const res = await fetch(new URL(path, base));
   if (!res.ok) throw new Error(`${path}: ${res.status}`);
@@ -41,11 +49,11 @@ export async function statusCmd(server: string): Promise<number> {
   }
   if (!any) console.log("  (none registered)");
 
-  type Run = { id: number; fileName?: string; displayName?: string; status?: string; result?: string; eventName?: string };
+  type Run = { id: number; fileName?: string; displayName?: string; status?: string; result?: string; eventName?: string; owner?: string; repo?: string };
   const runs = unwrap<Run>(await getJson(base, "_apis/v1/Message/workflow/runs?page=0"));
   console.log("recent runs:");
   for (const r of runs.slice(0, 15)) {
-    console.log(`  #${r.id}  ${r.displayName ?? r.fileName ?? "?"}  ${r.status ?? ""}${r.result ? `/${r.result}` : ""}  (${r.eventName ?? "?"})`);
+    console.log(`  #${r.id}  ${r.displayName ?? r.fileName ?? "?"}  [${projectLabel(r)}]  ${r.status ?? ""}${r.result ? `/${r.result}` : ""}  (${r.eventName ?? "?"})`);
   }
   if (runs.length === 0) console.log("  (no runs yet)");
   return 0;

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { statusCmd } from "../status.js";
+import { statusCmd, projectLabel } from "../status.js";
 import { startServer } from "./helpers.js";
 
 function capture(): { logs: string[]; restore: () => void } {
@@ -24,6 +24,13 @@ async function hubServing(routes: Routes) {
   });
 }
 
+test("projectLabel: joins owner/repo, tolerates a missing half, and falls back to local", () => {
+  assert.equal(projectLabel({ owner: "acme", repo: "widget" }), "acme/widget");
+  assert.equal(projectLabel({ repo: "widget" }), "widget");
+  assert.equal(projectLabel({ owner: "acme" }), "acme");
+  assert.equal(projectLabel({}), "local");
+});
+
 test("statusCmd: prints runners (array shapes) and recent runs with all field fallbacks", async () => {
   const srv = await hubServing({
     "_apis/v1/AgentPools": [{ id: 1 }],
@@ -32,7 +39,7 @@ test("statusCmd: prints runners (array shapes) and recent runs with all field fa
       { name: "linux-runner", labels: [{ name: "self-hosted" }] },
     ],
     "_apis/v1/Message/workflow/runs": [
-      { id: 7, displayName: "CI", status: "completed", result: "success", eventName: "push" },
+      { id: 7, displayName: "CI", status: "completed", result: "success", eventName: "push", owner: "acme", repo: "widget" },
       { id: 8, fileName: "release.yml", status: "in_progress" },
       { id: 9 },
     ],
@@ -44,9 +51,10 @@ test("statusCmd: prints runners (array shapes) and recent runs with all field fa
     const out = cap.logs.join("\n");
     assert.match(out, /mac-runner {2}\[self-hosted,macOS\]/);
     assert.match(out, /linux-runner {2}\[self-hosted\]/);
-    assert.match(out, /#7 {2}CI {2}completed\/success {2}\(push\)/);
-    assert.match(out, /#8 {2}release\.yml {2}in_progress {2}\(\?\)/);
-    assert.match(out, /#9 {2}\?\s+\(\?\)/); // empty status/result collapses the spacing
+    // Each recent-runs line now carries its project in [brackets].
+    assert.match(out, /#7 {2}CI {2}\[acme\/widget\] {2}completed\/success {2}\(push\)/);
+    assert.match(out, /#8 {2}release\.yml {2}\[local\] {2}in_progress {2}\(\?\)/);
+    assert.match(out, /#9 {2}\? {2}\[local\]\s+\(\?\)/); // no project recorded → local fallback
   } finally {
     cap.restore();
     await srv.close();

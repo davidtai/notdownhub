@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { GitBranch, GitCommitHorizontal } from "lucide-react";
 import type { WorkflowRun } from "../lib/api";
-import { toState, shortRef, shortSha, relativeTime } from "../lib/format";
+import { toState, shortRef, shortSha, relativeTime, projectLabel } from "../lib/format";
 import { StatusIcon } from "./StatusIcon";
 import { Badge } from "./ui/badge";
 
@@ -10,7 +10,7 @@ export function RunRow({ run }: { run: WorkflowRun }) {
   const state = toState(run.status, run.result);
   const ref = shortRef(run.ref);
   const sha = shortSha(run.sha);
-  const repo = run.owner && run.owner !== "Unknown" ? `${run.owner}/${run.repo}` : null;
+  const repo = projectLabel(run);
   const when = relativeTime(run.createdOn);
   const title = run.displayName || run.fileName || `Run ${run.id}`;
 

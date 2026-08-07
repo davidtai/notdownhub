@@ -9,7 +9,24 @@ import {
   elapsedMs,
   timelineSpan,
   matrixLabel,
+  projectLabel,
 } from "./format";
+
+describe("projectLabel", () => {
+  it("joins owner/repo when both are present", () => {
+    expect(projectLabel({ owner: "acme", repo: "widget" })).toBe("acme/widget");
+    expect(projectLabel({ owner: "Unknown", repo: "x" })).toBe("Unknown/x");
+  });
+  it("uses whichever half is present, trimming blanks", () => {
+    expect(projectLabel({ repo: "widget" })).toBe("widget");
+    expect(projectLabel({ owner: "acme" })).toBe("acme");
+    expect(projectLabel({ owner: "  ", repo: "widget" })).toBe("widget");
+  });
+  it("falls back to 'local' when the run carries no project", () => {
+    expect(projectLabel({})).toBe("local");
+    expect(projectLabel({ owner: null, repo: null })).toBe("local");
+  });
+});
 
 describe("toState", () => {
   it("lets a truthy result win over status", () => {

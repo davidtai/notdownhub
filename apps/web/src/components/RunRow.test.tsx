@@ -33,15 +33,21 @@ describe("RunRow", () => {
     expect(screen.getByRole("link").getAttribute("href")).toBe("/runs/42");
   });
 
-  it("omits optional metadata and falls back to a Run # title", () => {
+  it("always shows the project label (owner/repo), even when owner is Unknown", () => {
     const run: WorkflowRun = {
       id: 7,
-      owner: "Unknown", // suppressed
+      owner: "Unknown",
       repo: "x",
     };
     renderWithRouter(<RunRow run={run} />);
     expect(screen.getByText("Run 7")).toBeTruthy();
-    expect(screen.queryByText("Unknown/x")).toBeNull();
+    // Previously hidden when owner was 'Unknown' — now every run visibly carries its project.
+    expect(screen.getByText("Unknown/x")).toBeTruthy();
+  });
+
+  it("falls back to a 'local' project label when the run carries no owner/repo", () => {
+    renderWithRouter(<RunRow run={{ id: 8 }} />);
+    expect(screen.getByText("local")).toBeTruthy();
   });
 
   it("uses fileName when there is no displayName", () => {

@@ -161,7 +161,11 @@ test("run: verbatim passthrough including default platform args and a leading `-
     ensure: noEnsure,
     repoSlug: () => null,
   });
-  assert.deepEqual(captured, ["-P", "ubuntu-latest=node:20", "--event", "push"]);
+  // --repository is injected ahead of the user args (origin-less → local/ fallback);
+  // the user's -P still suppresses the default platform mappings.
+  assert.equal(captured[0], "--repository");
+  assert.match(captured[1], /^local\//);
+  assert.deepEqual(captured.slice(2), ["-P", "ubuntu-latest=node:20", "--event", "push"]);
 });
 
 test("dispatch: requires --server; passes args verbatim without leaking secrets", async () => {

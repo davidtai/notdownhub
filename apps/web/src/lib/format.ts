@@ -30,6 +30,17 @@ export const STATE_LABEL: Record<State, string> = {
   unknown: "Unknown",
 };
 
+/**
+ * The project a run belongs to — `owner/repo`, or whichever half the run carries.
+ * Always returns a label so every run visibly belongs to a project (never hidden).
+ */
+export function projectLabel(run: { owner?: string | null; repo?: string | null }): string {
+  const owner = run.owner?.trim();
+  const repo = run.repo?.trim();
+  if (owner && repo) return `${owner}/${repo}`;
+  return repo || owner || "local";
+}
+
 /** First 7 of a commit sha, the way every git UI shows it. */
 export function shortSha(sha?: string | null): string {
   if (!sha) return "";
