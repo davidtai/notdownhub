@@ -3,7 +3,7 @@ import { cn } from "../../lib/utils";
 
 /**
  * Minimal hover/focus tooltip — no portal, positioned with CSS. Good enough for
- * short glossary hints (status names, timestamps) without pulling in a popover lib.
+ * short hints (status names) without pulling in a popover library.
  */
 export function Tooltip({
   label,
@@ -30,7 +30,7 @@ export function Tooltip({
         <span
           role="tooltip"
           className={cn(
-            "pointer-events-none absolute left-1/2 z-50 -translate-x-1/2 whitespace-nowrap rounded border border-line-strong bg-surface-2 px-2 py-1 font-mono text-[11px] text-fg shadow-lg",
+            "pointer-events-none absolute left-1/2 z-50 -translate-x-1/2 whitespace-nowrap rounded-md border border-line bg-surface px-2 py-1 text-[11px] text-fg shadow-md",
             side === "top" ? "bottom-full mb-1.5" : "top-full mt-1.5",
             className,
           )}

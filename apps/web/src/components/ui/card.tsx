@@ -1,11 +1,15 @@
 import { forwardRef, type HTMLAttributes } from "react";
 import { cn } from "../../lib/utils";
 
+/** A surface panel: hairline border, 8px radius, and a soft single-layer shadow. */
 export const Card = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
   ({ className, ...props }, ref) => (
     <div
       ref={ref}
-      className={cn("rounded-[var(--radius-card)] border border-line bg-surface", className)}
+      className={cn(
+        "rounded-lg border border-line bg-surface shadow-[0_1px_2px_rgba(27,31,36,0.04)]",
+        className,
+      )}
       {...props}
     />
   ),

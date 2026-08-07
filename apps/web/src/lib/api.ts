@@ -1,11 +1,11 @@
-import { parse as parseYaml } from "yaml";
-
 /*
   Hub API client. Shapes below were verified empirically with curl against a live
-  `ndh hub up` instance (runner.server 3.14.0) — see PR description. Requests are
-  same-origin: in production the ndh front server serves this app and proxies
-  /_apis to the hub (injecting the read-only management JWT for Agent* routes);
-  in dev, vite proxies to the developer's own test hub.
+  `ndh hub up` instance. Requests are same-origin: in production the ndh front
+  server serves this app and proxies /_apis and /api to the hub; in dev, vite
+  proxies to the developer's own test hub (see vite.config.ts).
+
+  Envelope note: some endpoints return a bare array, others an OData-ish
+  { value: [...] } wrapper — `unwrap` handles both.
 */
 
 export interface WorkflowRun {
@@ -19,13 +19,15 @@ export interface WorkflowRun {
   status?: string | null;
   owner?: string | null;
   repo?: string | null;
+  /** Not guaranteed by the runs list; used only when present (never fabricated). */
+  createdOn?: string | null;
 }
 
 export interface Attempt {
   id: number;
   attempt: number;
   eventName?: string | null;
-  /** Full workflow YAML for this attempt — the source of truth for `needs` edges. */
+  /** Full workflow YAML for this attempt. Retained for reference; not parsed here. */
   workflow?: string | null;
   eventPayload?: string | null;
   timeLineId: string;
@@ -40,9 +42,9 @@ export interface Job {
   requestId: number;
   timeLineId: string;
   name: string;
-  /** Stable YAML job key; matrix expansions share it (used to map to a `needs` node). */
+  /** Stable YAML job key; matrix legs share it (used to group legs under a parent). */
   workflowIdentifier: string;
-  /** JSON string of the matrix combination, or null for the (hidden) matrix parent. */
+  /** JSON string of the matrix combination, or null for the matrix parent / plain job. */
   matrix: string | null;
   workflowname?: string;
   runid: number;
@@ -67,28 +69,24 @@ export interface TimelineRecord {
   log?: { id: number } | null;
 }
 
-export interface Agent {
-  id: number;
-  name?: string;
+/** A runner as reported by the hub's local dashboard endpoint (GET /api/local/agents). */
+export interface RunnerInfo {
+  id: number | string;
+  name: string;
   version?: string;
-  osDescription?: string;
+  os?: string;
   ephemeral?: boolean;
-  status?: number | string;
-  provisioningState?: string;
   maxParallelism?: number;
-  // NB: the Agent API does not return runner labels; kept optional/defensive.
-  labels?: { name?: string }[];
+  labels: string[];
+  online: boolean;
+  busy: boolean;
+  state: "active" | "idle" | "offline";
 }
 
-export interface Pool {
-  id: number;
-  name?: string;
-}
-
-export interface Runner extends Agent {
-  poolName?: string;
-  /** Authoritative liveness from GET /Message/isagentonline (an open runner session). */
-  live?: boolean;
+export interface JobLogs {
+  /** false for runs predating log retention — render the "not retained" note, not an empty pane. */
+  retained: boolean;
+  lines: string[];
 }
 
 async function getJson<T>(path: string): Promise<T> {
@@ -119,6 +117,49 @@ export function getTimeline(timelineId: string): Promise<TimelineRecord[]> {
   return getJson<TimelineRecord[]>(`/_apis/v1/Timeline/${timelineId}`);
 }
 
+/** Fleet, from the hub's local dashboard endpoint. Returns [] on any failure. */
+export async function getAgents(): Promise<RunnerInfo[]> {
+  const data = await getJson<RunnerInfo[] | { value?: RunnerInfo[] }>(`/api/local/agents`);
+  return unwrap(data);
+}
+
+/**
+ * Persisted console for a completed job. Live logs are ephemeral in the hub, so
+ * a finished run reads its output from here. `retained: false` means the run
+ * predates retention — the caller shows a note rather than an empty pane.
+ */
+export async function getJobLogs(runId: number, timelineId: string): Promise<JobLogs> {
+  try {
+    const res = await fetch(`/api/local/joblogs/${runId}/${timelineId}`, {
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) return { retained: false, lines: [] };
+    const body = (await res.json()) as { retained?: boolean; lines?: unknown };
+    return {
+      retained: !!body.retained,
+      lines: Array.isArray(body.lines) ? (body.lines as string[]) : [],
+    };
+  } catch {
+    return { retained: false, lines: [] };
+  }
+}
+
+// ── Settings (read-only view of secrets/variables) ──────────────────────────
+export interface ConfigInfo {
+  /** Where secrets live: keychain / libsecret / file. */
+  backend: string;
+  /** Secret names only — values are never sent to the browser. */
+  secrets: { scope: string; name: string }[];
+  /** Variables are non-sensitive, so their values are shown. */
+  vars: { scope: string; name: string; value: string }[];
+}
+
+/** GET /api/local/config — names of stored secrets + variable values, local-only gated. */
+export async function getConfig(): Promise<ConfigInfo> {
+  const d = await getJson<Partial<ConfigInfo>>(`/api/local/config`);
+  return { backend: d.backend ?? "unknown", secrets: d.secrets ?? [], vars: d.vars ?? [] };
+}
+
 // ── Pairing ─────────────────────────────────────────────────────────────────
 export interface JoinInfo {
   host: string;
@@ -133,11 +174,10 @@ export type JoinInfoResult =
   | { ok: false; status: number };
 
 /**
- * GET /api/local/join-info — the hub's front server returns pairing details only
- * to the local operator (loopback) or an authenticated remote (basic auth). A 403
- * means the UI is local-only (no basic auth configured); a 401 means auth required.
- * We never guess the token: either the hub hands it to an authorized caller, or we
- * show a placeholder and point at where it lives.
+ * GET /api/local/join-info — the hub returns pairing details only to the local
+ * operator (loopback) or an authenticated remote (basic auth). A 403 means the
+ * UI is local-only. We never guess the token: either the hub hands it to an
+ * authorized caller, or we show a placeholder and point at where it lives.
  */
 export async function getJoinInfo(): Promise<JoinInfoResult> {
   try {
@@ -147,93 +187,4 @@ export async function getJoinInfo(): Promise<JoinInfoResult> {
   } catch {
     return { ok: false, status: 0 };
   }
-}
-
-/**
- * Real-time liveness. The Agent record's `status` field is not maintained on
- * disconnect (it reads 0/"Provisioned" even for a runner that has gone away), so
- * we ask the hub which agents currently hold an open session:
- *   GET /_apis/v1/Message/isagentonline?name=<name> → { online } (404 when offline).
- */
-export async function isAgentOnline(name: string): Promise<boolean> {
-  try {
-    const res = await fetch(`/_apis/v1/Message/isagentonline?name=${encodeURIComponent(name)}`);
-    if (!res.ok) return false;
-    const body = (await res.json()) as { online?: boolean };
-    return !!body.online;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Fleet = every agent across every pool, tagged with its pool name and live state.
- * Sourced from AgentPools → Agent/{poolId} → isagentonline/{name}. NB: the Agent
- * read API does not return runner labels, so cards render only the fields it exposes.
- */
-export async function getFleet(): Promise<Runner[]> {
-  const pools = unwrap(await getJson<Pool[] | { value: Pool[] }>(`/_apis/v1/AgentPools`));
-  const out: Runner[] = [];
-  for (const pool of pools) {
-    const agents = unwrap(await getJson<Agent[] | { value: Agent[] }>(`/_apis/v1/Agent/${pool.id}`));
-    for (const a of agents) out.push({ ...a, poolName: pool.name });
-  }
-  await Promise.all(
-    out.map(async (r) => {
-      r.live = r.name ? await isAgentOnline(r.name) : false;
-    }),
-  );
-  return out;
-}
-
-// ── DAG derivation ────────────────────────────────────────────────────────────
-// The jobs API has no explicit dependency edges, but each attempt carries the full
-// workflow YAML. Parsing `needs:` gives real edges; depth (longest path from a root)
-// determines the left-to-right column each job sits in.
-
-export interface JobGraph {
-  /** job key → list of job keys it depends on */
-  needs: Record<string, string[]>;
-  /** job key → column index (0 = no dependencies) */
-  depth: Record<string, number>;
-  /** whether edges came from the YAML (true) or a completion-order fallback (false) */
-  derivedFromNeeds: boolean;
-}
-
-export function buildGraph(workflowYaml?: string | null, jobKeys: string[] = []): JobGraph {
-  const needs: Record<string, string[]> = {};
-  let derivedFromNeeds = false;
-
-  if (workflowYaml) {
-    try {
-      const doc = parseYaml(workflowYaml) as { jobs?: Record<string, { needs?: string | string[] }> };
-      const jobs = doc?.jobs ?? {};
-      for (const [key, def] of Object.entries(jobs)) {
-        const n = def?.needs;
-        needs[key] = n ? (Array.isArray(n) ? n : [n]) : [];
-      }
-      derivedFromNeeds = Object.keys(needs).length > 0;
-    } catch {
-      // fall through to fallback
-    }
-  }
-
-  // Fallback: no parseable needs → lay every known job in a single column.
-  if (!derivedFromNeeds) {
-    for (const k of jobKeys) needs[k] = [];
-  }
-
-  const depth: Record<string, number> = {};
-  const compute = (key: string, seen: Set<string>): number => {
-    if (depth[key] !== undefined) return depth[key];
-    if (seen.has(key)) return 0; // guard against cycles
-    seen.add(key);
-    const parents = needs[key] ?? [];
-    const d = parents.length ? Math.max(...parents.map((p) => compute(p, seen) + 1)) : 0;
-    depth[key] = d;
-    return d;
-  };
-  for (const key of Object.keys(needs)) compute(key, new Set());
-
-  return { needs, depth, derivedFromNeeds };
 }

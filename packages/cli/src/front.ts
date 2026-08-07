@@ -5,6 +5,9 @@ import { mkdir, stat, readFile } from "node:fs/promises";
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { download, exists, log, ndhHome } from "./lib.js";
+import { getAgentsInfo } from "./agents-info.js";
+import { serveJobLogs } from "./joblogs.js";
+import { getConfigInfo } from "./config-info.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -114,6 +117,32 @@ async function handleRequest(
           authEnabled: Boolean(opts.runnerToken),
         }),
       );
+    } else if (url.pathname === "/api/local/agents") {
+      // Runner list enriched with labels (from the hub DB) and Active/Idle/Offline
+      // state. Same local-only gate as join-info; degrades to an empty list on error.
+      if (!uiAccessAllowed(req, opts)) {
+        denyUi(res, opts);
+        return;
+      }
+      const agents = await getAgentsInfo(opts.hubPort, mint).catch(() => []);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(agents));
+    } else if (url.pathname === "/api/local/config") {
+      // Read-only secrets (names only) + variables for the Settings page.
+      if (!uiAccessAllowed(req, opts)) {
+        denyUi(res, opts);
+        return;
+      }
+      const config = await getConfigInfo().catch(() => ({ backend: "unknown", secrets: [], vars: [] }));
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(config));
+    } else if (url.pathname === "/api/local/joblogs" || url.pathname.startsWith("/api/local/joblogs/")) {
+      // Persisted console output for a completed run's job (survives hub restarts).
+      if (!uiAccessAllowed(req, opts)) {
+        denyUi(res, opts);
+        return;
+      }
+      await serveJobLogs(url.pathname, res);
     } else if (opts.uiDir && !uiAccessAllowed(req, opts) && isUiPath(url.pathname)) {
       denyUi(res, opts);
     } else if (opts.uiDir && (await serveUi(opts.uiDir, url.pathname, res))) {

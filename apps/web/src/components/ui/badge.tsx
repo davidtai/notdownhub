@@ -2,21 +2,19 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { type HTMLAttributes } from "react";
 import { cn } from "../../lib/utils";
 
-const badge = cva(
-  "inline-flex items-center gap-1.5 font-mono text-[11px] font-medium leading-none",
-  {
-    variants: {
-      variant: {
-        // Monospace "chips" with a hairline — reads like a panel readout, not a pill.
-        outline:
-          "rounded border border-line px-1.5 py-1 text-fg-muted",
-        solid: "rounded px-1.5 py-1 bg-surface-2 text-fg",
-        plain: "text-fg-muted",
-      },
+const badge = cva("inline-flex items-center gap-1 leading-none", {
+  variants: {
+    variant: {
+      // Hairline chip — an event name, a matrix leg, a label.
+      outline: "rounded-full border border-line px-2 py-1 text-[11px] font-medium text-fg-muted",
+      // Filled label chip (runner labels).
+      solid: "rounded-full bg-raised px-2 py-1 text-[11px] font-medium text-fg-muted",
+      // Bare inline metadata, no chrome.
+      plain: "text-[11px] text-fg-muted",
     },
-    defaultVariants: { variant: "outline" },
   },
-);
+  defaultVariants: { variant: "outline" },
+});
 
 export interface BadgeProps
   extends HTMLAttributes<HTMLSpanElement>,

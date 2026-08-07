@@ -113,6 +113,7 @@ test("hubUp: spawns Runner.Server, tees its output, wires signals + exit, starts
       frontOpts = o;
       return null;
     },
+    startTee: () => ({ stop() {} }),
     onSignal: (sig, fn) => signals.push({ sig, fn }),
     exit: (n) => exits.push(n),
     block: async () => 0,
@@ -161,6 +162,7 @@ test("hubUp: uses the real signal/exit wiring when those deps are omitted", asyn
     ensure: async () => 0,
     spawn: () => child as never,
     startFront: () => null,
+    startTee: () => ({ stop() {} }),
     block: async () => 0,
     // onSignal + exit intentionally omitted -> default (process.on / process.exit) branches taken
   });

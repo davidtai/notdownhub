@@ -4,83 +4,76 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /*
-  notdownhub identity — "instrument panel for your own runners".
-  The brand color (phosphor amber) doubles as the live/running status color:
-  when your hub is working, the UI glows amber. Green = passed, red = failed,
-  amber = alive. Cool graphite everywhere else. Monospace is first-class for
-  every identifier (run ids, sha, durations, labels).
+  notdownhub — "GitHub Actions, but calmer."
+  The visual language is status: every run, job, and step carries one of five
+  semantic colors (passed / failed / running / queued / skipped). Everything
+  around it stays quiet — soft neutrals, hairline borders, gentle elevation.
+  Color is reserved for meaning, never decoration.
 */
 :root {
-  --bg: #f4f6fb;
-  --bg-grid: #e7ebf3;
+  --canvas: #fbfcfd;
   --surface: #ffffff;
-  --surface-2: #eef1f7;
-  --line: #d9dfea;
-  --line-strong: #c3cbda;
-  --fg: #171c26;
-  --fg-muted: #5b6577;
-  --fg-faint: #8b94a6;
+  --raised: #f6f8fa;
+  --line: #e4e8ee;
+  --line-muted: #eef1f4;
+  --fg: #1c2128;
+  --fg-muted: #59636e;
+  --fg-subtle: #848d97;
 
-  --brand: #b4780f; /* amber, darkened for contrast on light */
-  --brand-glow: #f5a524;
-  --edge: #1f8fb8;
+  --accent: #3868d6;
 
-  --st-success: #1f9a53;
-  --st-fail: #d93b34;
-  --st-running: #b4780f;
-  --st-queued: #8b94a6;
-  --st-skipped: #a0a8b8;
+  --success: #1a7f37;
+  --fail: #cf222e;
+  --running: #bf8700;
+  --queued: #6e7781;
+  --skipped: #8b949e;
 
   color-scheme: light;
 }
 
 .dark {
-  --bg: #0c0f16;
-  --bg-grid: #11151f;
-  --surface: #141924;
-  --surface-2: #1b2130;
-  --line: #262e3e;
-  --line-strong: #333d51;
-  --fg: #eaeef6;
-  --fg-muted: #8b95a9;
-  --fg-faint: #5f6a7d;
+  --canvas: #0c1014;
+  --surface: #141a21;
+  --raised: #1a212a;
+  --line: #232b36;
+  --line-muted: #1b222b;
+  --fg: #e6edf3;
+  --fg-muted: #9aa5b1;
+  --fg-subtle: #6b7684;
 
-  --brand: #f5a524;
-  --brand-glow: #f5a524;
-  --edge: #4cb5e0;
+  --accent: #5b8cff;
 
-  --st-success: #4bd07a;
-  --st-fail: #fb5b54;
-  --st-running: #f5a524;
-  --st-queued: #6b7688;
-  --st-skipped: #545e70;
+  --success: #3fb950;
+  --fail: #f85149;
+  --running: #d29922;
+  --queued: #8b949e;
+  --skipped: #6e7781;
 
   color-scheme: dark;
 }
 
-/* Expose the runtime palette to Tailwind utilities (bg-surface, text-brand, …). */
+/* Expose the runtime palette to Tailwind utilities (bg-surface, text-success, …). */
 @theme inline {
-  --color-bg: var(--bg);
+  --color-canvas: var(--canvas);
   --color-surface: var(--surface);
-  --color-surface-2: var(--surface-2);
+  --color-raised: var(--raised);
   --color-line: var(--line);
-  --color-line-strong: var(--line-strong);
+  --color-line-muted: var(--line-muted);
   --color-fg: var(--fg);
   --color-fg-muted: var(--fg-muted);
-  --color-fg-faint: var(--fg-faint);
-  --color-brand: var(--brand);
-  --color-brand-glow: var(--brand-glow);
-  --color-edge: var(--edge);
-  --color-st-success: var(--st-success);
-  --color-st-fail: var(--st-fail);
-  --color-st-running: var(--st-running);
-  --color-st-queued: var(--st-queued);
-  --color-st-skipped: var(--st-skipped);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-accent: var(--accent);
 
-  --font-sans: "Archivo", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --color-success: var(--success);
+  --color-fail: var(--fail);
+  --color-running: var(--running);
+  --color-queued: var(--queued);
+  --color-skipped: var(--skipped);
 
-  --radius-card: 10px;
+  --font-sans:
+    "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono:
+    "JetBrains Mono", ui-monospace, "SF Mono", "SFMono-Regular", Menlo, monospace;
 }
 
 html,
@@ -91,70 +84,64 @@ body,
 
 body {
   margin: 0;
-  background-color: var(--bg);
-  /* Faint engineering grid — the "graph paper" of a control panel. Quiet. */
-  background-image:
-    linear-gradient(var(--bg-grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px);
-  background-size: 44px 44px;
+  background-color: var(--canvas);
   color: var(--fg);
   font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
-/* Uppercase micro-labels — the panel's engraved captions. */
+/* Headings: Inter 600 with a touch of negative tracking. */
+h1,
+h2,
+h3 {
+  letter-spacing: -0.011em;
+}
+
+/* Tabular figures for identifiers that line up in columns (run #, durations). */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Small uppercase captions used for section labels. */
 .eyebrow {
-  font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--fg-faint);
+  color: var(--fg-subtle);
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--brand-glow) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
 }
 
-/* Focus is a brand-colored ring — visible on keyboard nav. */
+/* Keyboard focus — a clear accent ring, everywhere. */
 :focus-visible {
-  outline: 2px solid var(--brand-glow);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
-/* Thin, unobtrusive scrollbars that match the instrument. */
+/* Quiet, thin scrollbars. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-color: color-mix(in srgb, var(--fg-subtle) 45%, transparent) transparent;
 }
 *::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 *::-webkit-scrollbar-thumb {
-  background: var(--line-strong);
-  border-radius: 6px;
+  background: color-mix(in srgb, var(--fg-subtle) 45%, transparent);
+  border-radius: 8px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 
-@keyframes ndh-pulse {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.45;
-    transform: scale(0.82);
-  }
-}
-.live-pulse {
-  animation: ndh-pulse 1.4s ease-in-out infinite;
-}
-
+/* Running spinner. */
 @keyframes ndh-spin {
   to {
     transform: rotate(360deg);
@@ -164,24 +151,42 @@ body {
   animation: ndh-spin 1s linear infinite;
 }
 
-/* Signal ridge — the signature. An oscilloscope trace that drifts when work is
-   live and flat-lines when idle. Ambient, low-contrast, one memorable element. */
-@keyframes ndh-ridge {
-  from {
-    transform: translateX(0);
+/* Active runner — a soft expanding ring, very subtle. */
+@keyframes ndh-ping {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 50%, transparent);
   }
-  to {
-    transform: translateX(-50%);
+  70% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
   }
 }
-.ridge-trace {
-  animation: ndh-ridge 3.2s linear infinite;
+.dot-pulse {
+  animation: ndh-ping 2.4s ease-out infinite;
+}
+
+/* Smooth height collapse for step / group folds (grid 0fr→1fr trick). */
+.collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.2s ease;
+}
+.collapse[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+.collapse > .collapse-inner {
+  overflow: hidden;
+  min-height: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .live-pulse,
   .spin,
-  .ridge-trace {
+  .dot-pulse {
     animation: none !important;
+  }
+  .collapse {
+    transition: none;
   }
 }

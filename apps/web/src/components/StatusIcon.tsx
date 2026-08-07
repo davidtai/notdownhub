@@ -1,22 +1,38 @@
-import { CheckCircle2, XCircle, Clock, MinusCircle, SlashIcon, HelpCircle, LoaderCircle } from "lucide-react";
+import {
+  CheckCircle2,
+  XCircle,
+  Clock,
+  CircleSlash,
+  MinusCircle,
+  CircleHelp,
+  LoaderCircle,
+} from "lucide-react";
 import type { State } from "../lib/format";
 import { STATE_LABEL } from "../lib/format";
 import { cn } from "../lib/utils";
 import { Tooltip } from "./ui/tooltip";
 
 const COLOR: Record<State, string> = {
-  success: "text-st-success",
-  fail: "text-st-fail",
-  running: "text-st-running",
-  queued: "text-st-queued",
-  cancelled: "text-st-fail",
-  skipped: "text-st-skipped",
-  unknown: "text-fg-faint",
+  success: "text-success",
+  fail: "text-fail",
+  running: "text-running",
+  queued: "text-queued",
+  cancelled: "text-skipped",
+  skipped: "text-skipped",
+  unknown: "text-fg-subtle",
 };
 
-/** Status glyph with the semantic color. Running spins; queued reads as a clock. */
-export function StatusIcon({ state, size = 16, withTooltip = true }: { state: State; size?: number; withTooltip?: boolean }) {
-  const cls = cn(COLOR[state]);
+/** Status glyph in its semantic color. Running spins; queued reads as a clock. */
+export function StatusIcon({
+  state,
+  size = 16,
+  withTooltip = true,
+}: {
+  state: State;
+  size?: number;
+  withTooltip?: boolean;
+}) {
+  const cls = COLOR[state];
   let icon;
   switch (state) {
     case "success":
@@ -32,13 +48,13 @@ export function StatusIcon({ state, size = 16, withTooltip = true }: { state: St
       icon = <Clock size={size} className={cls} />;
       break;
     case "cancelled":
-      icon = <MinusCircle size={size} className={cls} />;
+      icon = <CircleSlash size={size} className={cls} />;
       break;
     case "skipped":
-      icon = <SlashIcon size={size} className={cls} />;
+      icon = <MinusCircle size={size} className={cls} />;
       break;
     default:
-      icon = <HelpCircle size={size} className={cls} />;
+      icon = <CircleHelp size={size} className={cls} />;
   }
   if (!withTooltip) return icon;
   return (
@@ -50,16 +66,47 @@ export function StatusIcon({ state, size = 16, withTooltip = true }: { state: St
   );
 }
 
-/** A small filled dot for online/offline signals. */
-export function SignalDot({ online, className }: { online: boolean; className?: string }) {
+const PILL: Record<State, string> = {
+  success: "bg-success/12 text-success",
+  fail: "bg-fail/12 text-fail",
+  running: "bg-running/15 text-running",
+  queued: "bg-queued/12 text-queued",
+  cancelled: "bg-skipped/12 text-skipped",
+  skipped: "bg-skipped/12 text-skipped",
+  unknown: "bg-fg-subtle/12 text-fg-subtle",
+};
+
+/** Soft tinted status word — Passed / Failed / Running / Queued / … */
+export function StatePill({ state }: { state: State }) {
   return (
-    <span className={cn("relative inline-flex h-2.5 w-2.5", className)}>
-      <span
-        className={cn(
-          "inline-flex h-2.5 w-2.5 rounded-full",
-          online ? "bg-st-running live-pulse" : "bg-st-queued",
-        )}
-      />
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
+        PILL[state],
+      )}
+    >
+      {STATE_LABEL[state]}
     </span>
+  );
+}
+
+/** Runner liveness dot: active (filled, pulsing), idle (hollow), offline (grey hollow). */
+export function RunnerStateDot({ state }: { state: "active" | "idle" | "offline" }) {
+  if (state === "active") {
+    return <span className="dot-pulse inline-block h-2.5 w-2.5 rounded-full bg-success" aria-hidden />;
+  }
+  if (state === "idle") {
+    return (
+      <span
+        className="inline-block h-2.5 w-2.5 rounded-full border-[1.5px] border-success bg-transparent"
+        aria-hidden
+      />
+    );
+  }
+  return (
+    <span
+      className="inline-block h-2.5 w-2.5 rounded-full border-[1.5px] border-fg-subtle bg-transparent"
+      aria-hidden
+    />
   );
 }

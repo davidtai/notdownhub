@@ -63,6 +63,61 @@ function withZone(ts: string): string {
   return /[zZ]|[+-]\d\d:?\d\d$/.test(ts) ? ts : `${ts}Z`;
 }
 
+/** Compact relative time, e.g. "just now", "3m ago", "2h ago". "" if unparseable. */
+export function relativeTime(ts?: string | null): string {
+  if (!ts) return "";
+  const t = Date.parse(withZone(ts));
+  if (!Number.isFinite(t)) return "";
+  const s = Math.round((Date.now() - t) / 1000);
+  if (s < 0) return "just now";
+  if (s < 45) return "just now";
+  if (s < 90) return "1m ago";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.round(h / 24);
+  if (d < 30) return `${d}d ago`;
+  const mo = Math.round(d / 30);
+  if (mo < 12) return `${mo}mo ago`;
+  return `${Math.round(mo / 12)}y ago`;
+}
+
+/** Elapsed milliseconds between two timestamps (0 if unknown). Runs-in-progress use now(). */
+export function elapsedMs(start?: string | null, finish?: string | null): number {
+  if (!start) return 0;
+  const a = Date.parse(withZone(start));
+  const b = finish ? Date.parse(withZone(finish)) : Date.now();
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) return 0;
+  return b - a;
+}
+
+/** Job-level span across a timeline: earliest start → latest finish (or now if still open). */
+export function timelineSpan(records: { startTime: string | null; finishTime: string | null; type?: string }[]): {
+  start: string | null;
+  finish: string | null;
+} {
+  let start: number | null = null;
+  let finish: number | null = null;
+  let open = false;
+  for (const r of records) {
+    if (r.startTime) {
+      const a = Date.parse(withZone(r.startTime));
+      if (Number.isFinite(a)) start = start === null ? a : Math.min(start, a);
+    }
+    if (r.finishTime) {
+      const b = Date.parse(withZone(r.finishTime));
+      if (Number.isFinite(b)) finish = finish === null ? b : Math.max(finish, b);
+    } else if (r.startTime) {
+      open = true;
+    }
+  }
+  return {
+    start: start === null ? null : new Date(start).toISOString(),
+    finish: open || finish === null ? null : new Date(finish).toISOString(),
+  };
+}
+
 /** Parse the hub's matrix field (a JSON string) into a compact chip label. */
 export function matrixLabel(matrix?: string | null): string | null {
   if (!matrix) return null;

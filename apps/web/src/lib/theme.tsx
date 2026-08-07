@@ -20,7 +20,7 @@ function apply(theme: Theme) {
     meta.name = "theme-color";
     document.head.appendChild(meta);
   }
-  meta.content = dark ? "#0c0f16" : "#f4f6fb";
+  meta.content = dark ? "#0c1014" : "#fbfcfd";
 }
 
 interface ThemeCtx {

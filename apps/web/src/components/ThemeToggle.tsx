@@ -1,10 +1,10 @@
-import { Sun, Moon, MonitorSmartphone } from "lucide-react";
+import { Sun, Moon, Monitor } from "lucide-react";
 import { useTheme, type Theme } from "../lib/theme";
 import { cn } from "../lib/utils";
 
 const OPTIONS: { value: Theme; icon: typeof Sun; label: string }[] = [
   { value: "light", icon: Sun, label: "Light" },
-  { value: "system", icon: MonitorSmartphone, label: "System" },
+  { value: "system", icon: Monitor, label: "System" },
   { value: "dark", icon: Moon, label: "Dark" },
 ];
 
@@ -29,7 +29,7 @@ export function ThemeToggle() {
             onClick={() => setTheme(value)}
             className={cn(
               "inline-flex h-11 w-11 items-center justify-center rounded transition-colors sm:h-8 sm:w-8",
-              active ? "bg-surface-2 text-brand" : "text-fg-faint hover:text-fg",
+              active ? "bg-raised text-accent" : "text-fg-subtle hover:text-fg",
             )}
           >
             <Icon size={15} />

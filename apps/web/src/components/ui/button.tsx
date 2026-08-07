@@ -3,16 +3,14 @@ import { forwardRef, type ButtonHTMLAttributes } from "react";
 import { cn } from "../../lib/utils";
 
 const button = cva(
-  "inline-flex items-center justify-center gap-2 font-medium whitespace-nowrap transition-colors disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none",
+  "inline-flex items-center justify-center gap-2 rounded-md font-medium whitespace-nowrap transition-colors disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none",
   {
     variants: {
       variant: {
-        default:
-          "bg-brand text-[#0c0f16] hover:brightness-110 rounded-md dark:text-[#0c0f16]",
-        outline:
-          "border border-line-strong bg-surface text-fg hover:bg-surface-2 rounded-md",
-        ghost: "text-fg-muted hover:text-fg hover:bg-surface-2 rounded-md",
-        subtle: "bg-surface-2 text-fg hover:brightness-105 rounded-md",
+        default: "bg-accent text-white hover:brightness-110",
+        outline: "border border-line bg-surface text-fg hover:bg-raised",
+        ghost: "text-fg-muted hover:text-fg hover:bg-raised",
+        subtle: "bg-raised text-fg hover:brightness-[0.98]",
       },
       size: {
         sm: "h-8 px-3 text-xs",
