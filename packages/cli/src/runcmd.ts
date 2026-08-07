@@ -4,6 +4,7 @@ import { ensureVendor } from "./vendor.js";
 import { ndhHome, run, vendorExe } from "./lib.js";
 import { initFileLog } from "./filelog.js";
 import { currentRepoSlug, withRunnerSecrets } from "./secrets.js";
+import { withRunnerVars } from "./vars.js";
 
 function dockerAvailable(): boolean {
   return spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
@@ -37,8 +38,10 @@ export async function runCmd(argv: string[], deps: RunDeps = {}): Promise<number
   await (deps.ensure ?? ensureVendor)();
   const slug = (deps.repoSlug ?? currentRepoSlug)();
   // Secret VALUES are passed only through the ephemeral --secret-file, never on argv.
-  return withRunnerSecrets(slug, (extra) =>
-    runner(vendorExe("Runner.Client"), [...defaultPlatformArgs(argv), ...extra, ...argv]),
+  return withRunnerSecrets(slug, (sec) =>
+    withRunnerVars(slug, (vars) =>
+      runner(vendorExe("Runner.Client"), [...defaultPlatformArgs(argv), ...sec, ...vars, ...argv]),
+    ),
   );
 }
 
@@ -52,7 +55,9 @@ export async function dispatchCmd(argv: string[], deps: RunDeps = {}): Promise<n
     return 2;
   }
   const slug = (deps.repoSlug ?? currentRepoSlug)();
-  return withRunnerSecrets(slug, (extra) => runner(vendorExe("Runner.Client"), [...extra, ...argv]));
+  return withRunnerSecrets(slug, (sec) =>
+    withRunnerVars(slug, (vars) => runner(vendorExe("Runner.Client"), [...sec, ...vars, ...argv])),
+  );
 }
 
 /** Exported for tests. */

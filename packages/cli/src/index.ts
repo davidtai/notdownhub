@@ -7,6 +7,7 @@ import { registerRunner } from "./runner.js";
 import { runCmd, dispatchCmd } from "./runcmd.js";
 import { registerStatus } from "./status.js";
 import { registerSecrets } from "./secrets.js";
+import { registerVars } from "./vars.js";
 
 const EXAMPLES = `
 examples:
@@ -15,6 +16,7 @@ examples:
   ndh runner join http://hub.tailnet:4949 --token <token> --labels self-hosted,macOS,ARM64
   ndh dispatch --server http://hub.tailnet:4949 --event push
   ndh secrets set NPM_TOKEN
+  ndh vars set DEPLOY_TARGET staging
 
 docs: https://github.com/davidtai/notdownhub`;
 
@@ -75,6 +77,7 @@ async function buildProgram(): Promise<Command> {
   registerRunner(program);
   registerStatus(program);
   registerSecrets(program);
+  registerVars(program);
   return program;
 }
 

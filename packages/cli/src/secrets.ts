@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile, chmod, rm } from "node:fs/promises";
 import { randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -36,15 +37,47 @@ export interface IndexEntry {
   scope: string;
 }
 
-function backend(): "keychain" | "file" {
+/** Linux Secret Service (libsecret) is usable when secret-tool exists and a session bus is up. */
+function libsecretAvailable(): boolean {
+  if (!process.env.DBUS_SESSION_BUS_ADDRESS && !process.env.XDG_RUNTIME_DIR) return false;
+  return spawnSync("secret-tool", ["--help"], { stdio: "ignore" }).status === 0;
+}
+
+function togglePath(): string {
+  return join(ndhHome(), "secrets-backend");
+}
+
+/** Persisted user preference: "keyring" (default) or "file". */
+function readToggle(): "keyring" | "file" | null {
+  try {
+    const v = readFileSync(togglePath(), "utf8").trim();
+    return v === "file" || v === "keyring" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Backend resolution, first match wins:
+ *   1. NDH_SECRETS_BACKEND env (file | keychain | libsecret) — test/automation override
+ *   2. persisted toggle (`ndh secrets backend keyring|file`), default keyring
+ *   3. platform keyring: macOS Keychain, or Linux Secret Service when available
+ *   4. encrypted file fallback (headless Linux, Windows)
+ */
+function backend(): "keychain" | "libsecret" | "file" {
   const forced = process.env.NDH_SECRETS_BACKEND;
-  if (forced === "file") return "file";
-  if (forced === "keychain") return "keychain";
-  return process.platform === "darwin" ? "keychain" : "file";
+  if (forced === "file" || forced === "keychain" || forced === "libsecret") return forced;
+  if (readToggle() === "file") return "file";
+  if (process.platform === "darwin") return "keychain";
+  if (process.platform === "linux" && libsecretAvailable()) return "libsecret";
+  return "file";
 }
 
 export function backendName(): string {
-  return backend() === "keychain" ? "macOS Keychain" : "encrypted file (obfuscation-at-rest)";
+  const b = backend();
+  if (b === "keychain") return "macOS Keychain";
+  if (b === "libsecret") return "Linux Secret Service (libsecret)";
+  return "encrypted file (obfuscation-at-rest)";
 }
 
 // ---------- name index (names + scopes only, never values) ----------
@@ -118,6 +151,40 @@ function keychainDelete(scope: string, name: string): void {
   spawnSync("security", ["delete-generic-password", "-s", keychainService(scope), "-a", name], {
     stdio: "ignore",
   });
+}
+
+// ---------- libsecret backend (Linux Secret Service) ----------
+
+function libsecretAttrs(scope: string, name: string): string[] {
+  return ["service", KEYCHAIN_PREFIX(), "scope", scope, "name", name];
+}
+
+function libsecretSet(scope: string, name: string, value: string): void {
+  // secret-tool reads the secret from stdin — the value never appears on argv.
+  const r = spawnSync(
+    "secret-tool",
+    ["store", "--label", `${KEYCHAIN_PREFIX()}:${scope}/${name}`, ...libsecretAttrs(scope, name)],
+    { input: value, stdio: ["pipe", "ignore", "pipe"] },
+  );
+  if (r.status !== 0) {
+    throw new Error(
+      `libsecret write failed: ${r.stderr?.toString().trim() || r.status} — set NDH_SECRETS_BACKEND=file to use the encrypted-file backend`,
+    );
+  }
+}
+
+function libsecretGet(scope: string, name: string): string | null {
+  const r = spawnSync("secret-tool", ["lookup", ...libsecretAttrs(scope, name)], {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (r.status !== 0) return null;
+  // secret-tool prints the raw secret without a trailing newline of its own,
+  // but tolerate one in case a shim adds it.
+  return r.stdout.toString().replace(/\n$/, "");
+}
+
+function libsecretDelete(scope: string, name: string): void {
+  spawnSync("secret-tool", ["clear", ...libsecretAttrs(scope, name)], { stdio: "ignore" });
 }
 
 // ---------- file backend (encrypted-at-rest fallback) ----------
@@ -206,18 +273,25 @@ async function fileDelete(scope: string, name: string): Promise<void> {
 // ---------- public store API ----------
 
 export async function setSecret(scope: string, name: string, value: string): Promise<void> {
-  if (backend() === "keychain") keychainSet(scope, name, value);
+  const b = backend();
+  if (b === "keychain") keychainSet(scope, name, value);
+  else if (b === "libsecret") libsecretSet(scope, name, value);
   else await fileSet(scope, name, value);
   await indexAdd(name, scope);
 }
 
 export async function getSecret(scope: string, name: string): Promise<string | null> {
-  return backend() === "keychain" ? keychainGet(scope, name) : fileGet(scope, name);
+  const b = backend();
+  if (b === "keychain") return keychainGet(scope, name);
+  if (b === "libsecret") return libsecretGet(scope, name);
+  return fileGet(scope, name);
 }
 
 export async function removeSecret(scope: string, name: string): Promise<boolean> {
   const existed = (await readIndex()).some((e) => e.name === name && e.scope === scope);
-  if (backend() === "keychain") keychainDelete(scope, name);
+  const b = backend();
+  if (b === "keychain") keychainDelete(scope, name);
+  else if (b === "libsecret") libsecretDelete(scope, name);
   else await fileDelete(scope, name);
   await indexRemove(name, scope);
   return existed;
@@ -449,6 +523,24 @@ export function registerSecrets(program: Command): void {
     });
 
   secrets
+    .command("backend")
+    .description("show or set the secret storage backend (keyring is the default)")
+    .argument("[mode]", "keyring or file")
+    .action(async (mode?: string) => {
+      if (mode === undefined) {
+        const toggle = readToggle();
+        console.log(`active: ${backendName()}${toggle ? `  (preference: ${toggle})` : "  (default: keyring)"}`);
+        process.exitCode = 0;
+        return;
+      }
+      if (mode !== "keyring" && mode !== "file") fail("backend must be 'keyring' or 'file'");
+      await mkdir(ndhHome(), { recursive: true });
+      await writeFile(togglePath(), `${mode}\n`, { mode: 0o600 });
+      log(`secrets backend preference set to ${mode} (active: ${backendName()})`);
+      process.exitCode = 0;
+    });
+
+  secrets
     .command("rm")
     .alias("remove")
     .description("delete a secret")
@@ -464,4 +556,4 @@ export function registerSecrets(program: Command): void {
 
 // ---------- exposed for tests ----------
 
-export const __test = { shred, indexPath, secretsFilePath, keyFilePath };
+export const __test = { shred, indexPath, secretsFilePath, keyFilePath, backend, togglePath, libsecretAvailable };

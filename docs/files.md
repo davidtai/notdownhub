@@ -63,9 +63,12 @@ One directory per runner under `runners/<name>/`:
 | `secrets-index.json` (`0600`) | Index of secret **names + scopes** for `ndh secrets` — never contains values. | state (reveals names) | Deleting desyncs `ndh secrets list` from the actual store. |
 | `secrets.json` (`0600`) | **File backend only** (non-macOS, or `NDH_SECRETS_BACKEND=file`): secret values encrypted with AES-256-GCM. | **secret** | Deleting loses those secrets. |
 | `secrets.key` (`0600`) | **File backend only**: the 32-byte AES key for `secrets.json`. Co-located with the ciphertext, so this backend is *obfuscation-at-rest* — whoever reads both reads the secrets. | **secret** | Delete only with `secrets.json` (one is useless without the other). |
+| `secrets-backend` (`0600`) | Persisted backend preference from `ndh secrets backend keyring|file`. The default is `keyring`. | config | Safe to delete. The platform default applies again. |
+| `vars.json` (`0600`) | Plain workflow variables for `ndh vars` (the `vars` context). Values are not encrypted because vars are not secret. | state | Deleting loses stored variables. |
 
-On macOS the default secrets backend is the **Keychain** (below), so
-`secrets.json`/`secrets.key` are **not** created there.
+The default secrets backend is the OS keyring: the **Keychain** on macOS, and the
+**Secret Service** (`secret-tool`) on Linux when a session bus is available. The
+file backend applies on other systems, or after `ndh secrets backend file`.
 
 ---
 
@@ -76,6 +79,7 @@ These files do not live under `~/.notdownhub`, so integrators can overlook them.
 | Path | Created by | Purpose | Sensitivity | Safe to delete? |
 |---|---|---|---|---|
 | `~/.aspnet/DataProtection-Keys/key-*.xml` | `Runner.Server` (ASP.NET Core) | Data-protection keyring used to protect server-side payloads (tokens/cookies). Written to the **user home**, not `NDH_HOME`. | **secret / state** | Regenerated if missing; deleting invalidates anything previously protected with it (fine to reset for a dev hub). |
+| `$TMPDIR/ndh-vars/vars-<hex>.yml` (file `0600`, dir `0700`) | `ndh run` / `ndh dispatch` when vars exist | Ephemeral var file handed to `Runner.Client` via `--var-file`. Deleted at the end of every run. | state (transient) | Safe to delete. |
 | `$TMPDIR/ndh-secrets/secrets-<hex>.env` (file `0600`, dir `0700`) | `ndh run` / `ndh dispatch` when secrets exist | Ephemeral GitHub-`GITHUB_ENV`-syntax secret file handed to `Runner.Client` via `--secret-file`. **Zeroed (shredded) and unlinked at the end of every run** — only the path, never values, touches argv/logs. | **secret** (transient) | The `ndh-secrets/` dir persists (empty) and is safe to delete; you should never see a leftover `*.env` (a stray one means a crashed run — delete it). `$TMPDIR` is `/var/folders/.../T` on macOS, `/tmp` on Linux. |
 | macOS **Keychain** generic-password items | `ndh secrets set` (macOS default) | The real secret store on macOS. **Service** = `notdownhub:<scope>` (`<scope>` = `global` or `owner/name`), **account** = the secret name, value = the secret. Override the service prefix with `NDH_KEYCHAIN_SERVICE`. | **secret** | Manage with `ndh secrets rm` (or Keychain Access / `security delete-generic-password -s notdownhub:<scope> -a <name>`). |
 
