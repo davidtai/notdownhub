@@ -333,6 +333,53 @@ test("readRunResultRollup: an unreadable DB yields no corrections", async () => 
   assert.equal(rollup.latestAttemptId.size, 0);
 });
 
+test("readRunResultRollup: a foreign-schema hub.db (no Result column) yields no corrections", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ndh-foreign-"));
+  mkdirSync(join(dir, "hub"), { recursive: true });
+  const p = join(dir, "hub", "hub.db");
+  const db = new DatabaseSync(p);
+  // The runs-meta minimal schema: no Result column on Jobs → the roll-up query throws internally.
+  db.exec(`CREATE TABLE Jobs (JobId TEXT, TimeLineId TEXT, runid INTEGER)`);
+  db.exec(`CREATE TABLE WorkflowRunAttempt (Id INTEGER, WorkflowRunId INTEGER, Attempt INTEGER)`);
+  db.close();
+  const rollup = await readRunResultRollup(p);
+  assert.equal(rollup.byAttemptId.size, 0);
+  assert.equal(rollup.latestAttemptId.size, 0);
+});
+
+test("applyCancelCorrection: runs the correction, and swallows any failure (best-effort)", async () => {
+  const p = seedRollupDb();
+  let seen: string | undefined;
+  await __test.applyCancelCorrection(p, (rollup) => {
+    seen = rollup.byAttemptId.get(1000);
+  });
+  assert.equal(seen, "canceled"); // the correction callback actually ran against the roll-up
+  // A throwing callback must never reject — the read endpoint serves the engine's data unchanged.
+  await assert.doesNotReject(
+    __test.applyCancelCorrection(p, () => {
+      throw new Error("boom");
+    }),
+  );
+});
+
+test("serveRunAttempts: a foreign-schema hub.db passes the engine's attempts through (no 4xx/5xx)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ndh-foreign2-"));
+  mkdirSync(join(dir, "hub"), { recursive: true });
+  const p = join(dir, "hub", "hub.db");
+  const db = new DatabaseSync(p);
+  db.exec(`CREATE TABLE Jobs (JobId TEXT, TimeLineId TEXT, runid INTEGER)`); // no Result column
+  db.close();
+  const hub = await attemptsHub([{ id: 1000, attempt: 1, result: "failed" }]);
+  const c = capRes();
+  try {
+    await serveRunAttempts(hub.port, 100, c.res, p);
+    assert.equal(c.rec.code, 200); // never a 400/500 from the correction path
+    assert.deepEqual(JSON.parse(c.rec.body!), [{ id: 1000, attempt: 1, result: "failed" }]);
+  } finally {
+    await hub.close();
+  }
+});
+
 test("isMislabeledCancel: only a failure-like NEWEST attempt that actually canceled", async () => {
   const rollup = await readRunResultRollup(seedRollupDb());
   assert.equal(__test.isMislabeledCancel("failed", 100, rollup), true);

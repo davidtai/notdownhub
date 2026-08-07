@@ -2,15 +2,23 @@
 // coverage (dist/test/**). Not a *.test.ts file, so node --test never runs it as a suite.
 import http from "node:http";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AddressInfo } from "node:net";
 
-/** Fresh, isolated NDH_HOME (+ deterministic file secrets backend). Returns the temp home. */
+/**
+ * Fresh, isolated NDH_HOME (+ deterministic file secrets backend). Returns the temp home.
+ *
+ * `mkdtempSync` already hands back a brand-new empty directory, but we also delete its `hub`
+ * subtree defensively: this is the single guarantee every caller relies on — that no earlier
+ * test's hub.db / joblogs.db can be visible under the home this call returns, whatever the
+ * suite ordering or shared process state. A test that seeds its own hub.db does so afterward.
+ */
 export function freshHome(): string {
   const home = mkdtempSync(join(tmpdir(), "ndh-cov-"));
+  rmSync(join(home, "hub"), { recursive: true, force: true });
   process.env.NDH_HOME = home;
   process.env.NDH_SECRETS_BACKEND = "file";
   return home;

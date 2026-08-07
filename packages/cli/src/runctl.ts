@@ -206,10 +206,26 @@ export async function serveFilteredRuns(
   const deleted = await readDeletedRunIds(dbPath);
   const { runs, wrapped } = splitEnvelope(data);
   const kept = runs.filter((r) => r.id === undefined || !deleted.has(r.id));
-  // #156: a canceled run the engine mislabeled `failed` reads `canceled` again.
-  const rollup = await readRunResultRollup(hubDb);
-  for (const r of kept) if (isMislabeledCancel(r.result, r.id, rollup)) r.result = "canceled";
+  // #156: a canceled run the engine mislabeled `failed` reads `canceled` again. STRICTLY
+  // best-effort — any failure reading/rolling up hub.db leaves the engine's results untouched
+  // rather than breaking the runs list for anyone whose hub.db doesn't match expectations.
+  await applyCancelCorrection(hubDb, (rollup) => {
+    for (const r of kept) if (isMislabeledCancel(r.result, r.id, rollup)) r.result = "canceled";
+  });
   json(res, 200, wrapped ? { count: kept.length, value: kept } : kept);
+}
+
+/**
+ * Read the #156 roll-up and hand it to `apply`, swallowing ANY failure (absent /
+ * unreadable / wrong-schema hub.db, or a throwing correction). The correction is
+ * a display nicety; it must never change a read endpoint's status or payload shape.
+ */
+async function applyCancelCorrection(hubDb: string, apply: (rollup: RunResultRollup) => void): Promise<void> {
+  try {
+    apply(await readRunResultRollup(hubDb));
+  } catch {
+    /* best-effort: serve the engine's results unchanged */
+  }
 }
 
 /**
@@ -237,12 +253,15 @@ export async function serveRunAttempts(
   }
   const data = await up.json().catch(() => []);
   const { runs: attempts, wrapped } = splitEnvelope(data);
-  const rollup = await readRunResultRollup(hubDb);
-  for (const a of attempts as { id?: number; result?: string }[]) {
-    if (a.result && FAILED_RESULTS.has(a.result.toLowerCase()) && a.id !== undefined && rollup.byAttemptId.get(a.id) === "canceled") {
-      a.result = "canceled";
+  // #156 correction, strictly best-effort: a hub.db problem must never turn a run-detail
+  // attempts request into a 4xx/5xx — the engine's attempts pass through unchanged instead.
+  await applyCancelCorrection(hubDb, (rollup) => {
+    for (const a of attempts as { id?: number; result?: string }[]) {
+      if (a.result && FAILED_RESULTS.has(a.result.toLowerCase()) && a.id !== undefined && rollup.byAttemptId.get(a.id) === "canceled") {
+        a.result = "canceled";
+      }
     }
-  }
+  });
   json(res, 200, wrapped ? { count: attempts.length, value: attempts } : attempts);
 }
 
@@ -302,4 +321,4 @@ async function fetchProjectRuns(
 }
 
 /** Exposed for tests. */
-export const __test = { splitEnvelope, fetchProjectRuns, jobResultString, isMislabeledCancel };
+export const __test = { splitEnvelope, fetchProjectRuns, jobResultString, isMislabeledCancel, applyCancelCorrection };

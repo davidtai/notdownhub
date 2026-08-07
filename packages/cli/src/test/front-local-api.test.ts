@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { join } from "node:path";
+import { mkdirSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { AddressInfo } from "node:net";
 import { startFront, __test as gate } from "../front.js";
 import { openDb, JobLogWriter } from "../joblogs.js";
@@ -211,16 +213,25 @@ test("POST /api/local/runs/:id/cancel?soft=1: uses the graceful cancelWorkflow",
   }
 });
 
-test("GET a live run's attempts routes through the #156 correction (no hub.db → passthrough)", async () => {
-  freshHome();
+test("GET a live run's attempts routes through the #156 correction end-to-end", async () => {
+  const home = freshHome();
+  // Seed a CONTROLLED hub.db in this test's own isolated home, so the outcome never depends on
+  // ambient/leftover state: attempt id 50 (what the fake engine reports for run 5) has a single
+  // canceled job. The front must rewrite the engine's "failed" attempt to "canceled".
+  mkdirSync(join(home, "hub"), { recursive: true });
+  const db = new DatabaseSync(join(home, "hub", "hub.db"));
+  db.exec(`CREATE TABLE WorkflowRunAttempt (Id INTEGER, WorkflowRunId INTEGER, Attempt INTEGER)`);
+  db.exec(`CREATE TABLE Jobs (WorkflowRunAttemptId INTEGER, Result INTEGER, runid INTEGER)`);
+  db.exec(`INSERT INTO WorkflowRunAttempt VALUES (50, 5, 1)`);
+  db.exec(`INSERT INTO Jobs VALUES (50, 3, 5)`); // Result 3 = canceled
+  db.close();
   const hub = await runsAndCancelHub([{ id: 5 }]);
   const f = await front(hub.port);
   try {
-    // The isolated home has no hub.db, so serveRunAttempts finds no correction and passes the
-    // engine's attempts through unchanged — proving the front branch reaches serveRunAttempts.
+    // The fake engine reports attempt id 50 as "failed"; the correction makes it "canceled".
     const res = await req(f.port, "/_apis/v1/Message/workflow/run/5/attempts");
     assert.equal(res.status, 200);
-    assert.deepEqual(JSON.parse(res.body), [{ id: 50, attempt: 1, result: "failed" }]);
+    assert.deepEqual(JSON.parse(res.body), [{ id: 50, attempt: 1, result: "canceled" }]);
   } finally {
     await f.close();
     await hub.close();
