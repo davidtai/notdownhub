@@ -7,6 +7,7 @@
   Envelope note: some endpoints return a bare array, others an OData-ish
   { value: [...] } wrapper — `unwrap` handles both.
 */
+import { timelineSpan } from "./format";
 
 export interface WorkflowRun {
   id: number;
@@ -185,6 +186,105 @@ export async function getArtifacts(runId: number): Promise<ArtifactSummary[]> {
 /** Same-origin URL that streams an artifact's archive (Content-Disposition attachment). */
 export function artifactDownloadUrl(runId: number, name: string): string {
   return `/api/local/artifacts/${runId}/${encodeURIComponent(name)}`;
+}
+
+// ── Projects (derived from run history) ──────────────────────────────────────
+
+/** The workflow definition recorded with a run: its YAML plus the attempt's timeline id. */
+export interface WorkflowDefinition {
+  /** Full workflow YAML the hub retained for the run's latest attempt, or null if none. */
+  yaml: string | null;
+  /** Timeline of the latest attempt (workflow-level; empty of timings — jobs carry those). */
+  timelineId: string | null;
+}
+
+/**
+ * The workflow definition the hub recorded with a run. The engine retains the
+ * dispatched YAML byte-for-byte on each attempt, so the Projects view renders the
+ * latest known definition per workflow from here — no shadow store. Never throws;
+ * degrades to nulls so the page can say "definition not retained" honestly.
+ */
+export async function getWorkflowDefinition(runId: number): Promise<WorkflowDefinition> {
+  try {
+    const attempts = await getAttempts(runId);
+    if (attempts.length === 0) return { yaml: null, timelineId: null };
+    const latest = attempts.reduce((a, b) => (b.attempt > a.attempt ? b : a));
+    return { yaml: latest.workflow ?? null, timelineId: latest.timeLineId ?? null };
+  } catch {
+    return { yaml: null, timelineId: null };
+  }
+}
+
+/**
+ * Real wall-clock time of a run's last activity, for the Projects list. The runs
+ * list and the run/attempt records carry no timestamp; only the per-job timelines
+ * do. So we walk the latest attempt's jobs → their timelines → the widest span.
+ * Returns an ISO string or null (never throws) — the caller renders relative time
+ * only when a real value exists, never a fabricated one.
+ */
+export async function getRunLastActivity(runId: number): Promise<string | null> {
+  try {
+    const attempts = await getAttempts(runId);
+    if (attempts.length === 0) return null;
+    const latest = attempts.reduce((a, b) => (b.attempt > a.attempt ? b : a));
+    const jobs = await getJobs(runId, latest.attempt);
+    const timelines = await Promise.all(jobs.map((j) => getTimeline(j.timeLineId).catch(() => [] as TimelineRecord[])));
+    const span = timelineSpan(timelines.flat());
+    return span.finish ?? span.start;
+  } catch {
+    return null;
+  }
+}
+
+export interface DeleteResult {
+  ok: boolean;
+  status: number;
+}
+
+/**
+ * Cheap capability probe for the project-delete backend (#60). Returns true only
+ * when the `/api/local/runs` route is actually handled — an OPTIONS that comes
+ * back anything other than 404 means the path exists (the hub answers it). Until
+ * #60 lands the route is unmapped and the front proxies OPTIONS through to the
+ * engine, which 404s — so this returns false and the caller hides the Remove
+ * control entirely rather than shipping a button that errors when clicked.
+ *
+ * The moment #60 adds the endpoint, this flips to true and Remove appears with no
+ * further change here. Contract for #60: register the `/api/local/runs` path so a
+ * non-DELETE method (OPTIONS) resolves with a non-404 status.
+ */
+export async function probeDeleteProjectSupport(): Promise<boolean> {
+  try {
+    const res = await fetch("/api/local/runs", {
+      method: "OPTIONS",
+      headers: { accept: "application/json" },
+    });
+    return res.status !== 404;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Bulk-delete every run + persisted job log belonging to a project — the action
+ * behind the Projects "Remove" button. A project is derived from its runs, so
+ * removing it means truly deleting those runs (issue #55 → #60), not hiding them.
+ *
+ * Wired to #60's contract (`ndh run delete --project <owner/repo>`, exposed as
+ * DELETE /api/local/runs?project=<owner/repo>). The Remove control is only shown
+ * when probeDeleteProjectSupport() confirms the route exists, so this is never
+ * called against a missing endpoint in normal use.
+ */
+export async function deleteProjectRuns(project: string): Promise<DeleteResult> {
+  try {
+    const res = await fetch(`/api/local/runs?project=${encodeURIComponent(project)}`, {
+      method: "DELETE",
+      headers: { accept: "application/json" },
+    });
+    return { ok: res.ok, status: res.status };
+  } catch {
+    return { ok: false, status: 0 };
+  }
 }
 
 // ── Settings (read-only view of secrets/variables) ──────────────────────────
