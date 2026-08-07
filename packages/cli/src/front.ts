@@ -86,6 +86,24 @@ function denyCsrf(res: http.ServerResponse): void {
   res.end(JSON.stringify({ error: "missing X-Requested-By header (CSRF protection)" }));
 }
 
+/**
+ * Same-origin check for state-changing requests to the SHARED engine API (dispatch / re-run and any
+ * other proxied mutation). Those routes cannot use the X-Requested-By scheme because the remote
+ * `ndh` CLI and the runner protocol call them directly. A browser always sends an `Origin` header on
+ * a cross-origin request; the CLI and runner protocol never send one. So: no Origin → allow
+ * (non-browser client); Origin present → require its host to match this request's Host. This blocks
+ * a malicious web page from CSRF-ing a re-run/dispatch on a loopback hub.
+ */
+function sameOriginOk(req: http.IncomingMessage): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  try {
+    return new URL(origin).host === (req.headers.host ?? "");
+  } catch {
+    return false;
+  }
+}
+
 function basicAuthOk(req: http.IncomingMessage, expected: string): boolean {
   const header = req.headers.authorization ?? "";
   if (!header.startsWith("Basic ")) return false;
@@ -153,6 +171,14 @@ async function handleRequest(
   try {
     const url = new URL(req.url ?? "/", "http://localhost");
     let m: RegExpMatchArray | null;
+    // Browser-CSRF defense for EVERY state-changing request — including the shared engine API
+    // (re-run / dispatch) that the remote CLI hits without X-Requested-By. A cross-origin Origin
+    // is rejected; non-browser clients (CLI, runner protocol) send no Origin and pass, and the
+    // same-origin UI matches Host. This complements the X-Requested-By check on /api/local.
+    if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS" && !sameOriginOk(req)) {
+      denyCsrf(res);
+      return;
+    }
     // Central gate for the whole /api/local surface: access first (loopback+Host / basic auth),
     // then anti-CSRF on state-changing writes. OPTIONS is the unauthenticated capability probe.
     // (Per-route checks below remain as defense-in-depth.)
@@ -603,4 +629,4 @@ export function uiDistDir(): string {
 }
 
 /** Exposed for tests: the local-only UI access gates + the extracted request router. */
-export const __test = { isLoopback, hostAllowed, csrfOk, basicAuthOk, uiAccessAllowed, denyUi, isUiPath, handleRequest, encodeSeg };
+export const __test = { isLoopback, hostAllowed, csrfOk, sameOriginOk, basicAuthOk, uiAccessAllowed, denyUi, isUiPath, handleRequest, encodeSeg };

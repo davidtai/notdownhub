@@ -400,6 +400,15 @@ test("csrfOk: requires the X-Requested-By: ndh header (#157)", () => {
   assert.equal(gate.csrfOk({ headers: { "x-requested-by": "evil" } } as never), false);
 });
 
+test("sameOriginOk: no Origin (CLI/runner) allowed; cross-origin rejected; same-origin allowed (#157)", () => {
+  const r = (origin: string | undefined, host: string) =>
+    gate.sameOriginOk({ headers: { ...(origin ? { origin } : {}), host } } as never);
+  assert.equal(r(undefined, "localhost:4949"), true); // non-browser: no Origin
+  assert.equal(r("http://localhost:4949", "localhost:4949"), true); // same-origin UI
+  assert.equal(r("http://evil.example", "localhost:4949"), false); // cross-origin browser CSRF
+  assert.equal(r("not-a-url", "localhost:4949"), false); // unparseable Origin
+});
+
 test("security #157: DNS-rebinding — loopback socket + foreign Host is denied on /api/local", async () => {
   freshHome();
   const hub = await fakeHub({ token: "t" });
@@ -437,6 +446,23 @@ test("security #157: anonymous Agent mint denied off-Host (rebinding) and CSRF-g
     const del = await reqm(f.port, "DELETE", "/_apis/v1/Agent/1/42"); // loopback Host ok, no CSRF header
     assert.equal(del.status, 403);
     assert.equal(hub.state.registrations, 0, "no management JWT minted for either blocked call");
+  } finally {
+    await f.close();
+    await hub.close();
+  }
+});
+
+test("security #157: cross-origin CSRF on the shared engine API (re-run) is blocked; same-origin passes", async () => {
+  freshHome();
+  const hub = await fakeHub({ token: "t" });
+  const f = await front({ hubPort: hub.port });
+  try {
+    // A malicious page POSTing to a shared engine route carries a foreign Origin → rejected.
+    const cross = await reqm(f.port, "POST", "/_apis/v1/Message/rerunworkflow/5", { origin: "http://evil.example" });
+    assert.equal(cross.status, 403);
+    // The same-origin UI (Origin host === Host) is NOT blocked by the Origin check.
+    const same = await reqm(f.port, "POST", "/_apis/v1/Message/rerunworkflow/5", { origin: `http://127.0.0.1:${f.port}` });
+    assert.notEqual(same.status, 403);
   } finally {
     await f.close();
     await hub.close();
