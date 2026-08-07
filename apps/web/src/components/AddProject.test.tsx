@@ -112,8 +112,8 @@ describe("AddProject wizard", () => {
     expect(onCreated).toHaveBeenCalled();
 
     // The POST body carries exactly what was parsed from the file.
-    const post = fetchMock.mock.calls.find((c) => String(c[0]).includes("placeholder"))!;
-    const body = JSON.parse((post[1] as RequestInit).body as string);
+    const post = fetchMock.mock.calls.find((c) => String(c[0]).includes("placeholder"))! as unknown as [string, RequestInit];
+    const body = JSON.parse(post[1].body as string);
     expect(body.slug).toBe("acme/app");
     expect(body.workflowName).toBe("CI");
     expect(body.workflowFileName).toBe("ci.yml");
