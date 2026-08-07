@@ -13,6 +13,7 @@ import { listArtifacts, parseArtifactApiPath, parseArtifactPrettyUrl, serveArtif
 import { serveRunCancel, serveRunDelete, serveFilteredRuns, serveProjectDelete } from "./runctl.js";
 import { serveProjects } from "./projects.js";
 import { appendDefaultPlatform, serveRerun } from "./rerunmap.js";
+import { serveRunsMeta } from "./runs-meta.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -154,6 +155,17 @@ async function handleRequest(
         return;
       }
       await serveProjects(opts.hubPort, res);
+    } else if (url.pathname === "/api/local/runs-meta") {
+      // Batch per-run timing for the runs list/detail (issue #96): startedAt/finishedAt/
+      // durationMs keyed by run id, from the hub DB's Job timeline records — the same
+      // source `ndh status` reads (#76). ONE DB read serves the whole batch of ids (the
+      // UI sends a page of ids at a time, never one request per row). Same gate as the
+      // other /api/local reads; runner-protocol paths are untouched.
+      if (!uiAccessAllowed(req, opts)) {
+        denyUi(res, opts);
+        return;
+      }
+      await serveRunsMeta(url.searchParams.get("ids"), res);
     } else if (url.pathname === "/api/local/joblogs" || url.pathname.startsWith("/api/local/joblogs/")) {
       // Persisted console output for a completed run's job (survives hub restarts).
       if (!uiAccessAllowed(req, opts)) {

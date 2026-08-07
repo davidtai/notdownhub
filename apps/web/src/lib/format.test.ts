@@ -6,6 +6,8 @@ import {
   shortSha,
   shortRef,
   duration,
+  humanDuration,
+  absoluteTime,
   relativeTime,
   elapsedMs,
   timelineSpan,
@@ -219,6 +221,38 @@ describe("humanSize", () => {
     expect(humanSize(null)).toBe("");
     expect(humanSize(-1)).toBe("");
     expect(humanSize(Number.NaN)).toBe("");
+  });
+});
+
+describe("humanDuration", () => {
+  it("formats milliseconds through the same ladder as duration()", () => {
+    expect(humanDuration(0)).toBe("0ms");
+    expect(humanDuration(850)).toBe("850ms");
+    expect(humanDuration(4100)).toBe("4.10s");
+    expect(humanDuration(34000)).toBe("34.0s");
+    expect(humanDuration(184000)).toBe("3m 04s");
+  });
+
+  it("returns '' for negative or non-finite input", () => {
+    expect(humanDuration(-1)).toBe("");
+    expect(humanDuration(Number.NaN)).toBe("");
+    expect(humanDuration(Number.POSITIVE_INFINITY)).toBe("");
+  });
+});
+
+describe("absoluteTime", () => {
+  it("renders a local absolute timestamp for a valid time", () => {
+    expect(absoluteTime("2020-06-15T10:20:30Z")).toContain("2020");
+  });
+
+  it("zones a bare hub timestamp instead of failing to parse it", () => {
+    expect(absoluteTime("2020-06-15 10:20:30")).toContain("2020");
+  });
+
+  it("returns '' for missing or unparseable input", () => {
+    expect(absoluteTime(null)).toBe("");
+    expect(absoluteTime(undefined)).toBe("");
+    expect(absoluteTime("garbage")).toBe("");
   });
 });
 

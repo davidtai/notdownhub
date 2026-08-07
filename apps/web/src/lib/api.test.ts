@@ -18,6 +18,7 @@ import {
   rerunWorkflow,
   getAllRuns,
   getProjects,
+  getRunsMeta,
 } from "./api";
 import { mockFetch, routes } from "../test/helpers";
 
@@ -336,5 +337,36 @@ describe("rerunWorkflow", () => {
   it("throws with the status on a non-OK response", async () => {
     mockFetch(() => ({ status: 404, body: {} }));
     await expect(rerunWorkflow(9)).rejects.toThrow(/rerunworkflow\/9 → 404/);
+  });
+});
+
+describe("getRunsMeta", () => {
+  it("batches every id into ONE request and returns the id-keyed map", async () => {
+    const fn = mockFetch(
+      routes({ "/api/local/runs-meta": { body: { 1: { startedAt: "2020-01-01T00:00:00.000Z", finishedAt: "2020-01-01T00:00:04.100Z", durationMs: 4100 } } } }),
+    );
+    const meta = await getRunsMeta([1, 2, 3]);
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect((fn.mock.calls[0] as [string])[0]).toBe("/api/local/runs-meta?ids=1,2,3");
+    expect(meta?.[1]?.durationMs).toBe(4100);
+    expect(meta?.[2]).toBeUndefined(); // unknown ids simply absent
+  });
+
+  it("returns {} for an empty id list without touching the network", async () => {
+    const fn = mockFetch(() => undefined);
+    expect(await getRunsMeta([])).toEqual({});
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("returns null when the endpoint is unavailable (non-OK) or the body is not a map", async () => {
+    mockFetch(routes({ "/api/local/runs-meta": { status: 404 } }));
+    expect(await getRunsMeta([1])).toBeNull();
+    mockFetch(routes({ "/api/local/runs-meta": { body: null } }));
+    expect(await getRunsMeta([1])).toBeNull();
+  });
+
+  it("returns null on a network error", async () => {
+    mockFetch(routes({ "/api/local/runs-meta": { throw: true } }));
+    expect(await getRunsMeta([1])).toBeNull();
   });
 });

@@ -177,6 +177,39 @@ export async function getJobLogs(runId: number, timelineId: string): Promise<Job
   }
 }
 
+// ── Run timing (batch, from the hub DB via the front) ───────────────────────
+/**
+ * Real execution times for one run, from GET /api/local/runs-meta (issue #96).
+ * The engine's runs list carries no time field; the hub DB's Job timeline
+ * records do — the same source `ndh status` reads. All times are ISO-8601 UTC.
+ * An in-progress run has startedAt only; a run never picked up has no entry.
+ */
+export interface RunTimeMeta {
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+}
+
+/**
+ * Batch-fetch timing for a page of run ids in ONE request (never one per row).
+ * Returns the id-keyed map; unknown ids are simply absent. Returns null when
+ * the endpoint is unavailable (older hub, non-OK, network error) so callers can
+ * distinguish "no data yet" from "these runs have no recorded times".
+ */
+export async function getRunsMeta(ids: number[]): Promise<Record<number, RunTimeMeta> | null> {
+  if (ids.length === 0) return {};
+  try {
+    const res = await fetch(`/api/local/runs-meta?ids=${ids.join(",")}`, {
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as Record<number, RunTimeMeta> | null;
+    return body && typeof body === "object" ? body : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Artifacts ────────────────────────────────────────────────────────────────
 /** One uploaded artifact on a run, from GET /api/local/artifacts/<runId>. */
 export interface ArtifactSummary {

@@ -358,3 +358,83 @@ describe("Runs", () => {
     expect(pillTexts()).toEqual(["acme/widget"]);
   });
 });
+
+// ── #96: real run timestamps, batch-fetched per loaded page ──────────────────
+describe("Runs timing enrichment (#96)", () => {
+  const FINISHED_META = {
+    startedAt: "2020-01-01T00:00:00.000Z",
+    finishedAt: "2020-01-01T00:00:04.100Z",
+    durationMs: 4100,
+  };
+
+  const metaCalls = (fn: ReturnType<typeof mockFetch>) =>
+    fn.mock.calls.map((c) => String(c[0])).filter((u) => u.includes("/api/local/runs-meta"));
+
+  it("enriches the loaded page with ONE batched runs-meta request — no per-row fetches", async () => {
+    const done = { id: 1, fileName: "ci.yml", displayName: "CI", status: "completed", result: "succeeded" };
+    const live = { id: 2, fileName: "ci.yml", displayName: "Deploy", status: "inProgress", result: null };
+    const fn = mockFetch((url) => {
+      if (url.includes("/workflow/runs")) {
+        const p = Number(url.match(/page=(\d+)/)?.[1] ?? 0);
+        return { body: p === 0 ? [done, live] : [] };
+      }
+      if (url.includes("/api/local/runs-meta"))
+        return { body: { 1: FINISHED_META, 2: { startedAt: FINISHED_META.startedAt } } };
+      return undefined;
+    });
+    renderRuns();
+
+    // Finished row: duration line from meta; absolute Started/Finished on hover.
+    await waitFor(() => expect(screen.getByText("4.10s")).toBeTruthy());
+    const title = screen.getAllByTitle(/Started /)[0].getAttribute("title") ?? "";
+    expect(title).toContain(" · Finished ");
+    // In-progress row: live "running for …" from its startedAt.
+    expect(screen.getByText(/^running for /)).toBeTruthy();
+
+    // Exactly one batched request carried both ids — never one request per row.
+    expect(metaCalls(fn)).toEqual(["/api/local/runs-meta?ids=1,2"]);
+  });
+
+  it("enriches pages the filter auto-search pulls in (#93 composition)", async () => {
+    // The needle lives on page 3; meta exists only for it. The auto-search must
+    // surface the run AND its batch enrichment must cover the late page's ids.
+    const pageOf = (page: number) =>
+      Array.from({ length: 30 }, (_, i) => ({
+        id: page * 100 + i + 1,
+        fileName: "ci.yml",
+        displayName: "CI",
+        owner: "acme",
+        repo: "widget",
+        status: "completed",
+        result: "succeeded",
+      }));
+    const needle900 = {
+      id: 900,
+      fileName: "deploy.yml",
+      displayName: "Needle Deploy",
+      owner: "legacy",
+      repo: "archive",
+      status: "completed",
+      result: "succeeded",
+    };
+    const fn = mockFetch((url) => {
+      if (url.includes("/workflow/runs")) {
+        const p = Number(url.match(/page=(\d+)/)?.[1] ?? 0);
+        const pages: Record<number, unknown[]> = { 0: pageOf(0), 1: pageOf(1), 2: pageOf(2), 3: [needle900], 4: [] };
+        return { body: pages[p] ?? [] };
+      }
+      if (url.includes("/api/local/runs-meta")) return { body: { 900: FINISHED_META } };
+      return undefined;
+    });
+    renderRuns();
+    await waitFor(() => expect(runLinks()).toHaveLength(30));
+
+    type("needle");
+    enter();
+    await waitFor(() => expect(runLinks()).toHaveLength(1), { timeout: 10_000 });
+
+    // The auto-searched page's id was included in a batch, and its row shows real times.
+    await waitFor(() => expect(screen.getByText("4.10s")).toBeTruthy(), { timeout: 10_000 });
+    expect(metaCalls(fn).some((u) => u.includes("900"))).toBe(true);
+  });
+});
