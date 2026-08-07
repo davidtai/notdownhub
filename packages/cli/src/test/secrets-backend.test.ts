@@ -74,6 +74,15 @@ esac
     assert.equal(files.length, 1);
     assert.equal(readFileSync(join(stateDir, files[0]), "utf8"), "libsecret-value\nline2");
 
+    // Byte-exact round-trip for a value ending in newline(s): `secret-tool lookup` prints the
+    // stored bytes verbatim, so a trailing "\n" is part of the value and must survive — the same
+    // exact-byte contract the keychain/file backends honor (#135). PEM keys / piped files end in one.
+    const pem = "-----BEGIN KEY-----\nMIIB\n-----END KEY-----\n";
+    await setSecret(GLOBAL_SCOPE, "LSPEM", pem);
+    assert.equal(await getSecret(GLOBAL_SCOPE, "LSPEM"), pem, "trailing newline must not be stripped");
+    await setSecret(GLOBAL_SCOPE, "LSNL", "x\n\n");
+    assert.equal(await getSecret(GLOBAL_SCOPE, "LSNL"), "x\n\n", "all trailing newlines must survive");
+
     assert.equal(await removeSecret(GLOBAL_SCOPE, "LSTEST"), true);
     assert.equal(await getSecret(GLOBAL_SCOPE, "LSTEST"), null);
   } finally {
