@@ -15,7 +15,7 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/mark-bin-executable.mjs",
     "test": "c8 --check-coverage node --import ./dist/test/_setup.js --test \"dist/test/**/*.test.js\"",
     "test:nocov": "node --import ./dist/test/_setup.js --test \"dist/test/**/*.test.js\""
   },
