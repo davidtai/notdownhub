@@ -1,12 +1,13 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
-import { TriangleAlert, ExternalLink, Trash2, GitBranch } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { TriangleAlert, ExternalLink, Trash2, GitBranch, Plus, CalendarClock } from "lucide-react";
 import {
   getAllRuns,
   getProjects,
   getWorkflowDefinition,
   getRunLastActivity,
   deleteProjectRuns,
+  deleteProjectPlaceholder,
   probeDeleteProjectSupport,
 } from "../lib/api";
 import { usePoll } from "../lib/hooks";
@@ -14,8 +15,11 @@ import { deriveProjects, type Project, type ProjectWorkflow } from "../lib/proje
 import { parseWorkflowTriggers, eventSummary, type WorkflowTriggers } from "../lib/workflow";
 import { toState, relativeTime } from "../lib/format";
 import { AppBar } from "../components/AppBar";
+import { AddProject } from "../components/AddProject";
+import { RerunButton } from "../components/RerunButton";
 import { Card } from "../components/ui/card";
 import { Button } from "../components/ui/button";
+import { Tooltip } from "../components/ui/tooltip";
 import { StatusIcon, StatePill } from "../components/StatusIcon";
 import { Badge } from "../components/ui/badge";
 
@@ -48,6 +52,8 @@ export async function loadProjects(): Promise<EnrichedProject[]> {
   const projects = fromHub ?? deriveProjects(await getAllRuns());
   return Promise.all(
     projects.map(async (p) => {
+      // A planned placeholder (#113) has no runs — nothing to enrich from run history.
+      if (p.kind === "planned" || p.lastRunId === null) return { ...p, workflows: [], lastActivity: null };
       const workflows = await Promise.all(
         p.workflows.map(async (w) => {
           const def = await getWorkflowDefinition(w.latestRunId);
@@ -73,6 +79,7 @@ export function Projects() {
   const [pending, setPending] = useState<EnrichedProject | null>(null);
   const [busy, setBusy] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   async function confirmRemove() {
     if (!pending) return;
@@ -102,12 +109,18 @@ export function Projects() {
       <AppBar />
 
       <main className="mx-auto max-w-[1160px] px-4 py-6 sm:px-6">
-        <div className="mb-5">
-          <h1 className="text-lg font-semibold text-fg">Projects</h1>
-          <p className="mt-0.5 text-[13px] text-fg-muted">
-            Every project this hub has run, derived from its full run history — with the
-            workflows, branches, and events each one is watching.
-          </p>
+        <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-lg font-semibold text-fg">Projects</h1>
+            <p className="mt-0.5 text-[13px] text-fg-muted">
+              Every project this hub has run, derived from its full run history — with the
+              workflows, branches, and events each one is watching.
+            </p>
+          </div>
+          <Button size="sm" onClick={() => setWizardOpen(true)}>
+            <Plus size={14} aria-hidden />
+            Add project
+          </Button>
         </div>
 
         {projects.initial ? (
@@ -117,7 +130,7 @@ export function Projects() {
         ) : list.length === 0 ? (
           <EmptyState />
         ) : (
-          <ProjectSections list={list} canRemove={canRemove} onRemove={setPending} />
+          <ProjectSections list={list} canRemove={canRemove} onRemove={setPending} onRefresh={projects.refresh} />
         )}
       </main>
 
@@ -130,6 +143,8 @@ export function Projects() {
           onConfirm={confirmRemove}
         />
       )}
+
+      {wizardOpen && <AddProject onClose={() => setWizardOpen(false)} onCreated={projects.refresh} />}
     </div>
   );
 }
@@ -144,20 +159,27 @@ function ProjectSections({
   list,
   canRemove,
   onRemove,
+  onRefresh,
 }: {
   list: EnrichedProject[];
   canRemove: boolean;
   onRemove: (p: EnrichedProject) => void;
+  onRefresh: () => void;
 }) {
-  const repos = list.filter((p) => p.kind === "repo");
-  const other = list.filter((p) => p.kind !== "repo");
+  // Planned placeholders (#113) live in the main list — they are intended repos.
+  const repos = list.filter((p) => p.kind === "repo" || p.kind === "planned");
+  const other = list.filter((p) => p.kind !== "repo" && p.kind !== "planned");
   return (
     <>
       {repos.length > 0 && (
         <div className="flex flex-col gap-4">
-          {repos.map((p) => (
-            <ProjectCard key={p.name} project={p} canRemove={canRemove} onRemove={() => onRemove(p)} />
-          ))}
+          {repos.map((p) =>
+            p.kind === "planned" ? (
+              <PlannedCard key={p.name} project={p} onRemoved={onRefresh} />
+            ) : (
+              <ProjectCard key={p.name} project={p} canRemove={canRemove} onRemove={() => onRemove(p)} />
+            ),
+          )}
         </div>
       )}
       {other.length > 0 && (
@@ -195,7 +217,7 @@ function ProjectCard({
   canRemove: boolean;
   onRemove: () => void;
 }) {
-  const state = toState(project.lastRun.status, project.lastRun.result);
+  const state = toState(project.lastRun?.status, project.lastRun?.result);
   const when = relativeTime(project.lastActivity);
   const note = KIND_NOTE[project.kind];
 
@@ -250,6 +272,7 @@ function ProjectCard({
 
 function WorkflowRow({ workflow }: { workflow: EnrichedWorkflow }) {
   const { triggers } = workflow;
+  const navigate = useNavigate();
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
@@ -266,6 +289,18 @@ function WorkflowRow({ workflow }: { workflow: EnrichedWorkflow }) {
         <span className="text-[11px] text-fg-subtle">
           {workflow.runCount} {workflow.runCount === 1 ? "run" : "runs"}
         </span>
+        {/* Force run (#113): replays the workflow's LATEST run through the #112 re-run
+            path (new attempt, correct platform + localcheckout wiring). A hub refusal
+            (tree not retained) surfaces verbatim in the button's tooltip. */}
+        <RerunButton
+          runId={workflow.latestRunId}
+          action="Force run"
+          busyAction="Starting…"
+          hint="Run this workflow now — replays its latest run as a new attempt on the fleet"
+          variant="ghost"
+          className="ml-auto"
+          onDone={() => navigate(`/runs/${workflow.latestRunId}`)}
+        />
       </div>
 
       {workflow.yaml === null ? (
@@ -300,6 +335,109 @@ function WorkflowRow({ workflow }: { workflow: EnrichedWorkflow }) {
         <p className="text-[12px] text-fg-subtle">No triggers declared in the workflow definition.</p>
       )}
     </div>
+  );
+}
+
+/**
+ * A #113 planned placeholder: registered from its workflow YAML, no runs yet.
+ * Shows what the placeholder parsed (workflow, events, branches, runs-on) and
+ * the dispatch command that starts the first run — which absorbs this card
+ * into a real project row. Removing it deletes only the placeholder.
+ */
+function PlannedCard({ project, onRemoved }: { project: EnrichedProject; onRemoved: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const p = project.planned;
+  const hubUrl =
+    typeof window !== "undefined" ? `${window.location.protocol}//${window.location.host}` : "http://your-hub:4949";
+
+  async function remove() {
+    if (busy) return;
+    setBusy(true);
+    await deleteProjectPlaceholder(project.name);
+    setBusy(false);
+    onRemoved();
+  }
+
+  return (
+    <Card className="overflow-hidden">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-3">
+        <CalendarClock size={18} className="text-fg-subtle" aria-hidden />
+        <h2 className="truncate font-mono text-sm font-semibold text-fg">{project.name}</h2>
+        <Badge variant="outline">planned</Badge>
+        <span className="text-[12px] text-fg-muted">no runs yet</span>
+        <div className="ml-auto flex items-center gap-1.5">
+          {/* No runs exist, so there is nothing to force-run — disabled, honestly. */}
+          <Tooltip label="No runs yet — start the first one with the dispatch command below" side="bottom">
+            <Button variant="ghost" size="sm" disabled aria-label={`Force run ${project.name}`}>
+              Force run
+            </Button>
+          </Tooltip>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-fail hover:bg-fail/10 hover:text-fail"
+            aria-label={`Remove planned project ${project.name}`}
+            onClick={remove}
+            disabled={busy}
+          >
+            <Trash2 size={14} />
+            {busy ? "Removing…" : "Remove"}
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2 px-4 py-3">
+        {p?.workflowFileName || p?.workflowName ? (
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[13px] font-medium text-fg">
+              {p.workflowFileName ?? p.workflowName}
+            </span>
+            {p.workflowName && p.workflowFileName && (
+              <span className="text-[11px] text-fg-subtle">{p.workflowName}</span>
+            )}
+          </div>
+        ) : null}
+        {p && p.events.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="eyebrow mr-0.5">On</span>
+            {p.events.map((e) => (
+              <Badge key={e} variant="outline">
+                {e}
+              </Badge>
+            ))}
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-1.5 text-[12px] text-fg-muted">
+          <span className="eyebrow mr-0.5">Branches</span>
+          {p && p.branches.length > 0 ? (
+            p.branches.map((b) => (
+              <span key={b} className="inline-flex items-center gap-1 font-mono text-[11px]">
+                <GitBranch size={11} className="text-fg-subtle" />
+                {b}
+              </span>
+            ))
+          ) : (
+            <span className="text-[12px] text-fg-subtle">all branches</span>
+          )}
+        </div>
+        {p && p.runsOn.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 text-[12px] text-fg-muted">
+            <span className="eyebrow mr-0.5">Runs on</span>
+            {p.runsOn.map((l) => (
+              <code key={l} className="font-mono text-[11px] text-fg">
+                {l}
+              </code>
+            ))}
+          </div>
+        )}
+        <p className="text-[12px] text-fg-subtle">
+          First run absorbs this placeholder:{" "}
+          <code className="font-mono text-fg">
+            ndh dispatch --server {hubUrl} --repository {project.name}
+          </code>
+        </p>
+      </div>
+    </Card>
   );
 }
 

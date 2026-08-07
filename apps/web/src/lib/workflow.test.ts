@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseWorkflowTriggers, eventSummary } from "./workflow";
+import { parseWorkflowTriggers, eventSummary, parseWorkflowFile, labelMatch, slugHint } from "./workflow";
 
 describe("parseWorkflowTriggers", () => {
   it("parses a map form with push branches (list) + workflow_dispatch (null value)", () => {
@@ -141,5 +141,67 @@ describe("eventSummary", () => {
   });
   it("joins cron and types when both are present", () => {
     expect(eventSummary({ ...base, event: "x", cron: ["a"], types: ["b"] })).toBe("x (a; b)");
+  });
+});
+
+// ── whole-file inspection for the Add-project wizard (#113) ─────────────────
+describe("parseWorkflowFile", () => {
+  it("extracts name, triggers, distinct runs-on labels across jobs, and the job count", () => {
+    const info = parseWorkflowFile(
+      [
+        "name: CI",
+        "on:",
+        "  push:",
+        "    branches: [main]",
+        "jobs:",
+        "  a:",
+        "    runs-on: ubuntu-latest",
+        "  b:",
+        "    runs-on: [self-hosted, linux]",
+        "  c:",
+        "    runs-on:",
+        "      group: big",
+        "      labels: [gpu]",
+        "  d:",
+        "    runs-on: ${{ matrix.os }}",
+      ].join("\n"),
+    );
+    expect(info.ok).toBe(true);
+    expect(info.name).toBe("CI");
+    expect(info.jobCount).toBe(4);
+    expect(info.triggers.events.map((e) => e.event)).toEqual(["push"]);
+    expect(info.triggers.branches).toEqual(["main"]);
+    expect(info.runsOn).toEqual(["ubuntu-latest", "self-hosted", "linux", "gpu", "${{ matrix.os }}"]);
+  });
+
+  it("fails honestly: bad YAML, non-map, missing jobs, empty jobs, null job bodies tolerated", () => {
+    expect(parseWorkflowFile(": {[").ok).toBe(false);
+    expect(parseWorkflowFile("- a\n- b").error).toMatch(/top level/);
+    expect(parseWorkflowFile("name: X").error).toMatch(/declares no jobs/);
+    expect(parseWorkflowFile("jobs: {}").error).toMatch(/empty/);
+    const nullJob = parseWorkflowFile("jobs:\n  a:\n");
+    expect(nullJob.ok).toBe(true);
+    expect(nullJob.runsOn).toEqual([]);
+    expect(nullJob.name).toBeNull();
+  });
+});
+
+describe("labelMatch", () => {
+  it("classifies fleet matches, hosted defaults, dynamic expressions, and honest misses", () => {
+    const fleet = ["self-hosted", "Linux", "X64"];
+    expect(labelMatch("linux", fleet)).toBe("match"); // case-insensitive
+    expect(labelMatch("ubuntu-latest", fleet)).toBe("hosted"); // default -P maps to self-hosted
+    expect(labelMatch("ubuntu-latest", ["gpu"])).toBe("none");
+    expect(labelMatch("${{ matrix.os }}", fleet)).toBe("dynamic");
+    expect(labelMatch("windows-2022", fleet)).toBe("none");
+  });
+});
+
+describe("slugHint", () => {
+  it("scrapes owner/repo from a github.com URL or a repository: value; null otherwise", () => {
+    expect(slugHint("# see https://github.com/acme/app.git for details")).toBe("acme/app");
+    expect(slugHint("url: git@github.com:acme/app.git")).toBe("acme/app");
+    expect(slugHint("with:\n  repository: acme/tool\n")).toBe("acme/tool");
+    expect(slugHint("name: CI\non: push\n")).toBeNull();
   });
 });

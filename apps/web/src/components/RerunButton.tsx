@@ -21,12 +21,20 @@ export function RerunButton({
   variant = "outline",
   size = "sm",
   className,
+  action = "Re-run",
+  busyAction = "Re-running…",
+  hint = "Re-run this workflow on the fleet (new attempt of this run)",
 }: {
   runId: number;
   onDone?: () => void;
   variant?: ButtonProps["variant"];
   size?: ButtonProps["size"];
   className?: string;
+  /** Button text — the Projects page reuses this as "Force run" (#113). */
+  action?: string;
+  busyAction?: string;
+  /** Tooltip text while no error is being shown. */
+  hint?: string;
 }) {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
@@ -50,7 +58,7 @@ export function RerunButton({
     }
   }
 
-  const label = failed ?? "Re-run this workflow on the fleet (new attempt of this run)";
+  const label = failed ?? hint;
 
   return (
     <Tooltip label={label} side="bottom">
@@ -60,11 +68,11 @@ export function RerunButton({
         size={size}
         onClick={onClick}
         disabled={busy}
-        aria-label={`Re-run run ${runId}`}
+        aria-label={`${action} run ${runId}`}
         className={cn(failed && "text-fail", className)}
       >
         <RotateCcw size={14} className={cn(busy && "spin")} aria-hidden />
-        <span>{busy ? "Re-running…" : "Re-run"}</span>
+        <span>{busy ? busyAction : action}</span>
       </Button>
     </Tooltip>
   );

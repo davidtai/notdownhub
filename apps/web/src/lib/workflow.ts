@@ -141,3 +141,109 @@ export function eventSummary(e: EventTrigger): string {
   if (e.types.length) parts.push(e.types.join(", "));
   return parts.length ? `${e.event} (${parts.join("; ")})` : e.event;
 }
+
+// ── whole-file inspection for the Add-project wizard (#113) ─────────────────
+// Mirrored by the CLI's packages/cli/src/workflowinfo.ts (`ndh project add`),
+// the same deliberate web/CLI duplication pattern as the projects aggregation —
+// a placeholder parses identically no matter which surface created it.
+
+export interface WorkflowFileInfo {
+  /** false when the YAML does not parse, is not a map, or declares no jobs. */
+  ok: boolean;
+  /** Why `ok` is false, for the user's eyes. */
+  error: string | null;
+  /** The workflow-level `name:`, or null. */
+  name: string | null;
+  triggers: WorkflowTriggers;
+  /** Distinct `runs-on` labels across jobs, file order; `${{ … }}` kept verbatim. */
+  runsOn: string[];
+  jobCount: number;
+}
+
+const FILE_FAIL = (error: string): WorkflowFileInfo => ({
+  ok: false,
+  error,
+  name: null,
+  triggers: EMPTY,
+  runsOn: [],
+  jobCount: 0,
+});
+
+/** Collect a job's `runs-on` labels: scalar, list, or `{ group, labels }` runner-group form. */
+function jobRunsOn(v: unknown): string[] {
+  if (typeof v === "string") return [v];
+  if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string");
+  if (v && typeof v === "object") return toStringArray((v as Record<string, unknown>).labels);
+  return [];
+}
+
+/**
+ * Parse a workflow FILE for the Add-project wizard: triggers (via the #73
+ * parser above) plus the workflow name and the runs-on labels to validate
+ * against the fleet. Never throws — a bad file comes back as `ok: false` with
+ * the reason.
+ */
+export function parseWorkflowFile(yamlText: string): WorkflowFileInfo {
+  let doc: unknown;
+  try {
+    doc = parseYaml(yamlText);
+  } catch (err) {
+    return FILE_FAIL(`Not valid YAML: ${(err as Error).message ?? err}`);
+  }
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) return FILE_FAIL("Not a workflow: the top level is not a map.");
+  const root = doc as Record<string, unknown>;
+
+  const jobs = root.jobs;
+  if (!jobs || typeof jobs !== "object" || Array.isArray(jobs)) return FILE_FAIL("Not a workflow: it declares no jobs.");
+  const jobEntries = Object.values(jobs as Record<string, unknown>);
+  if (jobEntries.length === 0) return FILE_FAIL("Not a workflow: the jobs block is empty.");
+
+  const runsOn: string[] = [];
+  for (const job of jobEntries) {
+    if (!job || typeof job !== "object") continue;
+    for (const label of jobRunsOn((job as Record<string, unknown>)["runs-on"])) {
+      if (!runsOn.includes(label)) runsOn.push(label);
+    }
+  }
+
+  return {
+    ok: true,
+    error: null,
+    name: typeof root.name === "string" ? root.name : null,
+    triggers: parseWorkflowTriggers(yamlText),
+    runsOn,
+    jobCount: jobEntries.length,
+  };
+}
+
+// ── runs-on vs the live fleet ────────────────────────────────────────────────
+
+/** Hosted labels the hub's default platform mapping sends to the self-hosted fleet (platform.ts). */
+export const HOSTED_LABELS = ["ubuntu-latest", "ubuntu-24.04", "ubuntu-22.04", "macos-latest", "windows-latest"];
+
+/** How a single `runs-on` label relates to the current fleet. */
+export type LabelMatch =
+  | "match" // some registered runner carries this label
+  | "hosted" // a hosted label the hub's default mapping sends to the self-hosted fleet
+  | "dynamic" // a ${{ … }} expression — resolvable only at run time
+  | "none"; // nothing registered would pick this up
+
+/** Classify a `runs-on` label against the fleet's labels (case-insensitive). */
+export function labelMatch(label: string, fleetLabels: Iterable<string>): LabelMatch {
+  if (label.includes("${{")) return "dynamic";
+  const fleet = new Set([...fleetLabels].map((l) => l.toLowerCase()));
+  if (fleet.has(label.toLowerCase())) return "match";
+  if (HOSTED_LABELS.includes(label) && fleet.has("self-hosted")) return "hosted";
+  return "none";
+}
+
+/**
+ * A best-effort `owner/repo` hint scraped from the YAML text (a github.com URL
+ * or an explicit `repository:` value) to prefill the wizard's slug field.
+ */
+export function slugHint(yamlText: string): string | null {
+  const url = yamlText.match(/github\.com[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?=[\s/"']|$)/);
+  if (url) return `${url[1]}/${url[2]}`;
+  const repo = yamlText.match(/\brepository:\s*['"]?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)['"]?/);
+  return repo ? repo[1] : null;
+}

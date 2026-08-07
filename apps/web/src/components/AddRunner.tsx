@@ -1,35 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Check, Copy, KeyRound, Lock, Plus } from "lucide-react";
 import { getJoinInfo, type JoinInfoResult } from "../lib/api";
-import { cn } from "../lib/utils";
+import { cn, copyText } from "../lib/utils";
 
 type Mode = "cli" | "docker";
-
-/** Clipboard write with an execCommand fallback for non-secure / older contexts. */
-async function copyText(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    /* fall through */
-  }
-  try {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.focus();
-    ta.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(ta);
-    return ok;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Pairing panel. Asks the hub for real join details via /api/local/join-info:

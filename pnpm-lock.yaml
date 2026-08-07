@@ -80,6 +80,9 @@ importers:
       commander:
         specifier: ^15.0.0
         version: 15.0.0
+      yaml:
+        specifier: ^2.6.1
+        version: 2.9.0
     devDependencies:
       '@types/node':
         specifier: ^22.10.0

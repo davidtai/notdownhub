@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { Projects } from "./Projects";
 import { ThemeProvider } from "../lib/theme";
 import { mockFetch } from "../test/helpers";
@@ -318,5 +318,139 @@ describe("Projects", () => {
     expect(runsCalls.length).toBeGreaterThan(0);
     // Full history: the fallback must never ask for a single page.
     expect(runsCalls.every((u) => !u.includes("page="))).toBe(true);
+  });
+
+  // ── #113: planned placeholders + the Add-project wizard + Force run ────────
+  const plannedRow = {
+    name: "acme/planned",
+    kind: "planned",
+    runCount: 0,
+    lastRun: null,
+    lastRunId: null,
+    workflows: [],
+    planned: {
+      workflowFileName: "ci.yml",
+      workflowName: "CI",
+      events: ["push"],
+      branches: ["main"],
+      runsOn: ["self-hosted"],
+      createdAt: 1,
+    },
+  };
+
+  /** Router with the merged aggregate (repo + planned), the placeholder CRUD, and agents. */
+  function plannedRouter(track: string[] = [], rerunStatus = 200) {
+    return (url: string, init?: { method?: string }) => {
+      const method = init?.method ?? "GET";
+      if (url.includes("/api/local/agents")) return { body: [{ id: 1, name: "r1", labels: ["self-hosted"], state: "idle" }] };
+      if (url.includes("/api/local/projects/placeholder")) {
+        track.push(`${method} ${url}`);
+        return { body: { ok: true } };
+      }
+      if (url.includes("/api/local/projects"))
+        return { body: [summary("acme/alpha", "repo", 2, 3), plannedRow] };
+      if (url.includes("/rerunworkflow/")) {
+        track.push(`${method} ${url}`);
+        return rerunStatus === 200 ? { status: 200 } : { status: rerunStatus, body: { error: "source tree is not on the hub" } };
+      }
+      return hubRouter()(url);
+    };
+  }
+
+  // mockFetch only passes the URL through; wrap it to see the method too.
+  function mockFetchWithMethod(router: (url: string, init?: { method?: string }) => unknown) {
+    const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const r = (router(url, init as { method?: string }) ?? { status: 404, body: {} }) as {
+        status?: number;
+        body?: unknown;
+      };
+      const status = r.status ?? 200;
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        statusText: `HTTP ${status}`,
+        json: async () => r.body ?? null,
+        text: async () => JSON.stringify(r.body ?? null),
+        headers: new Headers(),
+      } as unknown as Response;
+    });
+    globalThis.fetch = fn as unknown as typeof fetch;
+    return fn;
+  }
+
+  it("renders a planned placeholder card: badge, no runs yet, parsed facts, dispatch command", async () => {
+    mockFetchWithMethod(plannedRouter());
+    renderProjects();
+    await waitFor(() => expect(screen.getByText("acme/planned")).toBeTruthy());
+    const card = screen.getByText("acme/planned").closest("div")!.parentElement!;
+    expect(within(card).getByText("planned")).toBeTruthy();
+    expect(within(card).getByText("no runs yet")).toBeTruthy();
+    expect(within(card).getByText("push")).toBeTruthy();
+    expect(within(card).getByText("ci.yml")).toBeTruthy();
+    expect(within(card).getByText(/ndh dispatch --server .* --repository acme\/planned/)).toBeTruthy();
+    // No runs exist → Force run is disabled, honestly.
+    const force = within(card).getByRole("button", { name: "Force run acme/planned" }) as HTMLButtonElement;
+    expect(force.disabled).toBe(true);
+  });
+
+  it("removes a planned placeholder through the gated CRUD route and refreshes", async () => {
+    const calls: string[] = [];
+    mockFetchWithMethod(plannedRouter(calls));
+    renderProjects();
+    await waitFor(() => expect(screen.getByText("acme/planned")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Remove planned project acme/planned" }));
+    await waitFor(() =>
+      expect(calls.some((c) => c.startsWith("DELETE") && c.includes("slug=acme%2Fplanned"))).toBe(true),
+    );
+  });
+
+  it("opens the Add-project wizard from the header button", async () => {
+    mockFetchWithMethod(plannedRouter());
+    renderProjects();
+    await waitFor(() => expect(screen.getByText("acme/alpha")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /Add project/ }));
+    expect(screen.getByRole("dialog", { name: "Add project" })).toBeTruthy();
+    expect(screen.getByText(/Open your workflow YAML/)).toBeTruthy();
+  });
+
+  it("Force run fires the #112 replay for the workflow's latest run and navigates to it", async () => {
+    const calls: string[] = [];
+    mockFetchWithMethod(plannedRouter(calls));
+    render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={["/projects"]}>
+          <Routes>
+            <Route path="/projects" element={<Projects />} />
+            <Route path="/runs/:id" element={<div>run-detail-page</div>} />
+          </Routes>
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Force run run 3" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Force run run 3" }));
+    await waitFor(() => expect(screen.getByText("run-detail-page")).toBeTruthy());
+    expect(calls.some((c) => c === "POST /_apis/v1/Message/rerunworkflow/3")).toBe(true);
+  });
+
+  it("Force run surfaces a hub refusal verbatim and does not navigate", async () => {
+    mockFetchWithMethod(plannedRouter([], 409));
+    render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={["/projects"]}>
+          <Routes>
+            <Route path="/projects" element={<Projects />} />
+            <Route path="/runs/:id" element={<div>run-detail-page</div>} />
+          </Routes>
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Force run run 3" })).toBeTruthy());
+    const btn = screen.getByRole("button", { name: "Force run run 3" });
+    fireEvent.click(btn);
+    // The refusal message becomes the button's tooltip; hovering reveals it.
+    fireEvent.mouseEnter(btn.parentElement!);
+    await waitFor(() => expect(screen.getByRole("tooltip").textContent).toMatch(/source tree is not on the hub/));
+    expect(screen.queryByText("run-detail-page")).toBeNull();
   });
 });
