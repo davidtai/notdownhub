@@ -161,6 +161,27 @@ DigitalOcean referral link with $25 of credit to try it.
 
 ---
 
+## Migrate from a GitHub Actions self-hosted runner
+
+Your workflow files do not change. notdownhub runs the same YAML, the same `runs-on` labels, and the same marketplace actions.
+
+Follow these steps to move a runner machine:
+
+1. Start a hub on a machine that you control: `ndh hub up`.
+2. On the runner machine, install notdownhub: `npm install -g notdownhub`.
+3. Join the machine to the hub: `ndh runner join http://<hub-host>:4949 --token <token>`.
+4. Set the same labels that your workflows request in `runs-on`. Use `--labels` when you join.
+5. Start the runner: `ndh runner start`.
+6. Store each repository secret with `ndh secrets set <NAME>`. The hub does not read secrets from GitHub.
+7. Run your CI from a repository checkout: `ndh dispatch --server http://<hub-host>:4949`.
+
+Facts that apply to a migration:
+
+- A runner registration binds to one server. The same machine can hold a GitHub registration and a notdownhub registration at the same time. Jobs do not cross between the two registrations.
+- The first run downloads each action one time through the hub mirror. Later runs read the actions from the mirror cache.
+- GitHub webhooks do not reach your hub. To start CI, use `ndh dispatch`, a webhook from your git server, or an `on: schedule` trigger. The [operations guide](docs/operations.md) describes each trigger.
+- The hub stores artifacts and cache data from `actions/upload-artifact` and `actions/cache`.
+
 ## Operations
 
 The runbook covers running a hub in production:
