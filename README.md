@@ -1,6 +1,6 @@
 # notdownhub
 
-**GitHub can be down but your CI wont be.**
+**GitHub goes down but your CI stays up.**
 
 `ndh` runs your **unmodified** GitHub Actions workflows on infrastructure you
 control — your laptop, one box under a desk, or a fleet of machines behind
