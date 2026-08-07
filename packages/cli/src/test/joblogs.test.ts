@@ -11,6 +11,12 @@ import {
   createSseParser,
   JobLogWriter,
   pruneOldRuns,
+  purgeRunLogs,
+  markRunDeleted,
+  deleteRun,
+  resolveRunTimelines,
+  readDeletedRunIds,
+  isRunDeleted,
   readJobLog,
   serveJobLogs,
   makeRunIdResolver,
@@ -133,6 +139,103 @@ test("pruneOldRuns: rolls back and rethrows on a query error", async () => {
   db.exec("DROP TABLE streams");
   assert.throws(() => pruneOldRuns(db, 1));
   db.close();
+});
+
+// ── true delete: purge + tombstone ───────────────────────────────────────────
+test("purgeRunLogs: removes a run's rows (by run_id and via streams) and leaves other runs", async () => {
+  const path = tmp();
+  const db = await openDb(path);
+  const w = new JobLogWriter(db, 10_000, 1);
+  w.add([{ runId: 5, timelineId: "tl5", recordId: null, ts: 1, line: "a" }]);
+  w.add([{ runId: 5, timelineId: "tl5", recordId: null, ts: 2, line: "b" }]);
+  w.add([{ runId: 6, timelineId: "tl6", recordId: null, ts: 3, line: "c" }]);
+  const removed = purgeRunLogs(db, 5);
+  assert.equal(removed, 2);
+  assert.equal((await readJobLog(path, "tl5"))!.length, 0);
+  assert.deepEqual(await readJobLog(path, "tl6"), ["c"]);
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM streams WHERE run_id=5").get() as { n: number }).n, 0);
+  db.close();
+});
+
+test("purgeRunLogs: removes rows keyed only by timeline_id (NULL run_id) via resolved timelines", async () => {
+  const path = tmp();
+  const db = await openDb(path);
+  const w = new JobLogWriter(db, 10_000, 1);
+  // Rows the tee stored before the run_id resolved: run_id NULL, keyed by timeline.
+  w.add([{ runId: null, timelineId: "tln", recordId: null, ts: 1, line: "orphan-line" }]);
+  w.add([{ runId: null, timelineId: "keep", recordId: null, ts: 2, line: "other" }]);
+  const removed = purgeRunLogs(db, 99, ["tln"]); // run_id 99 matches nothing; timeline does
+  assert.equal(removed, 1);
+  assert.equal((await readJobLog(path, "tln"))!.length, 0);
+  assert.deepEqual(await readJobLog(path, "keep"), ["other"]);
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM streams WHERE timeline_id='tln'").get() as { n: number }).n, 0);
+  db.close();
+});
+
+test("resolveRunTimelines: lower-cases hub-DB TimeLineIds for a run; [] on a missing db/table", async () => {
+  const hubPath = tmp();
+  const hub = new DatabaseSync(hubPath);
+  hub.exec("CREATE TABLE Jobs(JobId TEXT, TimeLineId TEXT, runid INTEGER)");
+  hub.prepare("INSERT INTO Jobs(TimeLineId,runid) VALUES(?,?)").run("ABC-UPPER", 7);
+  hub.prepare("INSERT INTO Jobs(TimeLineId,runid) VALUES(?,?)").run("DEF-UPPER", 7);
+  hub.prepare("INSERT INTO Jobs(TimeLineId,runid) VALUES(?,?)").run("OTHER", 8);
+  hub.close();
+  assert.deepEqual((await resolveRunTimelines(hubPath, 7)).sort(), ["abc-upper", "def-upper"]);
+  assert.deepEqual(await resolveRunTimelines(join(tmpdir(), "no-such-hub", "h.db"), 7), []);
+});
+
+test("deleteRun: resolves timelines from the hub DB and purges NULL-run_id rows", async () => {
+  const path = tmp();
+  const hubPath = tmp();
+  const hub = new DatabaseSync(hubPath);
+  hub.exec("CREATE TABLE Jobs(JobId TEXT, TimeLineId TEXT, runid INTEGER)");
+  hub.prepare("INSERT INTO Jobs(TimeLineId,runid) VALUES(?,?)").run("TL-UP", 12);
+  hub.close();
+  const db = await openDb(path);
+  new JobLogWriter(db, 10_000, 1).add([{ runId: null, timelineId: "tl-up", recordId: null, ts: 1, line: "z" }]);
+  db.close();
+  const r = await deleteRun(path, 12, { hubDbPath: hubPath });
+  assert.equal(r.logsPurged, 1);
+  assert.equal(await isRunDeleted(path, 12), true);
+});
+
+test("markRunDeleted: purges logs, writes a timestamped tombstone, in one transaction", async () => {
+  const path = tmp();
+  const db = await openDb(path);
+  new JobLogWriter(db, 10_000, 1).add([{ runId: 9, timelineId: "t9", recordId: null, ts: 1, line: "x" }]);
+  const purged = markRunDeleted(db, 9, [], () => 12345);
+  assert.equal(purged, 1);
+  assert.equal((db.prepare("SELECT deleted_at FROM deleted_runs WHERE run_id=9").get() as { deleted_at: number }).deleted_at, 12345);
+  assert.equal((await readJobLog(path, "t9"))!.length, 0);
+  db.close();
+});
+
+test("markRunDeleted: rolls back and rethrows when the tombstone insert fails", async () => {
+  const path = tmp();
+  const db = await openDb(path);
+  new JobLogWriter(db, 10_000, 1).add([{ runId: 1, timelineId: "t1", recordId: null, ts: 1, line: "keep-on-rollback" }]);
+  db.exec("DROP TABLE deleted_runs"); // make the INSERT inside the transaction fail
+  assert.throws(() => markRunDeleted(db, 1));
+  // the log purge is rolled back with the failed insert — nothing is half-deleted
+  assert.deepEqual(await readJobLog(path, "t1"), ["keep-on-rollback"]);
+  db.close();
+});
+
+test("deleteRun + readDeletedRunIds + isRunDeleted: opens the db, tombstones, reports purge count", async () => {
+  const home = freshHome();
+  const path = join(home, "hub", "joblogs.db");
+  const db = await openDb(path);
+  new JobLogWriter(db, 10_000, 1).add([{ runId: 3, timelineId: "t3", recordId: null, ts: 1, line: "y" }]);
+  db.close();
+  const r = await deleteRun(path, 3);
+  assert.equal(r.logsPurged, 1);
+  assert.equal(await isRunDeleted(path, 3), true);
+  assert.equal(await isRunDeleted(path, 4), false);
+  assert.deepEqual([...(await readDeletedRunIds(path))], [3]);
+});
+
+test("readDeletedRunIds: empty set when the database is missing", async () => {
+  assert.equal((await readDeletedRunIds(join(tmpdir(), "does-not-exist-del", "j.db"))).size, 0);
 });
 
 // ── serveJobLogs ─────────────────────────────────────────────────────────────

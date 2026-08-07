@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { RunDetail } from "./RunDetail";
 import { ThemeProvider } from "../lib/theme";
@@ -10,6 +10,7 @@ function renderDetail(id = "5") {
     <ThemeProvider>
       <MemoryRouter initialEntries={[`/runs/${id}`]}>
         <Routes>
+          <Route path="/" element={<div>Runs list page</div>} />
           <Route path="/runs/:id" element={<RunDetail />} />
         </Routes>
       </MemoryRouter>
@@ -166,6 +167,55 @@ describe("RunDetail", () => {
     renderDetail();
     await waitFor(() => expect(screen.getByText("Deploy")).toBeTruthy());
     expect(screen.queryByText("Artifacts")).toBeNull();
+  });
+
+  it("cancels a running run from the header", async () => {
+    const fn = mockFetch((url) => {
+      if (url.includes("/workflow/runs")) return { body: [{ id: 5, displayName: "Deploy", status: "inprogress", result: null }] };
+      if (url.includes("/attempts")) return { body: [{ id: 1, attempt: 1, timeLineId: "at1", status: "inprogress" }] };
+      if (url.includes("/jobs")) return { body: [] };
+      if (url.includes("/cancel")) return { status: 200 };
+      return { status: 404 };
+    });
+    renderDetail();
+    await waitFor(() => expect(screen.getByText("Running")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Cancel run 5" }));
+    await waitFor(() =>
+      expect(
+        (fn.mock.calls as unknown[][]).some(
+          ([u, i]) => String(u) === "/api/local/runs/5/cancel" && (i as RequestInit)?.method === "POST",
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it("deletes a run from the header and navigates back to the runs list", async () => {
+    mockFetch((url) => {
+      if (url.includes("/workflow/runs")) return { body: [{ id: 5, displayName: "Deploy", status: "completed", result: "succeeded" }] };
+      if (url.includes("/attempts")) return { body: [{ id: 1, attempt: 1, timeLineId: "at1" }] };
+      if (url.includes("/jobs")) return { body: [] };
+      if (url.includes("/Timeline/")) return { body: [] };
+      if (url.includes("/api/local/artifacts/5")) return { body: [] };
+      if (url.includes("/api/local/joblogs/")) return { body: { retained: false, lines: [] } };
+      if (url.includes("/api/local/runs/5")) return { status: 200 };
+      return { status: 404 };
+    });
+    renderDetail();
+    await waitFor(() => expect(screen.getByText("Deploy")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Delete run 5" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByText("Delete"));
+    await waitFor(() => expect(screen.getByText("Runs list page")).toBeTruthy());
+  });
+
+  it("shows a not-found tombstone when a deleted run's detail 404s", async () => {
+    mockFetch((url) => {
+      if (url.includes("/workflow/runs")) return { body: [] }; // filtered out
+      if (url.includes("/attempts")) return { status: 404 }; // detail 404s
+      return { status: 404 };
+    });
+    renderDetail();
+    await waitFor(() => expect(screen.getByText("Run #5 not found")).toBeTruthy());
+    expect(screen.getByText("It may have been deleted.")).toBeTruthy();
   });
 
   it("renders an unknown state with no attempts or jobs", async () => {

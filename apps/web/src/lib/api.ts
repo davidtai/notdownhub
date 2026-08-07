@@ -287,6 +287,26 @@ export async function deleteProjectRuns(project: string): Promise<DeleteResult> 
   }
 }
 
+// ── Run control (cancel / true delete) ──────────────────────────────────────
+/**
+ * Cancel a running run through the front's gated endpoint. The front drives the engine's
+ * forceCancelWorkflow — the reliable stop, and the recovery for an orphaned dispatch (a run
+ * left stuck "running" with the runner busy). Throws on a non-OK response.
+ */
+export async function cancelRun(id: number): Promise<void> {
+  const res = await fetch(`/api/local/runs/${id}/cancel`, { method: "POST" });
+  if (!res.ok) throw new Error(`cancel run ${id} → ${res.status} ${res.statusText}`);
+}
+
+/**
+ * Truly delete a run: the front tombstones it and purges its persisted logs, so it is gone from
+ * the list, 404s on detail, and stays gone across restarts. Throws on a non-OK response.
+ */
+export async function deleteRun(id: number): Promise<void> {
+  const res = await fetch(`/api/local/runs/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`delete run ${id} → ${res.status} ${res.statusText}`);
+}
+
 // ── Settings (read-only view of secrets/variables) ──────────────────────────
 export interface ConfigInfo {
   /** Where secrets live: keychain / libsecret / file. */

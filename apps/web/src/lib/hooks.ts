@@ -119,6 +119,8 @@ export interface InfiniteList<T> {
   /** false once a fetched page comes back empty — the end of the list. */
   hasMore: boolean;
   loadMore: () => void;
+  /** Re-fetch the revealed window now (e.g. after a mutation) so a change shows immediately. */
+  refresh: () => void;
 }
 
 /**
@@ -226,5 +228,5 @@ export function useInfiniteList<T>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [intervalMs]);
 
-  return { items, error, initial, loadingMore, hasMore, loadMore };
+  return { items, error, initial, loadingMore, hasMore, loadMore, refresh };
 }
