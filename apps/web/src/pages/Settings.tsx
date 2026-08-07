@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { KeyRound, Variable, Lock, TriangleAlert } from "lucide-react";
+import { KeyRound, Variable, Lock, Tag, TriangleAlert } from "lucide-react";
 import { getConfig } from "../lib/api";
 import { usePoll } from "../lib/hooks";
 import { AppBar } from "../components/AppBar";
@@ -59,7 +59,11 @@ export function Settings() {
                 {cfg.initial ? (
                   <SkeletonRows />
                 ) : secrets.length === 0 ? (
-                  <EmptyRow icon={<Lock size={14} />} label="No secrets stored." command="ndh secrets set NPM_TOKEN" />
+                  <EmptyRow
+                    icon={<Lock size={14} />}
+                    label="No secrets stored."
+                    example="ndh secrets set <NAME>"
+                  />
                 ) : (
                   <table className="w-full text-left text-[13px]">
                     <THead cols={["Scope", "Name", "Value"]} />
@@ -94,7 +98,11 @@ export function Settings() {
                 {cfg.initial ? (
                   <SkeletonRows />
                 ) : vars.length === 0 ? (
-                  <EmptyRow icon={<Variable size={14} />} label="No variables stored." command="ndh vars set NODE_ENV production" />
+                  <EmptyRow
+                    icon={<Tag size={14} />}
+                    label="No variables stored."
+                    example="ndh vars set <NAME> <value>"
+                  />
                 ) : (
                   <table className="w-full text-left text-[13px]">
                     <THead cols={["Scope", "Name", "Value"]} />
@@ -138,15 +146,19 @@ function Td({ children, className }: { children: React.ReactNode; className?: st
   return <td className={`px-4 py-2.5 align-middle ${className ?? ""}`}>{children}</td>;
 }
 
-function EmptyRow({ icon, label, command }: { icon: React.ReactNode; label: string; command: string }) {
+function EmptyRow({ icon, label, example }: { icon: React.ReactNode; label: string; example: string }) {
   return (
     <div className="px-4 py-10 text-center">
       <span className="inline-flex items-center gap-2 text-[13px] text-fg-muted">
         <span className="text-fg-subtle">{icon}</span>
         {label}
       </span>
+      <p className="mx-auto mt-1.5 max-w-md text-[12px] text-fg-subtle">
+        These are your own — notdownhub requires none. Manage them from the CLI on the machine
+        that runs <code className="font-mono">ndh dispatch</code>. For example:
+      </p>
       <div className="mt-2">
-        <code className="rounded-md bg-raised px-2.5 py-1 font-mono text-[12px] text-fg">{command}</code>
+        <code className="rounded-md bg-raised px-2.5 py-1 font-mono text-[12px] text-fg">{example}</code>
       </div>
     </div>
   );
