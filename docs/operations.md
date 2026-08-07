@@ -164,6 +164,22 @@ which is which before you open the firewall.
   `4949` as a **LAN / tailnet** surface; never expose it publicly, and do not
   hand out the registration token.
 
+**Jobs inherit the operator's shell environment:**
+
+- A self-hosted job runs as a child process of the runner or hub. So the job
+  inherits every environment variable that was set when you started `ndh run`,
+  `ndh hub up`, or `ndh runner start`.
+- This differs from GitHub-hosted runners. There is no clean-room environment.
+  Any workflow step can read your shell variables. An exported API key is
+  visible to job code.
+- Job output can include that environment. A step that runs `env` or `printenv`
+  prints it. notdownhub tees job output to the daily log files under
+  `~/.notdownhub` (see [Logging](#logging)). Those files are `0600`.
+- So start the runner and hub from a shell with a minimal environment. Do not
+  export secrets into that shell. Use scoped `ndh` secrets and variables instead
+  (see [Secrets & variables](#secrets--variables)). Treat the log files as
+  sensitive.
+
 ---
 
 ## Logging
