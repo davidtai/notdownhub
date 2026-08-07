@@ -60,7 +60,6 @@ export function AddRunner() {
     return "http://your-hub:4949";
   }, [result]);
 
-  // Real token only when the hub returned one; otherwise a safe placeholder.
   const tokenAuthEnabled = result?.ok ? result.info.authEnabled : true;
   const token = result?.ok && result.info.token ? result.info.token : "<token>";
   const tokenFlag = tokenAuthEnabled ? `\n  --token ${token} \\` : "";
@@ -86,11 +85,11 @@ export function AddRunner() {
   };
 
   return (
-    <div className="rounded-[var(--radius-card)] border border-line bg-surface p-3.5">
+    <div className="rounded-lg border border-line bg-surface p-4 shadow-[0_1px_2px_rgba(27,31,36,0.04)]">
       <div className="mb-3 flex items-center justify-between">
         <span className="flex items-center gap-2">
-          <Plus size={14} className="text-brand" />
-          <span className="eyebrow">Add a runner</span>
+          <Plus size={15} className="text-accent" />
+          <span className="text-sm font-semibold text-fg">Add a runner</span>
         </span>
         <div className="flex gap-0.5 rounded-md border border-line p-0.5">
           {(["cli", "docker"] as Mode[]).map((m) => (
@@ -98,8 +97,8 @@ export function AddRunner() {
               key={m}
               onClick={() => setMode(m)}
               className={cn(
-                "min-h-[36px] rounded px-3 font-mono text-[12px] transition-colors",
-                mode === m ? "bg-surface-2 text-brand" : "text-fg-faint hover:text-fg",
+                "min-h-[34px] rounded px-3 text-[12px] font-medium transition-colors",
+                mode === m ? "bg-raised text-accent" : "text-fg-subtle hover:text-fg",
               )}
             >
               {m === "cli" ? "CLI" : "Docker"}
@@ -109,44 +108,45 @@ export function AddRunner() {
       </div>
 
       <div className="relative">
-        <pre className="overflow-x-auto rounded-md border border-line bg-[color-mix(in_srgb,var(--surface)_55%,var(--bg))] p-3 pr-12 font-mono text-[12px] leading-relaxed text-fg [-webkit-overflow-scrolling:touch]">
+        <pre className="overflow-x-auto rounded-md border border-line bg-[color-mix(in_srgb,var(--surface)_60%,var(--canvas))] p-3 pr-12 font-mono text-[12px] leading-relaxed text-fg [-webkit-overflow-scrolling:touch]">
           {highlight(command)}
         </pre>
         <button
           onClick={copy}
           aria-label="Copy command"
-          className="absolute right-1.5 top-1.5 inline-flex h-11 w-11 items-center justify-center rounded border border-line bg-surface text-fg-muted transition-colors hover:text-fg active:bg-surface-2"
+          className="absolute right-1.5 top-1.5 inline-flex h-11 w-11 items-center justify-center rounded-md border border-line bg-surface text-fg-muted transition-colors hover:text-fg active:bg-raised"
         >
-          {copied ? <Check size={15} className="text-st-success" /> : <Copy size={15} />}
+          {copied ? <Check size={15} className="text-success" /> : <Copy size={15} />}
         </button>
       </div>
 
-      {/* Token provenance / access note, driven by what the hub told us. */}
       {authorized && tokenAuthEnabled ? (
-        <p className="mt-2.5 flex items-start gap-1.5 font-mono text-[11px] leading-relaxed text-fg-muted">
-          <KeyRound size={12} className="mt-px shrink-0 text-st-success" />
+        <p className="mt-3 flex items-start gap-1.5 text-[12px] leading-relaxed text-fg-muted">
+          <KeyRound size={13} className="mt-px shrink-0 text-success" />
           <span>Live token for this hub. Keep it private — it authorizes new runners.</span>
         </p>
       ) : authorized && !tokenAuthEnabled ? (
-        <p className="mt-2.5 flex items-start gap-1.5 font-mono text-[11px] leading-relaxed text-fg-muted">
-          <KeyRound size={12} className="mt-px shrink-0 text-fg-faint" />
+        <p className="mt-3 flex items-start gap-1.5 text-[12px] leading-relaxed text-fg-muted">
+          <KeyRound size={13} className="mt-px shrink-0 text-fg-subtle" />
           <span>Open registration (hub started with --no-auth) — no token required.</span>
         </p>
       ) : localOnly ? (
-        <p className="mt-2.5 flex items-start gap-1.5 font-mono text-[11px] leading-relaxed text-fg-muted">
-          <Lock size={12} className="mt-px shrink-0 text-fg-faint" />
+        <p className="mt-3 flex items-start gap-1.5 text-[12px] leading-relaxed text-fg-muted">
+          <Lock size={13} className="mt-px shrink-0 text-fg-subtle" />
           <span>
-            This hub's UI is local-only. Start it with <span className="text-fg">--basic-auth user:pass</span> to pair from another device. token:
-            printed by <span className="text-fg">ndh hub up</span>, at{" "}
-            <span className="text-fg">~/.notdownhub/hub/runner-token</span>.
+            This hub's UI is local-only. Start it with{" "}
+            <code className="font-mono text-fg">--basic-auth user:pass</code> to pair from another
+            device. Token: printed by <code className="font-mono text-fg">ndh hub up</code>, at{" "}
+            <code className="font-mono text-fg">~/.notdownhub/hub/runner-token</code>.
           </span>
         </p>
       ) : (
-        <p className="mt-2.5 flex items-start gap-1.5 font-mono text-[11px] leading-relaxed text-fg-muted">
-          <KeyRound size={12} className="mt-px shrink-0 text-fg-faint" />
+        <p className="mt-3 flex items-start gap-1.5 text-[12px] leading-relaxed text-fg-muted">
+          <KeyRound size={13} className="mt-px shrink-0 text-fg-subtle" />
           <span>
-            token: printed by <span className="text-fg">ndh hub up</span>, stored at{" "}
-            <span className="text-fg">~/.notdownhub/hub/runner-token</span> on the hub machine.
+            Token: printed by <code className="font-mono text-fg">ndh hub up</code>, stored at{" "}
+            <code className="font-mono text-fg">~/.notdownhub/hub/runner-token</code> on the hub
+            machine.
           </span>
         </p>
       )}
@@ -157,9 +157,9 @@ export function AddRunner() {
 // Tint the placeholder and flag/keyword tokens so the command reads clearly.
 function highlight(cmd: string) {
   return cmd.split(/(<token>|--[a-z-]+|-e\b|\bNDH_[A-Z_]+)/g).map((part, i) => {
-    if (part === "<token>") return <span key={i} className="text-brand">{part}</span>;
+    if (part === "<token>") return <span key={i} className="text-accent">{part}</span>;
     if (part.startsWith("--") || part === "-e" || /^NDH_[A-Z_]+$/.test(part))
-      return <span key={i} className="text-edge">{part}</span>;
+      return <span key={i} className="text-accent/80">{part}</span>;
     return <span key={i}>{part}</span>;
   });
 }

@@ -1,52 +1,56 @@
 import { Link } from "react-router-dom";
-import { GitBranch, GitCommitHorizontal, ChevronRight } from "lucide-react";
+import { GitBranch, GitCommitHorizontal } from "lucide-react";
 import type { WorkflowRun } from "../lib/api";
-import { toState, shortRef, shortSha } from "../lib/format";
+import { toState, shortRef, shortSha, relativeTime } from "../lib/format";
 import { StatusIcon } from "./StatusIcon";
 import { Badge } from "./ui/badge";
 
-/** A single row in the recent-runs list. The whole row links to the run detail. */
+/** One row in the runs list. The whole row links to the run detail. */
 export function RunRow({ run }: { run: WorkflowRun }) {
   const state = toState(run.status, run.result);
   const ref = shortRef(run.ref);
   const sha = shortSha(run.sha);
   const repo = run.owner && run.owner !== "Unknown" ? `${run.owner}/${run.repo}` : null;
+  const when = relativeTime(run.createdOn);
+  const title = run.displayName || run.fileName || `Run ${run.id}`;
 
   return (
     <Link
       to={`/runs/${run.id}`}
-      className="group grid grid-cols-[auto_1fr_auto] items-center gap-3 border-b border-line px-4 py-3 last:border-b-0 hover:bg-surface-2"
+      className="flex items-start gap-3 px-4 py-3 transition-colors hover:bg-raised focus-visible:bg-raised sm:items-center"
     >
-      <StatusIcon state={state} size={17} />
+      <span className="mt-0.5 shrink-0 sm:mt-0">
+        <StatusIcon state={state} size={16} />
+      </span>
 
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium text-fg">
-            {run.displayName || run.fileName || `run ${run.id}`}
-          </span>
-          {run.eventName && <Badge variant="outline">{run.eventName}</Badge>}
+          <span className="truncate text-sm font-semibold text-fg">{title}</span>
+          <span className="tnum shrink-0 font-mono text-xs text-fg-subtle">#{run.id}</span>
         </div>
-        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-fg-muted">
-          {repo && <span className="truncate">{repo}</span>}
+        <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12px] text-fg-muted">
+          {run.eventName && <Badge variant="outline">{run.eventName}</Badge>}
+          {repo && <span className="truncate font-mono text-[11px]">{repo}</span>}
           {ref && (
-            <span className="flex items-center gap-1">
-              <GitBranch size={11} className="text-fg-faint" />
+            <span className="flex items-center gap-1 font-mono text-[11px]">
+              <GitBranch size={11} className="text-fg-subtle" />
               {ref}
             </span>
           )}
           {sha && (
-            <span className="flex items-center gap-1">
-              <GitCommitHorizontal size={12} className="text-fg-faint" />
+            <span className="flex items-center gap-1 font-mono text-[11px]">
+              <GitCommitHorizontal size={12} className="text-fg-subtle" />
               {sha}
             </span>
           )}
         </div>
       </div>
 
-      <div className="flex items-center gap-2">
-        <span className="font-mono text-xs text-fg-faint">#{run.id}</span>
-        <ChevronRight size={15} className="text-fg-faint transition-transform group-hover:translate-x-0.5" />
-      </div>
+      {when && (
+        <span className="tnum mt-0.5 shrink-0 text-right text-[11px] text-fg-subtle sm:mt-0">
+          {when}
+        </span>
+      )}
     </Link>
   );
 }

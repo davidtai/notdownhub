@@ -1,16 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, GitBranch, GitCommitHorizontal, Workflow, Info } from "lucide-react";
-import { getRuns, getAttempts, getJobs, getTimeline, buildGraph, type Job } from "../lib/api";
-import { toState, shortRef, shortSha, STATE_LABEL } from "../lib/format";
+import { ArrowLeft, GitBranch, GitCommitHorizontal } from "lucide-react";
+import { getRuns, getAttempts, getJobs, getTimeline, type Job, type TimelineRecord } from "../lib/api";
+import { toState, shortRef, shortSha, elapsedMs, timelineSpan } from "../lib/format";
 import { usePoll } from "../lib/hooks";
-import { Header } from "../components/Header";
-import { PipelineDag } from "../components/PipelineDag";
-import { StepList } from "../components/StepList";
-import { LogPane } from "../components/LogPane";
-import { StatusIcon } from "../components/StatusIcon";
-import { Badge } from "../components/ui/badge";
+import { AppBar } from "../components/AppBar";
+import { JobList } from "../components/JobList";
+import { JobLog } from "../components/JobLog";
+import { StatusIcon, StatePill } from "../components/StatusIcon";
 import { Card } from "../components/ui/card";
+import { Badge } from "../components/ui/badge";
 import { cn } from "../lib/utils";
 
 export function RunDetail() {
@@ -20,104 +19,97 @@ export function RunDetail() {
   const runsList = usePoll(() => getRuns(0), 5000);
   const attempts = usePoll(() => getAttempts(runId), 3000, [runId]);
 
-  const summary = useMemo(
-    () => (runsList.data ?? []).find((r) => r.id === runId),
-    [runsList.data, runId],
-  );
+  const summary = useMemo(() => (runsList.data ?? []).find((r) => r.id === runId), [runsList.data, runId]);
 
-  // Attempt selection — default to the latest.
   const attemptList = attempts.data ?? [];
   const [attemptNo, setAttemptNo] = useState<number | null>(null);
   useEffect(() => {
-    if (attemptNo === null && attemptList.length > 0) {
-      setAttemptNo(Math.max(...attemptList.map((a) => a.attempt)));
-    }
+    if (attemptNo === null && attemptList.length > 0) setAttemptNo(Math.max(...attemptList.map((a) => a.attempt)));
   }, [attemptList, attemptNo]);
   const attempt = attemptList.find((a) => a.attempt === attemptNo) ?? attemptList[0];
   const activeAttempt = attempt?.attempt ?? 1;
 
-  const jobs = usePoll(() => getJobs(runId, activeAttempt), 2500, [runId, activeAttempt]);
-
+  const jobs = usePoll(() => getJobs(runId, activeAttempt), 3000, [runId, activeAttempt]);
   const jobList = useMemo(() => jobs.data ?? [], [jobs.data]);
-  const graph = useMemo(() => {
-    const keys = [...new Set(jobList.map((j) => j.workflowIdentifier))];
-    return buildGraph(attempt?.workflow, keys);
-  }, [attempt?.workflow, jobList]);
 
-  // Selected job for the steps + log panes.
+  // Fetch every job's timeline together: powers per-job durations and the selected job's steps.
+  const timelineKey = jobList.map((j) => j.timeLineId).join(",");
+  const timelines = usePoll(
+    async () => {
+      const entries = await Promise.all(
+        jobList.map(async (j) => [j.timeLineId, await getTimeline(j.timeLineId).catch(() => [])] as const),
+      );
+      return Object.fromEntries(entries) as Record<string, TimelineRecord[]>;
+    },
+    3000,
+    [timelineKey],
+  );
+  const byTimeline = timelines.data ?? {};
+
+  const durations = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const j of jobList) {
+      const span = timelineSpan(byTimeline[j.timeLineId] ?? []);
+      out[j.jobId] = elapsedMs(span.start, span.finish);
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobList, timelines.data]);
+
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selectedJob: Job | undefined = jobList.find((j) => j.jobId === selectedId);
   useEffect(() => {
     if (jobList.length === 0) return;
     if (!selectedId || !jobList.some((j) => j.jobId === selectedId)) {
-      // Prefer a real (non matrix-parent) job.
       const first = jobList.find((j) => j.matrix !== null) ?? jobList[0];
       setSelectedId(first.jobId);
     }
   }, [jobList, selectedId]);
-
-  const timeline = usePoll(
-    () => (selectedJob ? getTimeline(selectedJob.timeLineId) : Promise.resolve([])),
-    2000,
-    [selectedJob?.timeLineId],
-  );
 
   const headerState = summary
     ? toState(summary.status, summary.result)
     : attempt
       ? toState(attempt.status, attempt.result)
       : "unknown";
-  const isRunning = headerState === "running";
 
   const ref = shortRef(summary?.ref ?? attempt?.ref);
   const sha = shortSha(summary?.sha ?? attempt?.sha);
   const eventName = summary?.eventName ?? attempt?.eventName;
-  const title = summary?.displayName || summary?.fileName || attempt?.eventName || `Run ${runId}`;
-  const selectedState = selectedJob ? toState(selectedJob.status, selectedJob.result) : "unknown";
+  const title = summary?.displayName || summary?.fileName || `Run ${runId}`;
 
   return (
     <div className="min-h-full">
-      <Header liveRuns={isRunning ? 1 : 0} />
+      <AppBar />
 
-      <main className="mx-auto max-w-[1180px] px-5 py-6">
-        <Link
-          to="/"
-          className="mb-4 inline-flex items-center gap-1.5 font-mono text-xs text-fg-muted hover:text-fg"
-        >
-          <ArrowLeft size={13} />
-          runs
+      <main className="mx-auto max-w-[1160px] px-4 py-6 sm:px-6">
+        <Link to="/" className="mb-4 inline-flex items-center gap-1.5 text-[13px] text-fg-muted hover:text-fg">
+          <ArrowLeft size={14} />
+          Runs
         </Link>
 
         {/* Run header */}
         <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
           <div className="flex items-start gap-3">
-            <StatusIcon state={headerState} size={22} />
+            <span className="mt-0.5">
+              <StatusIcon state={headerState} size={22} />
+            </span>
             <div>
               <div className="flex items-center gap-2.5">
-                <h1 className="text-xl font-bold tracking-tight text-fg">{title}</h1>
-                <span className="font-mono text-sm text-fg-faint">#{runId}</span>
+                <h1 className="text-xl font-semibold text-fg">{title}</h1>
+                <span className="tnum font-mono text-sm text-fg-subtle">#{runId}</span>
               </div>
-              <div className="mt-1.5 flex flex-wrap items-center gap-2.5 font-mono text-[11px] text-fg-muted">
-                <span
-                  className={cn(
-                    "rounded px-1.5 py-0.5",
-                    headerState === "running" && "bg-brand/15 text-brand",
-                    headerState === "success" && "bg-st-success/15 text-st-success",
-                    headerState === "fail" && "bg-st-fail/15 text-st-fail",
-                  )}
-                >
-                  {STATE_LABEL[headerState]}
-                </span>
+              <div className="mt-2 flex flex-wrap items-center gap-2.5 text-[12px] text-fg-muted">
+                <StatePill state={headerState} />
                 {eventName && <Badge variant="outline">{eventName}</Badge>}
                 {ref && (
-                  <span className="flex items-center gap-1">
-                    <GitBranch size={11} className="text-fg-faint" />
+                  <span className="flex items-center gap-1 font-mono text-[11px]">
+                    <GitBranch size={11} className="text-fg-subtle" />
                     {ref}
                   </span>
                 )}
                 {sha && (
-                  <span className="flex items-center gap-1">
-                    <GitCommitHorizontal size={12} className="text-fg-faint" />
+                  <span className="flex items-center gap-1 font-mono text-[11px]">
+                    <GitCommitHorizontal size={12} className="text-fg-subtle" />
                     {sha}
                   </span>
                 )}
@@ -125,7 +117,6 @@ export function RunDetail() {
             </div>
           </div>
 
-          {/* Attempt selector */}
           {attemptList.length > 1 && (
             <div className="flex items-center gap-1.5">
               <span className="eyebrow">Attempt</span>
@@ -137,9 +128,9 @@ export function RunDetail() {
                     key={a.attempt}
                     onClick={() => setAttemptNo(a.attempt)}
                     className={cn(
-                      "h-11 w-11 rounded font-mono text-xs sm:h-8 sm:w-8",
+                      "h-11 w-11 rounded-md font-mono text-xs sm:h-8 sm:w-8",
                       a.attempt === activeAttempt
-                        ? "bg-brand text-[#0c0f16]"
+                        ? "bg-accent text-white"
                         : "border border-line text-fg-muted hover:text-fg",
                     )}
                   >
@@ -150,62 +141,34 @@ export function RunDetail() {
           )}
         </div>
 
-        {/* Pipeline */}
-        <section className="mb-6">
-          <div className="mb-3 flex items-center gap-2">
-            <Workflow size={15} className="text-brand" />
-            <span className="eyebrow">Pipeline</span>
-            {!graph.derivedFromNeeds && jobList.length > 0 && (
-              <span className="flex items-center gap-1 font-mono text-[10px] text-fg-faint">
-                <Info size={11} />
-                needs edges unavailable — grouped in one stage
-              </span>
-            )}
-          </div>
-          <Card className="p-4">
+        {/* Jobs + steps/logs */}
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-[300px_1fr]">
+          <Card className="h-max overflow-hidden">
+            <div className="border-b border-line px-3 py-2">
+              <span className="eyebrow">Jobs</span>
+            </div>
             {jobs.initial ? (
-              <div className="flex gap-14">
-                {[0, 1].map((i) => (
-                  <div key={i} className="h-16 w-[200px] animate-pulse rounded-[var(--radius-card)] bg-surface-2" />
+              <div className="space-y-2 p-3">
+                {[0, 1, 2].map((i) => (
+                  <div key={i} className="h-9 animate-pulse rounded-md bg-raised" />
                 ))}
               </div>
             ) : jobList.length === 0 ? (
-              <p className="py-8 text-center font-mono text-[11px] text-fg-muted">
-                No jobs for this attempt yet.
-              </p>
+              <p className="px-3 py-10 text-center text-[12px] text-fg-muted">No jobs for this attempt yet.</p>
             ) : (
-              <PipelineDag
-                jobs={jobList}
-                graph={graph}
-                selectedJobId={selectedId}
-                onSelect={(j) => setSelectedId(j.jobId)}
-              />
+              <JobList jobs={jobList} durations={durations} selectedJobId={selectedId} onSelect={(j) => setSelectedId(j.jobId)} />
             )}
           </Card>
-        </section>
 
-        {/* Steps + live log */}
-        <section className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(280px,360px)_1fr]">
-          <Card className="overflow-hidden">
-            <div className="flex items-center justify-between border-b border-line px-3 py-2">
-              <span className="eyebrow">Steps</span>
-              {selectedJob && (
-                <span className="flex items-center gap-1.5 font-mono text-[11px] text-fg-muted">
-                  <StatusIcon state={selectedState} size={12} withTooltip={false} />
-                  {selectedJob.name}
-                </span>
-              )}
-            </div>
-            <StepList records={timeline.data} loading={timeline.initial} />
-          </Card>
-
-          <Card className="h-[460px] overflow-hidden">
-            <LogPane
-              timelineId={selectedJob?.timeLineId ?? null}
-              jobDone={selectedState !== "running" && selectedState !== "queued"}
+          <Card className="h-[560px] overflow-hidden">
+            <JobLog
+              runId={runId}
+              job={selectedJob}
+              records={selectedJob ? (byTimeline[selectedJob.timeLineId] ?? null) : null}
+              loading={timelines.initial}
             />
           </Card>
-        </section>
+        </div>
       </main>
     </div>
   );

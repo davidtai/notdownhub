@@ -7,6 +7,7 @@ import { ensureVendor } from "./vendor.js";
 import { exists, log, ndhHome, randomToken, vendorExe } from "./lib.js";
 import { fileLogWrite, initFileLog } from "./filelog.js";
 import { startFront, uiDistDir, type FrontOptions } from "./front.js";
+import { startJobLogTee } from "./joblogs.js";
 
 interface HubUpOptions {
   port: string;
@@ -72,6 +73,7 @@ export interface HubDeps {
   ensure?: () => Promise<unknown>;
   spawn?: (cmd: string, args: string[], opts: SpawnOptions) => ChildLike;
   startFront?: (opts: FrontOptions) => unknown;
+  startTee?: (hubPort: number) => { stop: () => void };
   onSignal?: (sig: NodeJS.Signals, fn: () => void) => void;
   exit?: (code: number) => void;
   block?: () => Promise<number>;
@@ -173,6 +175,8 @@ async function hubUp(opts: HubUpOptions, deps: HubDeps = {}): Promise<number> {
   for (const sig of ["SIGINT", "SIGTERM"] as const) onSignal(sig, () => child.kill(sig));
 
   startFrontFn({ port, hubPort, uiDir, runnerToken: token || undefined, host, basicAuth });
+  // Persist job console output so completed runs stay readable after a restart.
+  (deps.startTee ?? startJobLogTee)(hubPort);
 
   log(`hub up on http://localhost:${port}  (ui: ${uiDir ? (basicAuth ? "yes, basic-auth" : "yes, local-only") : "no"}, auth: ${token ? "on" : "OFF"}, mirror: ${opts.mirrorRewrite ? `on @ http://${host}:${port}/mirror` : "off"})`);
   log(`logging to ${logPath} (daily rotation)`);

@@ -17,6 +17,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/_apis": { target: HUB, changeOrigin: true },
+      "/api": { target: HUB, changeOrigin: true },
       "/runner": { target: HUB, changeOrigin: true },
       "/mirror": { target: HUB, changeOrigin: true },
     },
