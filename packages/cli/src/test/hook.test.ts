@@ -1,13 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   ALL_SKIPPED_MARKER,
   HOOK_MARKER,
   HOOK_TYPES,
+  NDH_MISSING_EXIT,
   __test,
   deriveRepoSlug,
   generateHook,
@@ -18,9 +19,10 @@ import {
   installHook,
   isServerHookType,
   preReceiveShouldReject,
+  resolveNdhInvocation,
   shSingleQuote,
 } from "../hook.js";
-import { runCli } from "./helpers.js";
+import { cliPath, runCli } from "./helpers.js";
 
 /** Create a real bare repo in a fresh temp dir and return its path. */
 function bareRepo(): string {
@@ -38,12 +40,44 @@ function workingRepo(): string {
   return dir;
 }
 
+/**
+ * Fixed invocation fixture for generator assertions (#133). Every generated hook embeds the
+ * absolute node + entry the installing ndh resolved; bare `ndh` is gone from all invocations.
+ */
+const INV = { ndhNode: "/opt/node/bin/node", ndhEntry: "/opt/ndh/dist/index.js" };
+/** The shell prefix every generated invocation must use instead of bare `ndh`. */
+const CALL = '"$NDH_NODE" "$NDH_ENTRY"';
+
 // ---------- shSingleQuote ----------
 
 test("shSingleQuote: wraps plain values and escapes embedded single quotes", () => {
   assert.equal(shSingleQuote("http://hub:4949"), "'http://hub:4949'");
   // a value containing a quote closes/escapes/reopens: it's -> 'it'\''s'
   assert.equal(shSingleQuote("it's"), "'it'\\''s'");
+});
+
+// ---------- resolveNdhInvocation (#133) ----------
+
+test("resolveNdhInvocation: default embeds this node binary and the running entry, realpath'd", () => {
+  const inv = resolveNdhInvocation();
+  assert.equal(inv.node, process.execPath, "node is process.execPath (absolute)");
+  assert.equal(inv.entry, realpathSync(process.argv[1]), "entry is argv[1], symlinks resolved");
+});
+
+test("resolveNdhInvocation: a bin-shim/from-source symlink resolves through to the real entry", () => {
+  // npm's unix bin shim and `ln -s dist/index.js ~/bin/ndh` are both a symlink onto the entry.
+  const dir = mkdtempSync(join(tmpdir(), "ndh-inv-"));
+  const real = join(dir, "real-entry.js");
+  writeFileSync(real, "// entry\n");
+  const link = join(dir, "ndh");
+  symlinkSync(real, link);
+  const inv = resolveNdhInvocation(link);
+  assert.equal(inv.entry, realpathSync(real), "the symlink is resolved, not embedded");
+  assert.equal(inv.node, process.execPath);
+});
+
+test("resolveNdhInvocation: a missing --ndh path fails with a clear error", () => {
+  assert.throws(() => resolveNdhInvocation("/no/such/ndh-entry.js"), /--ndh path does not exist/);
 });
 
 // ---------- deriveRepoSlug ----------
@@ -69,36 +103,49 @@ test("deriveRepoSlug: sanitizes odd characters and never yields an empty segment
 
 // ---------- generateHook ----------
 
-test("generateHook: embeds server + repository, loops refs/heads/*, dispatches with --ref, no -W by default", () => {
-  const script = generateHook({ server: "http://hub.local:4949", repository: "team/app" });
+test("generateHook: embeds server + repository + invocation, loops refs/heads/*, no -W by default", () => {
+  const script = generateHook({ server: "http://hub.local:4949", repository: "team/app", ...INV });
   assert.ok(script.startsWith("#!/bin/sh\n"), "POSIX sh shebang");
   assert.ok(script.includes(HOOK_MARKER), "carries the managed marker");
+  assert.ok(script.includes("NDH_NODE='/opt/node/bin/node'"), "single-quoted absolute node (#133)");
+  assert.ok(script.includes("NDH_ENTRY='/opt/ndh/dist/index.js'"), "single-quoted absolute entry (#133)");
   assert.ok(script.includes("HUB='http://hub.local:4949'"), "single-quoted server url");
   assert.ok(script.includes("REPO='team/app'"), "single-quoted repository slug (#99)");
   assert.ok(script.includes("refs/heads/*)"), "only branch refs pass the case filter (tags ignored)");
   assert.ok(script.includes("*[!0]*"), "all-zero new sha (branch deletion) dispatches nothing (#120)");
   assert.ok(script.includes('git --work-tree="$work" checkout -f "$new"'), "checks out the pushed tree");
   assert.ok(
-    script.includes('ndh dispatch --server "$HUB" --repository "$REPO" --event push --ref "$ref"'),
-    "dispatches per pushed ref with the project label baked in",
+    script.includes(`${CALL} dispatch --server "$HUB" --repository "$REPO" --event push --ref "$ref"`),
+    "dispatches via the embedded absolute invocation, never bare ndh (#133)",
   );
-  assert.ok(!script.includes("-W"), "no workflow flag when none configured");
+  assert.ok(!script.includes(" ndh dispatch"), "no bare ndh invocation remains");
   assert.ok(!script.includes("WORKFLOW="), "no WORKFLOW var when none configured");
 });
 
 test("generateHook: propagates the workflow flag when configured", () => {
-  const script = generateHook({ server: "http://h:4949", repository: "t/a", workflow: ".github/workflows/ci.yml" });
+  const script = generateHook({ server: "http://h:4949", repository: "t/a", workflow: ".github/workflows/ci.yml", ...INV });
   assert.ok(script.includes("WORKFLOW='.github/workflows/ci.yml'"), "single-quoted workflow var");
   assert.ok(
-    script.includes('ndh dispatch --server "$HUB" --repository "$REPO" --event push --ref "$ref" -W "$WORKFLOW"'),
+    script.includes(`${CALL} dispatch --server "$HUB" --repository "$REPO" --event push --ref "$ref" -W "$WORKFLOW"`),
     "adds -W to the dispatch",
   );
 });
 
 test("generateHook: a server url or repository with a single quote stays single-quote-safe", () => {
-  const script = generateHook({ server: "http://ho'st:4949", repository: "te'am/app" });
+  const script = generateHook({ server: "http://ho'st:4949", repository: "te'am/app", ...INV });
   assert.ok(script.includes("HUB='http://ho'\\''st:4949'"), "quote is escaped, not left dangling");
   assert.ok(script.includes("REPO='te'\\''am/app'"), "repository quote is escaped too");
+});
+
+test("generateHook: node/entry paths with spaces and quotes embed single-quote-safe (#133)", () => {
+  const script = generateHook({
+    server: "http://h:1",
+    repository: "t/a",
+    ndhNode: "/opt/no de/bin/node",
+    ndhEntry: "/opt/ndh's dist/index.js",
+  });
+  assert.ok(script.includes("NDH_NODE='/opt/no de/bin/node'"), "space survives inside single quotes");
+  assert.ok(script.includes("NDH_ENTRY='/opt/ndh'\\''s dist/index.js'"), "quote is escaped");
 });
 
 // ---------- hook type taxonomy ----------
@@ -109,6 +156,33 @@ test("hook types: exactly four, server-vs-client split is stable", () => {
   assert.equal(isServerHookType("pre-receive"), true);
   assert.equal(isServerHookType("pre-push"), false);
   assert.equal(isServerHookType("post-commit"), false);
+});
+
+// ---------- the missing-install guard (#133) ----------
+
+test("guard: every hook type embeds the loud missing-install check with the re-install fix line", () => {
+  const config = { server: "http://hub:4949", repository: "team/app", ...INV };
+  for (const type of HOOK_TYPES) {
+    const script = generateHookOfType(type, config);
+    assert.ok(script.includes('if ! [ -x "$NDH_NODE" ] || ! [ -f "$NDH_ENTRY" ]; then'), `${type}: guard present`);
+    assert.ok(script.includes(`ERROR: the ndh install this ${type} hook points to is gone`), `${type}: names itself`);
+    assert.ok(script.includes("re-run 'ndh hook install'"), `${type}: names the fix`);
+  }
+});
+
+test("guard: gate types fail closed (exit 97); advisory types shout but exit 0", () => {
+  const config = { server: "http://hub:4949", repository: "team/app", ...INV };
+  assert.equal(NDH_MISSING_EXIT, 97, "distinct from CI failure (1) and the infra sentinel (90)");
+  assert.ok(generateHookOfType("pre-receive", config).includes(`REJECTED (fail closed)`));
+  assert.ok(generateHookOfType("pre-receive", config).includes(`exit ${NDH_MISSING_EXIT}`));
+  assert.ok(generateHookOfType("pre-push", config).includes(`BLOCKED (fail closed)`));
+  assert.ok(generateHookOfType("pre-push", config).includes(`exit ${NDH_MISSING_EXIT}`));
+  const postReceive = generateHookOfType("post-receive", config);
+  assert.ok(postReceive.includes("CI was NOT dispatched for this push"), "post-receive names the loss");
+  assert.ok(!postReceive.includes(`exit ${NDH_MISSING_EXIT}`), "post-receive never fails the landed push");
+  const postCommit = generateHookOfType("post-commit", config);
+  assert.ok(postCommit.includes("Advisory CI did not run"), "post-commit names the loss");
+  assert.ok(!postCommit.includes(`exit ${NDH_MISSING_EXIT}`), "post-commit never fails the commit");
 });
 
 // ---------- preReceiveShouldReject (the pure gate decision) ----------
@@ -134,10 +208,11 @@ test("preReceiveShouldReject: nonzero but all-workflows-skipped does NOT reject"
 
 // ---------- generatePreReceiveHook ----------
 
-test("generatePreReceiveHook: gated dispatch — checkout, tee'd output, skip-aware reject", () => {
-  const script = generatePreReceiveHook({ server: "http://hub.local:4949", repository: "team/app" });
+test("generatePreReceiveHook: gated dispatch — archive export, tee'd output, skip-aware reject", () => {
+  const script = generatePreReceiveHook({ server: "http://hub.local:4949", repository: "team/app", ...INV });
   assert.ok(script.startsWith("#!/bin/sh\n"), "POSIX sh shebang");
   assert.ok(script.includes(HOOK_MARKER), "carries the managed marker");
+  assert.ok(script.includes("NDH_NODE='/opt/node/bin/node'"), "absolute invocation embedded (#133)");
   assert.ok(script.includes("HUB='http://hub.local:4949'"));
   assert.ok(script.includes("REPO='team/app'"));
   assert.ok(script.includes("refs/heads/*)"), "only branch refs pass the case filter (tags ignored)");
@@ -148,19 +223,25 @@ test("generatePreReceiveHook: gated dispatch — checkout, tee'd output, skip-aw
   );
   assert.ok(!script.includes("checkout -f"), "no checkout: quarantine forbids its HEAD update");
   assert.ok(
-    script.includes('ndh dispatch --server "$HUB" --repository "$REPO" --event push --ref "$ref"'),
-    "dispatches per pushed ref with the label baked in",
+    script.includes(`${CALL} dispatch --server "$HUB" --repository "$REPO" --event push --ref "$ref"`),
+    "dispatches per pushed ref via the absolute invocation",
   );
+  assert.ok(!script.includes(" ndh dispatch"), "no bare ndh invocation remains (#133)");
   assert.ok(script.includes(`grep -q '${ALL_SKIPPED_MARKER}'`), "skip detection greps the shared marker");
   assert.ok(script.includes("exit 1"), "a real failure rejects the push");
   assert.ok(script.includes("push rejected"), "reject message names the outcome");
   assert.ok(script.includes('grep "Completed with Status: Failed"'), "rejection re-prints the failed workflow/job lines");
   assert.match(script, /blocks\s*\n?# for the full CI duration/, "header documents the blocking tradeoff");
-  assert.ok(!script.includes("-W"), "no workflow flag when none configured");
+  assert.ok(!script.includes("WORKFLOW="), "no workflow flag when none configured");
 });
 
 test("generatePreReceiveHook: workflow flag and quote-safety", () => {
-  const script = generatePreReceiveHook({ server: "http://ho'st:4949", repository: "te'am/app", workflow: "ci's.yml" });
+  const script = generatePreReceiveHook({
+    server: "http://ho'st:4949",
+    repository: "te'am/app",
+    workflow: "ci's.yml",
+    ...INV,
+  });
   assert.ok(script.includes("HUB='http://ho'\\''st:4949'"), "server quote escaped");
   assert.ok(script.includes("REPO='te'\\''am/app'"), "repository quote escaped");
   assert.ok(script.includes("WORKFLOW='ci'\\''s.yml'"), "workflow quote escaped");
@@ -168,22 +249,23 @@ test("generatePreReceiveHook: workflow flag and quote-safety", () => {
 });
 
 test("generatePreReceiveHook: requires a server (pre-receive always dispatches)", () => {
-  assert.throws(() => generatePreReceiveHook({ repository: "t/a" }), /server url is required/);
-  assert.throws(() => generateHook({ repository: "t/a" }), /server url is required/);
+  assert.throws(() => generatePreReceiveHook({ repository: "t/a", ...INV }), /server url is required/);
+  assert.throws(() => generateHook({ repository: "t/a", ...INV }), /server url is required/);
 });
 
 // ---------- generatePrePushHook ----------
 
 test("generatePrePushHook: local mode runs `ndh run` on the exported pushed commit", () => {
-  const script = generatePrePushHook({ repository: "team/app" });
+  const script = generatePrePushHook({ repository: "team/app", ...INV });
   assert.ok(script.startsWith("#!/bin/sh\n"));
   assert.ok(script.includes(HOOK_MARKER));
   assert.ok(!script.includes("HUB="), "no hub var in local mode");
   assert.ok(script.includes("REPO='team/app'"));
   assert.ok(
-    script.includes('ndh run --repository "$REPO" --event push --ref "$rref"'),
-    "local one-shot run, labeled, per remote ref",
+    script.includes(`${CALL} run --repository "$REPO" --event push --ref "$rref"`),
+    "local one-shot run via the absolute invocation, labeled, per remote ref",
   );
+  assert.ok(!script.includes(" ndh run --repository"), "no bare ndh invocation remains (#133)");
   assert.ok(script.includes('git archive "$lsha" | tar -xf - -C "$work"'), "exports the pushed commit, not the working tree");
   assert.ok(!script.includes("checkout -f"), "never git-checkouts inside a working clone (would move HEAD)");
   assert.ok(script.includes("*[!0]*"), "all-zero sha (branch deletion) passes through untested");
@@ -192,46 +274,46 @@ test("generatePrePushHook: local mode runs `ndh run` on the exported pushed comm
 });
 
 test("generatePrePushHook: --server switches the gate to hub dispatch", () => {
-  const script = generatePrePushHook({ server: "http://hub:4949", repository: "team/app", workflow: "ci.yml" });
+  const script = generatePrePushHook({ server: "http://hub:4949", repository: "team/app", workflow: "ci.yml", ...INV });
   assert.ok(script.includes("HUB='http://hub:4949'"));
   assert.ok(
-    script.includes('ndh dispatch --server "$HUB" --repository "$REPO" --event push --ref "$rref" -W "$WORKFLOW"'),
+    script.includes(`${CALL} dispatch --server "$HUB" --repository "$REPO" --event push --ref "$rref" -W "$WORKFLOW"`),
     "dispatch mode with workflow",
   );
-  assert.ok(!script.includes("ndh run "), "no local run in dispatch mode");
+  assert.ok(!script.includes('"$NDH_ENTRY" run '), "no local run in dispatch mode");
 });
 
 test("generatePrePushHook: quote-safety for repository in local mode", () => {
-  const script = generatePrePushHook({ repository: "te'am/app" });
+  const script = generatePrePushHook({ repository: "te'am/app", ...INV });
   assert.ok(script.includes("REPO='te'\\''am/app'"));
 });
 
 // ---------- generatePostCommitHook ----------
 
 test("generatePostCommitHook: advisory — exports HEAD, reports, always exits 0", () => {
-  const script = generatePostCommitHook({ repository: "team/app" });
+  const script = generatePostCommitHook({ repository: "team/app", ...INV });
   assert.ok(script.startsWith("#!/bin/sh\n"));
   assert.ok(script.includes(HOOK_MARKER));
   assert.ok(script.trimEnd().endsWith("exit 0"), "the hook's last word is exit 0");
   assert.ok(!script.includes("set -e"), "no set -e: nothing may abort before the advisory verdict");
   assert.ok(script.includes("git archive HEAD | tar -xf - -C"), "runs the committed tree, not the dirty checkout");
-  assert.ok(script.includes('ndh run --repository "$REPO" --event push "$@"'), "local advisory run");
+  assert.ok(script.includes(`${CALL} run --repository "$REPO" --event push "$@"`), "local advisory run");
   assert.ok(script.includes("git symbolic-ref -q HEAD"), "branch ref when on a branch, none when detached");
   assert.ok(script.includes("advisory CI FAILED"), "failure is reported, not enforced");
   assert.ok(script.match(/exit 1/) === null, "no failing exit path exists");
 });
 
 test("generatePostCommitHook: --server dispatches; workflow and quotes embed safely", () => {
-  const script = generatePostCommitHook({ server: "http://h'ub:4949", repository: "team/app", workflow: "ci.yml" });
+  const script = generatePostCommitHook({ server: "http://h'ub:4949", repository: "team/app", workflow: "ci.yml", ...INV });
   assert.ok(script.includes("HUB='http://h'\\''ub:4949'"));
-  assert.ok(script.includes('ndh dispatch --server "$HUB" --repository "$REPO" --event push "$@" -W "$WORKFLOW"'));
+  assert.ok(script.includes(`${CALL} dispatch --server "$HUB" --repository "$REPO" --event push "$@" -W "$WORKFLOW"`));
   assert.ok(script.trimEnd().endsWith("exit 0"), "still advisory in dispatch mode");
 });
 
 // ---------- generateHookOfType ----------
 
 test("generateHookOfType: maps every type; post-receive matches generateHook byte-for-byte", () => {
-  const config = { server: "http://hub:4949", repository: "team/app" };
+  const config = { server: "http://hub:4949", repository: "team/app", ...INV };
   assert.equal(generateHookOfType("post-receive", config), generateHook(config), "default type is unchanged");
   assert.ok(generateHookOfType("pre-receive", config).includes("push rejected"));
   assert.ok(generateHookOfType("pre-push", config).includes("push blocked"));
@@ -268,6 +350,7 @@ test("installHook: writes an executable post-receive hook into a bare repo", asy
   assert.ok(content.includes("HUB='http://hub:4949'"));
   assert.ok(content.includes("WORKFLOW='.github/workflows/ci.yml'"));
   assert.ok(content.includes(HOOK_MARKER));
+  assert.ok(content.includes(`NDH_NODE=${shSingleQuote(process.execPath)}`), "installer's node embedded (#133)");
   assert.equal(statSync(hookPath).mode & 0o777, 0o755, "hook must be chmod 0755");
 });
 
@@ -301,6 +384,23 @@ test("installHook: regenerating a pre-#99 managed hook (marker, no REPO) picks u
   const content = readFileSync(hookPath, "utf8");
   assert.ok(content.includes("REPO='team/app'"), "regenerated hook gains the derived label");
   assert.ok(content.includes('--repository "$REPO"'));
+});
+
+test("installHook: reinstall regenerates an old bare-ndh managed hook with the absolute invocation (#133)", async () => {
+  const repo = nestedBareRepo();
+  const hookPath = join(repo, "hooks", "post-receive");
+  mkdirSync(join(repo, "hooks"), { recursive: true });
+  // Pre-#133 template: marker present, dispatches via a bare `ndh` that needs PATH.
+  writeFileSync(
+    hookPath,
+    `#!/bin/sh\n${HOOK_MARKER}\nHUB='http://old:4949'\nREPO='team/app'\nndh dispatch --server "$HUB" --repository "$REPO" --event push\n`,
+    { mode: 0o755 },
+  );
+  await installHook(repo, { server: "http://hub:4949" }); // marker flow: no --force needed
+  const content = readFileSync(hookPath, "utf8");
+  assert.ok(content.includes(`NDH_NODE=${shSingleQuote(process.execPath)}`), "absolute node embedded");
+  assert.ok(content.includes(`${CALL} dispatch`), "invocation goes through the embedded paths");
+  assert.ok(!content.includes("\nndh dispatch"), "the bare PATH-dependent invocation is gone");
 });
 
 test("installHook: creates the hooks dir when it is missing", async () => {
@@ -362,40 +462,58 @@ test("installHook: the isBareRepo seam is honored (stubbed true writes the hook)
   assert.ok(readFileSync(join(dir, "hooks", "post-receive"), "utf8").includes("HUB="));
 });
 
-// ---------- generated hooks, executed (fake ndh, real git repos) ----------
+// ---------- generated hooks, executed (fake ndh entry, real git repos) ----------
 
 /**
- * Behavioral harness: write a generated hook script plus a fake `ndh` (whose argv log,
- * output, and exit code we control), then execute the hook with `sh` inside a real repo,
- * exactly like git would — stdin lines and all. This tests the SHELL semantics per type:
- * multi-ref loops, tag/deletion guards, skip-vs-fail decisions, and exit codes.
+ * Behavioral fake for the embedded invocation (#133): an entry SCRIPT (run by "$NDH_NODE",
+ * which the config points at /bin/sh) whose argv log, output, and exit code we control. The
+ * entry's filename contains a space AND a single quote, so every exec test doubles as a
+ * quote-safety test for the embedded absolute paths.
+ */
+function fakeNdh(behavior: { exit: number; output?: string }): {
+  config: { ndhNode: string; ndhEntry: string };
+  calls: () => string[];
+} {
+  const dir = mkdtempSync(join(tmpdir(), "ndh-hook-exec-"));
+  const callLog = join(dir, "calls.log");
+  const entry = join(dir, "ndh's fake entry");
+  const fake = `#!/bin/sh\necho "$@" >> ${JSON.stringify(callLog)}\n${
+    // %b so the JSON-escaped \n become real newlines: the fake output is genuinely multi-line.
+    behavior.output ? `printf '%b\\n' ${JSON.stringify(behavior.output)}\n` : ""
+  }exit ${behavior.exit}\n`;
+  writeFileSync(entry, fake, { mode: 0o755 });
+  return {
+    config: { ndhNode: "/bin/sh", ndhEntry: entry },
+    calls: () => {
+      try {
+        return readFileSync(callLog, "utf8").trim().split("\n").filter(Boolean);
+      } catch {
+        return [];
+      }
+    },
+  };
+}
+
+/**
+ * Execute a generated hook with `sh` inside a real repo, exactly like git would — stdin lines
+ * and all. PATH is scrubbed to the system dirs, with no `ndh` anywhere on it: the embedded
+ * absolute invocation must work with zero PATH help (#133 — the cold-start scenario where the
+ * old bare-ndh hooks lost every CI dispatch silently).
  */
 function runHookScript(
   script: string,
-  opts: { stdin?: string; cwd: string; ndh: { exit: number; output?: string } },
-): { status: number | null; stdout: string; stderr: string; calls: string[] } {
-  const dir = mkdtempSync(join(tmpdir(), "ndh-hook-exec-"));
+  opts: { stdin?: string; cwd: string },
+): { status: number | null; stdout: string; stderr: string } {
+  const dir = mkdtempSync(join(tmpdir(), "ndh-hook-run-"));
   const hookFile = join(dir, "hook");
   writeFileSync(hookFile, script, { mode: 0o755 });
-  const callLog = join(dir, "calls.log");
-  const fake = `#!/bin/sh\necho "$@" >> ${JSON.stringify(callLog)}\n${
-    // %b so the JSON-escaped \n become real newlines: the fake output is genuinely multi-line.
-    opts.ndh.output ? `printf '%b\\n' ${JSON.stringify(opts.ndh.output)}\n` : ""
-  }exit ${opts.ndh.exit}\n`;
-  writeFileSync(join(dir, "ndh"), fake, { mode: 0o755 });
   const r = spawnSync("sh", [hookFile], {
     cwd: opts.cwd,
     input: opts.stdin ?? "",
     encoding: "utf8",
-    env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+    env: { ...process.env, PATH: "/usr/bin:/bin" },
   });
-  let calls: string[] = [];
-  try {
-    calls = readFileSync(callLog, "utf8").trim().split("\n").filter(Boolean);
-  } catch {
-    calls = [];
-  }
-  return { status: r.status, stdout: r.stdout, stderr: r.stderr, calls };
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
 /** A bare repo containing one commit on main; returns { repo, sha }. */
@@ -430,16 +548,23 @@ const FAIL_OUT = "[app-ci / build] Job Completed with Status: Failed\n[ci.yml] W
 
 test("exec pre-receive: CI pass accepts, CI fail rejects (exit 1) and names the failed workflow", () => {
   const { repo, sha } = bareRepoWithCommit();
-  const script = generatePreReceiveHook({ server: "http://h:1", repository: "t/a" });
   const stdin = `${ZERO} ${sha} refs/heads/main\n`;
 
-  const pass = runHookScript(script, { stdin, cwd: repo, ndh: { exit: 0, output: "All Workflows finished successfully" } });
+  const passNdh = fakeNdh({ exit: 0, output: "All Workflows finished successfully" });
+  const pass = runHookScript(
+    generatePreReceiveHook({ server: "http://h:1", repository: "t/a", ...passNdh.config }),
+    { stdin, cwd: repo },
+  );
   assert.equal(pass.status, 0, pass.stderr);
   assert.match(pass.stdout, /CI passed for main — branch gate passed/);
-  assert.equal(pass.calls.length, 1);
-  assert.match(pass.calls[0], /^dispatch --server http:\/\/h:1 --repository t\/a --event push --ref refs\/heads\/main$/);
+  assert.equal(passNdh.calls().length, 1);
+  assert.match(passNdh.calls()[0], /^dispatch --server http:\/\/h:1 --repository t\/a --event push --ref refs\/heads\/main$/);
 
-  const fail = runHookScript(script, { stdin, cwd: repo, ndh: { exit: 1, output: FAIL_OUT } });
+  const failNdh = fakeNdh({ exit: 1, output: FAIL_OUT });
+  const fail = runHookScript(
+    generatePreReceiveHook({ server: "http://h:1", repository: "t/a", ...failNdh.config }),
+    { stdin, cwd: repo },
+  );
   assert.equal(fail.status, 1, "nonzero dispatch rejects the push");
   assert.match(fail.stderr, /CI failed for main \(exit 1\) — push rejected/);
   assert.match(fail.stderr, /\[ndh\] {3}\[app-ci \/ build\] Job Completed with Status: Failed/, "failed job named");
@@ -448,133 +573,139 @@ test("exec pre-receive: CI pass accepts, CI fail rejects (exit 1) and names the 
 
 test("exec pre-receive: all-workflows-skipped (nonzero exit) accepts the push", () => {
   const { repo, sha } = bareRepoWithCommit();
-  const script = generatePreReceiveHook({ server: "http://h:1", repository: "t/a" });
-  const r = runHookScript(script, {
-    stdin: `${ZERO} ${sha} refs/heads/main\n`,
-    cwd: repo,
-    ndh: { exit: 1, output: SKIP_OUT },
-  });
+  const skipNdh = fakeNdh({ exit: 1, output: SKIP_OUT });
+  const r = runHookScript(
+    generatePreReceiveHook({ server: "http://h:1", repository: "t/a", ...skipNdh.config }),
+    { stdin: `${ZERO} ${sha} refs/heads/main\n`, cwd: repo },
+  );
   assert.equal(r.status, 0, `skip must not reject: ${r.stderr}`);
   assert.match(r.stdout, /workflows skipped by filters for main — branch gate passed/);
 });
 
 test("exec pre-receive: multi-ref push is all-or-nothing — first failing branch rejects, later refs untested", () => {
   const { repo, sha } = bareRepoWithCommit();
-  const script = generatePreReceiveHook({ server: "http://h:1", repository: "t/a" });
   const stdin = `${ZERO} ${sha} refs/heads/main\n${ZERO} ${sha} refs/heads/dev\n`;
 
-  const fail = runHookScript(script, { stdin, cwd: repo, ndh: { exit: 1, output: FAIL_OUT } });
+  const failNdh = fakeNdh({ exit: 1, output: FAIL_OUT });
+  const fail = runHookScript(
+    generatePreReceiveHook({ server: "http://h:1", repository: "t/a", ...failNdh.config }),
+    { stdin, cwd: repo },
+  );
   assert.equal(fail.status, 1);
-  assert.equal(fail.calls.length, 1, "gate stops at the first failing branch");
+  assert.equal(failNdh.calls().length, 1, "gate stops at the first failing branch");
 
-  const pass = runHookScript(script, { stdin, cwd: repo, ndh: { exit: 0 } });
+  const passNdh = fakeNdh({ exit: 0 });
+  const pass = runHookScript(
+    generatePreReceiveHook({ server: "http://h:1", repository: "t/a", ...passNdh.config }),
+    { stdin, cwd: repo },
+  );
   assert.equal(pass.status, 0);
-  assert.equal(pass.calls.length, 2, "both branches dispatched when passing");
-  assert.match(pass.calls[1], /--ref refs\/heads\/dev$/);
+  assert.equal(passNdh.calls().length, 2, "both branches dispatched when passing");
+  assert.match(passNdh.calls()[1], /--ref refs\/heads\/dev$/);
 });
 
 test("exec pre-receive: tag pushes and branch deletions are not gated and dispatch nothing", () => {
   const { repo, sha } = bareRepoWithCommit();
-  const script = generatePreReceiveHook({ server: "http://h:1", repository: "t/a" });
-  const r = runHookScript(script, {
-    stdin: `${ZERO} ${sha} refs/tags/v1\n${sha} ${ZERO} refs/heads/old\n`,
-    cwd: repo,
-    ndh: { exit: 1, output: FAIL_OUT }, // even a failing ndh cannot reject: it is never called
-  });
+  const failNdh = fakeNdh({ exit: 1, output: FAIL_OUT }); // even a failing ndh cannot reject: it is never called
+  const r = runHookScript(
+    generatePreReceiveHook({ server: "http://h:1", repository: "t/a", ...failNdh.config }),
+    { stdin: `${ZERO} ${sha} refs/tags/v1\n${sha} ${ZERO} refs/heads/old\n`, cwd: repo },
+  );
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.calls.length, 0, "no dispatch for tags or deletions");
+  assert.equal(failNdh.calls().length, 0, "no dispatch for tags or deletions");
 });
 
 test("exec post-receive: multi-branch dispatch, tags and deletions skipped, never fails the push", () => {
   const { repo, sha } = bareRepoWithCommit();
-  const script = generateHook({ server: "http://h:1", repository: "t/a" });
-  const r = runHookScript(script, {
+  const ndh = fakeNdh({ exit: 0 });
+  const r = runHookScript(generateHook({ server: "http://h:1", repository: "t/a", ...ndh.config }), {
     stdin: `${ZERO} ${sha} refs/heads/main\n${ZERO} ${sha} refs/tags/v1\n${sha} ${ZERO} refs/heads/old\n${ZERO} ${sha} refs/heads/dev\n`,
     cwd: repo,
-    ndh: { exit: 0 },
   });
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.calls.length, 2, "one dispatch per pushed branch; tag + deletion skipped");
-  assert.match(r.calls[0], /--ref refs\/heads\/main$/);
-  assert.match(r.calls[1], /--ref refs\/heads\/dev$/);
+  assert.equal(ndh.calls().length, 2, "one dispatch per pushed branch; tag + deletion skipped");
+  assert.match(ndh.calls()[0], /--ref refs\/heads\/main$/);
+  assert.match(ndh.calls()[1], /--ref refs\/heads\/dev$/);
   assert.match(r.stdout, /dispatched main/);
   assert.match(r.stdout, /dispatched dev/);
 });
 
 test("exec pre-push: local mode — pass allows, fail blocks (exit 1), skip allows", () => {
   const { repo, sha } = workingRepoWithCommit();
-  const script = generatePrePushHook({ repository: "t/a" });
   const stdin = `refs/heads/main ${sha} refs/heads/main ${ZERO}\n`;
 
-  const pass = runHookScript(script, { stdin, cwd: repo, ndh: { exit: 0 } });
+  const passNdh = fakeNdh({ exit: 0 });
+  const pass = runHookScript(generatePrePushHook({ repository: "t/a", ...passNdh.config }), { stdin, cwd: repo });
   assert.equal(pass.status, 0, pass.stderr);
-  assert.match(pass.calls[0], /^run --repository t\/a --event push --ref refs\/heads\/main$/, "local ndh run mode");
+  assert.match(passNdh.calls()[0], /^run --repository t\/a --event push --ref refs\/heads\/main$/, "local ndh run mode");
 
-  const fail = runHookScript(script, { stdin, cwd: repo, ndh: { exit: 1, output: FAIL_OUT } });
+  const failNdh = fakeNdh({ exit: 1, output: FAIL_OUT });
+  const fail = runHookScript(generatePrePushHook({ repository: "t/a", ...failNdh.config }), { stdin, cwd: repo });
   assert.equal(fail.status, 1, "failing CI blocks the push");
   assert.match(fail.stderr, /CI failed for main \(exit 1\) — push blocked/);
 
-  const skip = runHookScript(script, { stdin, cwd: repo, ndh: { exit: 1, output: SKIP_OUT } });
+  const skipNdh = fakeNdh({ exit: 1, output: SKIP_OUT });
+  const skip = runHookScript(generatePrePushHook({ repository: "t/a", ...skipNdh.config }), { stdin, cwd: repo });
   assert.equal(skip.status, 0, "filter skip never blocks");
   assert.match(skip.stdout, /workflows skipped by filters for main — branch gate passed/);
 });
 
 test("exec pre-push: --server mode dispatches instead of running locally", () => {
   const { repo, sha } = workingRepoWithCommit();
-  const script = generatePrePushHook({ server: "http://h:1", repository: "t/a" });
-  const r = runHookScript(script, {
+  const ndh = fakeNdh({ exit: 0 });
+  const r = runHookScript(generatePrePushHook({ server: "http://h:1", repository: "t/a", ...ndh.config }), {
     stdin: `refs/heads/main ${sha} refs/heads/main ${ZERO}\n`,
     cwd: repo,
-    ndh: { exit: 0 },
   });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.calls[0], /^dispatch --server http:\/\/h:1 --repository t\/a --event push --ref refs\/heads\/main$/);
+  assert.match(ndh.calls()[0], /^dispatch --server http:\/\/h:1 --repository t\/a --event push --ref refs\/heads\/main$/);
 });
 
 test("exec pre-push: empty stdin (nothing to push) is a silent no-op success", () => {
   const { repo } = workingRepoWithCommit();
-  const script = generatePrePushHook({ repository: "t/a" });
-  const r = runHookScript(script, { stdin: "", cwd: repo, ndh: { exit: 1, output: FAIL_OUT } });
+  const ndh = fakeNdh({ exit: 1, output: FAIL_OUT });
+  const r = runHookScript(generatePrePushHook({ repository: "t/a", ...ndh.config }), { stdin: "", cwd: repo });
   assert.equal(r.status, 0);
-  assert.equal(r.calls.length, 0);
+  assert.equal(ndh.calls().length, 0);
 });
 
 test("exec pre-push: deletions and tags pass through untested; multi-ref stops at first failure", () => {
   const { repo, sha } = workingRepoWithCommit();
-  const script = generatePrePushHook({ repository: "t/a" });
 
-  const skip = runHookScript(script, {
+  const skipNdh = fakeNdh({ exit: 1, output: FAIL_OUT });
+  const skip = runHookScript(generatePrePushHook({ repository: "t/a", ...skipNdh.config }), {
     stdin: `(delete) ${ZERO} refs/heads/old ${sha}\nrefs/tags/v1 ${sha} refs/tags/v1 ${ZERO}\n`,
     cwd: repo,
-    ndh: { exit: 1, output: FAIL_OUT },
   });
   assert.equal(skip.status, 0, "delete + tag pushes never run CI");
-  assert.equal(skip.calls.length, 0);
+  assert.equal(skipNdh.calls().length, 0);
 
-  const multi = runHookScript(script, {
+  const multiNdh = fakeNdh({ exit: 1, output: FAIL_OUT });
+  const multi = runHookScript(generatePrePushHook({ repository: "t/a", ...multiNdh.config }), {
     stdin: `refs/heads/main ${sha} refs/heads/main ${ZERO}\nrefs/heads/dev ${sha} refs/heads/dev ${ZERO}\n`,
     cwd: repo,
-    ndh: { exit: 1, output: FAIL_OUT },
   });
   assert.equal(multi.status, 1, "one failing ref blocks the push");
-  assert.equal(multi.calls.length, 1, "stops at the first failure");
+  assert.equal(multiNdh.calls().length, 1, "stops at the first failure");
 });
 
 test("exec post-commit: exits 0 whether CI passes, fails, or skips — and reports each verdict", () => {
   const { repo } = workingRepoWithCommit();
-  const script = generatePostCommitHook({ repository: "t/a" });
 
-  const pass = runHookScript(script, { cwd: repo, ndh: { exit: 0 } });
+  const passNdh = fakeNdh({ exit: 0 });
+  const pass = runHookScript(generatePostCommitHook({ repository: "t/a", ...passNdh.config }), { cwd: repo });
   assert.equal(pass.status, 0, pass.stderr);
   assert.match(pass.stdout, /advisory CI passed for commit/);
-  assert.match(pass.calls[0], /^run --repository t\/a --event push --ref refs\/heads\/(main|master)$/, "current branch ref passed");
+  assert.match(passNdh.calls()[0], /^run --repository t\/a --event push --ref refs\/heads\/(main|master)$/, "current branch ref passed");
 
-  const fail = runHookScript(script, { cwd: repo, ndh: { exit: 1, output: FAIL_OUT } });
+  const failNdh = fakeNdh({ exit: 1, output: FAIL_OUT });
+  const fail = runHookScript(generatePostCommitHook({ repository: "t/a", ...failNdh.config }), { cwd: repo });
   assert.equal(fail.status, 0, "a failing advisory run NEVER fails the hook");
   assert.match(fail.stderr, /advisory CI FAILED for commit .* — the commit itself stands/);
   assert.match(fail.stderr, /Job Completed with Status: Failed/, "failed job named");
 
-  const skip = runHookScript(script, { cwd: repo, ndh: { exit: 1, output: SKIP_OUT } });
+  const skipNdh = fakeNdh({ exit: 1, output: SKIP_OUT });
+  const skip = runHookScript(generatePostCommitHook({ repository: "t/a", ...skipNdh.config }), { cwd: repo });
   assert.equal(skip.status, 0);
   assert.match(skip.stdout, /workflows skipped by filters for commit/);
 });
@@ -582,10 +713,77 @@ test("exec post-commit: exits 0 whether CI passes, fails, or skips — and repor
 test("exec post-commit: detached HEAD runs without a --ref and still exits 0", () => {
   const { repo, sha } = workingRepoWithCommit();
   spawnSync("git", ["-C", repo, "checkout", "-q", "--detach", sha]);
-  const script = generatePostCommitHook({ repository: "t/a" });
-  const r = runHookScript(script, { cwd: repo, ndh: { exit: 0 } });
+  const ndh = fakeNdh({ exit: 0 });
+  const r = runHookScript(generatePostCommitHook({ repository: "t/a", ...ndh.config }), { cwd: repo });
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.calls[0], "run --repository t/a --event push", "no --ref when detached");
+  assert.equal(ndh.calls()[0], "run --repository t/a --event push", "no --ref when detached");
+});
+
+// ---------- executed hooks: the missing-install loud-fail (#133) ----------
+
+/** An invocation whose entry is gone — the moved/deleted-install scenario. */
+const GONE = { ndhNode: process.execPath, ndhEntry: "/no/such/ndh-entry.js" };
+
+test("exec loud-fail: pre-receive with a missing entry rejects the push (exit 97, unmissable error)", () => {
+  const { repo, sha } = bareRepoWithCommit();
+  const r = runHookScript(generatePreReceiveHook({ server: "http://h:1", repository: "t/a", ...GONE }), {
+    stdin: `${ZERO} ${sha} refs/heads/main\n`,
+    cwd: repo,
+  });
+  assert.equal(r.status, NDH_MISSING_EXIT, "the gate fails closed");
+  assert.match(r.stderr, /ERROR: the ndh install this pre-receive hook points to is gone/);
+  assert.match(r.stderr, /entry: \/no\/such\/ndh-entry\.js/, "the dead path is named");
+  assert.match(r.stderr, /REJECTED \(fail closed\)/);
+  assert.match(r.stderr, /re-run 'ndh hook install'/, "the fix is named");
+  assert.ok(r.stderr.split("\n").filter((l) => l.includes("[ndh]")).length >= 6, "multi-line, not one buried line");
+});
+
+test("exec loud-fail: pre-push with a missing entry blocks the push (exit 97)", () => {
+  const { repo, sha } = workingRepoWithCommit();
+  const r = runHookScript(generatePrePushHook({ repository: "t/a", ...GONE }), {
+    stdin: `refs/heads/main ${sha} refs/heads/main ${ZERO}\n`,
+    cwd: repo,
+  });
+  assert.equal(r.status, NDH_MISSING_EXIT);
+  assert.match(r.stderr, /ERROR: the ndh install this pre-push hook points to is gone/);
+  assert.match(r.stderr, /BLOCKED \(fail closed\)/);
+});
+
+test("exec loud-fail: post-receive with a missing entry shouts but lets the push stand (exit 0)", () => {
+  const { repo, sha } = bareRepoWithCommit();
+  const r = runHookScript(generateHook({ server: "http://h:1", repository: "t/a", ...GONE }), {
+    stdin: `${ZERO} ${sha} refs/heads/main\n`,
+    cwd: repo,
+  });
+  assert.equal(r.status, 0, "an advisory type cannot retroactively fail the push");
+  assert.match(r.stderr, /ERROR: the ndh install this post-receive hook points to is gone/);
+  assert.match(r.stderr, /CI was NOT dispatched for this push/, "the silent-loss failure mode is now loud");
+  assert.doesNotMatch(r.stdout, /dispatched main/, "no false success line");
+});
+
+test("exec loud-fail: post-commit with a missing entry shouts but never fails the commit (exit 0)", () => {
+  const { repo } = workingRepoWithCommit();
+  const r = runHookScript(generatePostCommitHook({ repository: "t/a", ...GONE }), { cwd: repo });
+  assert.equal(r.status, 0);
+  assert.match(r.stderr, /ERROR: the ndh install this post-commit hook points to is gone/);
+  assert.match(r.stderr, /Advisory CI did not run for this commit/);
+});
+
+test("exec loud-fail: a missing node binary trips the same guard (exit 97 on the gate)", () => {
+  const { repo, sha } = bareRepoWithCommit();
+  const entryOnly = fakeNdh({ exit: 0 }); // entry exists; node does not
+  const r = runHookScript(
+    generatePreReceiveHook({
+      server: "http://h:1",
+      repository: "t/a",
+      ndhNode: "/no/such/node",
+      ndhEntry: entryOnly.config.ndhEntry,
+    }),
+    { stdin: `${ZERO} ${sha} refs/heads/main\n`, cwd: repo },
+  );
+  assert.equal(r.status, NDH_MISSING_EXIT);
+  assert.match(r.stderr, /node: {2}\/no\/such\/node/, "the dead node path is named");
+  assert.equal(entryOnly.calls().length, 0, "nothing is invoked past the guard");
 });
 
 // ---------- installHook: types, validation, client installs ----------
@@ -603,7 +801,7 @@ test("installHook: server types demand --server; client types run locally withou
   // pre-push without --server is the local-run mode, not an error.
   const repo = workingRepo();
   await installHook(repo, { type: "pre-push" });
-  assert.ok(readFileSync(join(repo, ".git", "hooks", "pre-push"), "utf8").includes("ndh run"));
+  assert.ok(readFileSync(join(repo, ".git", "hooks", "pre-push"), "utf8").includes('"$NDH_ENTRY" run'));
 });
 
 test("installHook: --type pre-receive writes an executable gate into a bare repo", async () => {
@@ -755,7 +953,7 @@ test("cli: `ndh hook install --type pre-push` without --server installs the loca
   assert.equal(r.status, 0);
   assert.match(r.stderr, /installed pre-push hook/);
   assert.match(r.stderr, /CI runs locally via `ndh run`/);
-  assert.ok(readFileSync(join(repo, ".git", "hooks", "pre-push"), "utf8").includes("ndh run --repository"));
+  assert.ok(readFileSync(join(repo, ".git", "hooks", "pre-push"), "utf8").includes('"$NDH_ENTRY" run --repository'));
 });
 
 test("cli: `ndh hook install --type post-commit` reports the advisory nature", async () => {
@@ -798,4 +996,55 @@ test("cli: `ndh hook install` on a non-bare path fails with a clear message (exi
   const r = await runCli(["hook", "install", workingRepo(), "--server", "http://hub:4949"]);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /\[ndh\].*not a bare git repository/);
+});
+
+// ---------- CLI wiring: invocation resolution shapes (#133) ----------
+
+test("cli: hook install embeds this node + the resolved entry (direct-entry shape) (#133)", async () => {
+  // `node dist/index.js hook install …` — exactly the documented from-source invocation.
+  const repo = bareRepo();
+  const r = await runCli(["hook", "install", repo, "--server", "http://hub:4949"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /ndh: {8}\S/, "install summary reports the embedded invocation");
+  const content = readFileSync(join(repo, "hooks", "post-receive"), "utf8");
+  assert.ok(content.includes(`NDH_NODE=${shSingleQuote(process.execPath)}`), "absolute node embedded");
+  assert.ok(content.includes(`NDH_ENTRY=${shSingleQuote(realpathSync(cliPath()))}`), "realpath'd entry embedded");
+  assert.ok(!content.includes(" ndh dispatch"), "no bare ndh invocation remains");
+});
+
+test("cli: a bin-shim symlink install (npm-global / from-source ~/bin shape) embeds the real entry (#133)", async () => {
+  // npm's unix bin and `ln -s dist/index.js ~/bin/ndh` both run the entry via a symlink whose
+  // shebang finds node on PATH; argv[1] is the shim path and must be realpath'd through.
+  const bin = mkdtempSync(join(tmpdir(), "ndh-shim-"));
+  const shim = join(bin, "ndh");
+  const realEntry = realpathSync(cliPath());
+  symlinkSync(realEntry, shim);
+  const repo = bareRepo();
+  const r = spawnSync(shim, ["hook", "install", repo, "--server", "http://hub:4949"], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}` },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const content = readFileSync(join(repo, "hooks", "post-receive"), "utf8");
+  assert.ok(content.includes(`NDH_ENTRY=${shSingleQuote(realEntry)}`), "the symlink resolves to the real entry");
+  assert.ok(!content.includes(shim), "the shim path itself is never embedded");
+  assert.match(content, /NDH_NODE='\/[^']+'/, "an absolute node binary is embedded");
+});
+
+test("cli: --ndh overrides the embedded entry; a missing --ndh path fails before writing (exit 1)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ndh-override-"));
+  const custom = join(dir, "custom-entry.js");
+  writeFileSync(custom, "// custom entry\n");
+  const repo = bareRepo();
+  const ok = await runCli(["hook", "install", repo, "--server", "http://hub:4949", "--ndh", custom]);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stderr, /--ndh override/, "the summary marks the override");
+  const content = readFileSync(join(repo, "hooks", "post-receive"), "utf8");
+  assert.ok(content.includes(`NDH_ENTRY=${shSingleQuote(realpathSync(custom))}`), "override embedded, realpath'd");
+
+  const repo2 = bareRepo();
+  const bad = await runCli(["hook", "install", repo2, "--server", "http://hub:4949", "--ndh", "/no/such/entry.js"]);
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /--ndh path does not exist/);
+  assert.throws(() => readFileSync(join(repo2, "hooks", "post-receive")), /ENOENT/, "nothing was written");
 });
