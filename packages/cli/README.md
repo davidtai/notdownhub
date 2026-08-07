@@ -1,8 +1,8 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/davidtai/notdownhub/main/assets/brand/logo-dark.svg">
-  <img src="https://raw.githubusercontent.com/davidtai/notdownhub/main/assets/brand/logo-light.svg" alt="notdownhub — a computer carried by balloons" width="120" height="150">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/davidtai/notdownhub/main/assets/brand/logo-dark.png">
+  <img src="https://raw.githubusercontent.com/davidtai/notdownhub/main/assets/brand/logo-light.png" alt="notdownhub — a computer carried by balloons" width="120" height="150">
 </picture>
 
 # notdownhub (`ndh`)
