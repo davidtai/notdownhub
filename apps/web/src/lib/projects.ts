@@ -2,15 +2,42 @@
   Derive the Projects surface from run history. There is no project registry by
   design — any checkout can dispatch — so "which projects does this hub serve?"
   is answered purely from the runs the hub has recorded (each run carries owner/
-  repo since #59). This module is pure: given the runs list, it groups them into
-  projects and, within each, into the distinct workflows that project has run.
+  repo since #59). This module is pure: given runs, it groups them into projects
+  and, within each, into the distinct workflows that project has run.
+
+  The page's primary source is the hub's /api/local/projects endpoint, which
+  aggregates the FULL run history hub-side (issue #90) with exactly these
+  semantics. deriveProjects here is the same computation, used as the fallback
+  against an older hub — fed the UNPAGED runs list, never one page.
 
   Run ids are monotonic (the engine assigns them in dispatch order), so "latest"
   is always the max id — no timestamp is needed to order runs, and the runs list
   carries none anyway.
+
+  Honesty rule for grouping (issue #90): a row is always one exact recorded
+  label, never a merge. `kind` classifies what the label really is — a real
+  repo, a `local/<dir>` checkout slug (grouped only by directory name), or
+  unattributed runs (`Unknown/Unknown` / missing halves) — so the UI can badge
+  the row instead of presenting it as a genuine repository.
 */
 import type { WorkflowRun } from "./api";
 import { projectLabel } from "./format";
+
+/** How honestly to present a derived project row. */
+export type ProjectKind = "repo" | "local" | "unattributed";
+
+/**
+ * Classify a run's attribution. `local` is #59's `local/<dir>` fallback slug
+ * for checkouts without an origin remote. `unattributed` covers runs with no
+ * usable attribution: the engine's `Unknown/Unknown`, or a missing half.
+ */
+export function projectKind(run: { owner?: string | null; repo?: string | null }): ProjectKind {
+  const owner = run.owner?.trim();
+  const repo = run.repo?.trim();
+  if (!owner || !repo || owner === "Unknown" || repo === "Unknown") return "unattributed";
+  if (owner === "local") return "local";
+  return "repo";
+}
 
 /** Stable identity of a workflow across runs — its file, else its display name. */
 export function workflowKey(run: WorkflowRun): string {
@@ -39,7 +66,9 @@ export interface ProjectWorkflow {
 }
 
 export interface Project {
+  /** The exact recorded label — never a merged or invented name. */
   name: string;
+  kind: ProjectKind;
   runCount: number;
   /** The project's most recent run overall (max id). */
   lastRun: WorkflowRun;
@@ -58,7 +87,13 @@ function pushInto<T>(map: Map<string, T[]>, key: string, value: T): void {
 
 const latestById = (runs: WorkflowRun[]): WorkflowRun => runs.reduce((a, b) => (b.id > a.id ? b : a));
 
-/** Group runs into projects, and within each project into its distinct workflows. */
+const KIND_ORDER: Record<ProjectKind, number> = { repo: 0, local: 1, unattributed: 2 };
+
+/**
+ * Group runs into projects, and within each project into its distinct
+ * workflows. Ordered: real repos first, then local checkout slugs, then
+ * unattributed — alphabetical within each group (matches /api/local/projects).
+ */
 export function deriveProjects(runs: WorkflowRun[]): Project[] {
   const byProject = new Map<string, WorkflowRun[]>();
   for (const r of runs) pushInto(byProject, projectLabel(r), r);
@@ -82,8 +117,15 @@ export function deriveProjects(runs: WorkflowRun[]): Project[] {
     workflows.sort((a, b) => a.label.localeCompare(b.label));
 
     const lastRun = latestById(projectRuns);
-    projects.push({ name, runCount: projectRuns.length, lastRun, lastRunId: lastRun.id, workflows });
+    projects.push({
+      name,
+      kind: projectKind(lastRun),
+      runCount: projectRuns.length,
+      lastRun,
+      lastRunId: lastRun.id,
+      workflows,
+    });
   }
-  projects.sort((a, b) => a.name.localeCompare(b.name));
+  projects.sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || a.name.localeCompare(b.name));
   return projects;
 }

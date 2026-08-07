@@ -291,3 +291,38 @@ test("handleRequest: DELETE ?project= denied for non-loopback without basic auth
   await gate.handleRequest(rq, c.res, { basicAuth: undefined } as never, noMint);
   assert.equal(c.rec.code, 403);
 });
+
+// ---- /api/local/projects (distinct projects across the FULL history, #90) ----
+test("GET /api/local/projects: loopback returns the full-history aggregate (unpaged engine query)", async () => {
+  freshHome();
+  const runs = [
+    { id: 1, owner: "globex", repo: "beta", fileName: ".github/workflows/t.yml", displayName: "T" },
+    { id: 2, owner: "acme", repo: "widget", fileName: ".github/workflows/ci.yml", displayName: "CI" },
+    { id: 3, owner: "acme", repo: "widget", fileName: ".github/workflows/ci.yml", displayName: "CI" },
+  ];
+  const hub = await runsAndCancelHub(runs);
+  const f = await front(hub.port);
+  try {
+    const res = await req(f.port, "/api/local/projects");
+    assert.equal(res.status, 200);
+    const projects = JSON.parse(res.body);
+    assert.deepEqual(
+      projects.map((p: { name: string; kind: string; runCount: number; lastRunId: number }) => [p.name, p.kind, p.runCount, p.lastRunId]),
+      [
+        ["acme/widget", "repo", 2, 3],
+        ["globex/beta", "repo", 1, 1],
+      ],
+    );
+    // The engine was asked for the UNPAGED list — the full history, not one page.
+    assert.ok(hub.hits.includes("GET /_apis/v1/Message/workflow/runs"));
+  } finally {
+    await f.close();
+    await hub.close();
+  }
+});
+
+test("handleRequest: /api/local/projects denied for non-loopback without basic auth (403)", async () => {
+  const c = capRes();
+  await gate.handleRequest(synthReq("10.0.0.4", "/api/local/projects"), c.res, { basicAuth: undefined } as never, noMint);
+  assert.equal(c.rec.code, 403);
+});
