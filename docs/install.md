@@ -1,5 +1,7 @@
 # Installing notdownhub
 
+> Alpha software — see the [disclaimer in the README](../README.md#disclaimer).
+
 This guide covers every supported way to install `ndh`. It explains what
 `ndh install` downloads and where the files live. It also covers the Docker
 fleet-runner image and how to verify an install. For hub and fleet operation,

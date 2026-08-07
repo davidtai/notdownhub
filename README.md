@@ -11,11 +11,16 @@
 
 [![ci](https://github.com/davidtai/notdownhub/actions/workflows/ci.yml/badge.svg)](https://github.com/davidtai/notdownhub/actions/workflows/ci.yml)
 ![npm](https://img.shields.io/badge/npm-coming%20soon-lightgrey)
+![status](https://img.shields.io/badge/status-alpha-orange)
 [![website](https://img.shields.io/badge/site-notdownhub.com-f2663b)](https://notdownhub.com)
 
 [**notdownhub.com**](https://notdownhub.com) &middot; [Choose your setup](#choose-your-setup) &middot; [Docs](docs/) &middot; [Team guide](docs/collaboration.md)
 
 </div>
+
+> **Status: Alpha (v0.0.1).** This is early software under active development.
+> Interfaces and behavior can change between releases. Use at your own risk —
+> see the [Disclaimer](#disclaimer).
 
 `ndh` runs your **unmodified** GitHub Actions workflows on infrastructure you
 control — your laptop, one box under a desk, or a fleet of machines behind
@@ -531,6 +536,14 @@ them:
 
 notdownhub itself is MIT-licensed — see [LICENSE](LICENSE). It is an
 independent project and is not affiliated with or endorsed by GitHub, Inc.
+
+## Disclaimer
+
+notdownhub is alpha software. It is provided "as is", without warranty of any
+kind. The authors accept no liability for damage that results from its use. It
+is not certified for production-critical CI — validate it against your own
+workloads before you depend on it. The full warranty and liability terms are in
+[LICENSE](LICENSE) (MIT).
 
 ## Try it
 

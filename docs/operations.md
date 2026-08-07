@@ -1,5 +1,7 @@
 # notdownhub operations runbook
 
+> Alpha software — see the [disclaimer in the README](../README.md#disclaimer).
+
 Day-to-day operation of a notdownhub hub and runner fleet: lifecycle, running
 as a service, state & backup, restart semantics, the action mirror,
 troubleshooting, and upgrades. For getting `ndh` installed in the first place,
