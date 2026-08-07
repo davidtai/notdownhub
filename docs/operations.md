@@ -49,26 +49,40 @@ Useful flags (full list in the [README](../README.md#fleet-quickstart)):
 
 ### Stop
 
-Ctrl-C (or send `SIGINT`/`SIGTERM` to the `ndh hub up` process). The front
-forwards the signal to the `Runner.Server` child and exits. When stopping a
-backgrounded/service hub, target the parent `ndh` process — killing only the
-child leaves the front proxying to nothing (clients get `502`).
+Run `ndh hub down` to stop a hub. It reads the pid file at `hub/hub.pid`, sends
+`SIGTERM` to the front and the `Runner.Server` child, and escalates to `SIGKILL`
+after a short grace. It then confirms both ports are free and prints one line per
+action. The command is idempotent: with nothing running it prints `no hub
+running` and exits `0`.
 
-**Caution:** the OS releases the public port a short time *after* the process
-exits. A restart that is too fast makes the new front fail with `EADDRINUSE`.
-The front and `Runner.Server` are separate processes, so the new server child
-can stay as an orphan on the internal port.
+Interactively, Ctrl-C the foreground `ndh hub up` instead (or send it `SIGINT`
+or `SIGTERM`). The front forwards the signal to the child, removes the pid file,
+and exits.
 
-To restart safely, wait for the port to free first:
+`ndh hub down` also removes the fast-restart hazard. It confirms the ports are
+free before it returns, so an `up`, `down`, `up` cycle does not race the OS into
+`EADDRINUSE`. A second `ndh hub up` while one hub already runs now exits `1` with
+a single line and leaves no orphaned `Runner.Server`:
 
 ```bash
-# stop, then wait until the public port is free, then start
+ndh hub down   # stop the hub + Runner.Server, free the ports
+ndh hub up     # safe to start again at once
+```
+
+**Manual fallback (troubleshooting).** A missing or stale pid file (after a hard
+reboot) makes `ndh hub down` refuse to guess. It names any port still held
+instead of killing by port scan. Stop the hub by hand in that case: target the
+parent `ndh` process, not the child. Killing only the child leaves the front
+proxying to nothing, and clients get `502`. Wait for the public port to release,
+then clear any stray `Runner.Server` on `--hub-port` (4950):
+
+```bash
+# wait until the public port is free, then start
 while lsof -nP -iTCP:4949 -sTCP:LISTEN -t >/dev/null 2>&1; do sleep 1; done
 ndh hub up
 ```
 
-If a stray `Runner.Server` remains, stop the process that holds `--hub-port`
-(4950) before you restart. A supervised service (below) avoids this problem.
+A supervised service (below) avoids the manual path.
 
 ### Ports & firewall
 
@@ -666,7 +680,7 @@ ndh dispatch --server http://hub.tailnet:4949 -W .github/workflows/ci.yml \
 | Mirror error `Connection refused` to `127.0.0.1` on a **remote** runner | Hub baked `127.0.0.1` into mirror URLs — an old pre-`--host` build, or `--host` set to a loopback/unreachable address. | Restart the hub on a current build with `--host <lan-ip-or-dns>` reachable from the runner; confirm the URL the runner is dialing. |
 | Job hangs at a corepack "download pnpm?" prompt | corepack prompts interactively the first time it provisions a package manager. | Set `COREPACK_ENABLE_DOWNLOAD_PROMPT=0` in the workflow `env:` or the runner's service environment (the repo's `remote-ci.yml` does this). |
 | `runner join` / start says the runner is `already configured` | A stale `.runner` from a previous registration in the instance dir. | `join` already passes `--replace`; if it persists, `rm -rf ~/.notdownhub/runners/<name>` and re-join. For Docker, recreate the container (fresh, or with a clean state volume). |
-| New hub will not start: `EADDRINUSE` on 4949, or a stray `Runner.Server` on 4950 | Restarted before the OS released the public port; front and server are separate processes. | Wait for the port to free (`while lsof -iTCP:4949 -sTCP:LISTEN -t; do sleep 1; done`), kill any orphan holding 4950, then start. Prefer a supervised service. |
+| New hub will not start, or `ndh hub up` prints `a hub is already running on :4949` | A hub (or a stray `Runner.Server`) still holds the port; the pre-flight check now refuses instead of crashing with `EADDRINUSE`. | `ndh hub down` to stop the previous hub and free both ports, then `ndh hub up`. If `hub down` reports the pid file is stale but a port is still held, an unrelated process owns it — find it with `lsof -iTCP:4949 -sTCP:LISTEN` and stop it. Prefer a supervised service. |
 | `ndh status` shows a runner with empty `[]` labels | v0.1 cosmetic: `status` lists the agent name but does not render its labels. | Not fatal — the labels are still registered and matched for dispatch; confirm them from the `--labels` you joined with. |
 | Web UI / `GET /api/local/join-info` returns `403` (`the notdownhub UI is local-only…`) or `401` from another machine | By design: the UI + pairing endpoint are loopback-only; `403` when no `--basic-auth`, `401` when it is set and creds are missing/wrong. | Open the UI on the hub itself (`http://localhost:4949`) or over an SSH tunnel; to admit a remote operator, start the hub with `--basic-auth user:pass` (or `NDH_BASIC_AUTH`) and send those credentials. The API/runner protocol/mirror are unaffected. |
 | Startup logs `--basic-auth must be user:pass — ignoring` | The `--basic-auth` / `NDH_BASIC_AUTH` value had no colon, so it was rejected and the UI stayed loopback-only. | Pass it as `user:pass` (a single colon-separated string). |
