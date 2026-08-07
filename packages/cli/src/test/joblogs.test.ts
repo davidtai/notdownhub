@@ -21,6 +21,7 @@ import {
   serveJobLogs,
   makeRunIdResolver,
   startJobLogTee,
+  storedRunId,
   type SseEvent,
 } from "../joblogs.js";
 import { freshHome, startServer, type Fixture } from "./helpers.js";
@@ -288,6 +289,34 @@ test("serveJobLogs: retained=true with ordered lines when persisted", async () =
   assert.deepEqual(j.lines, ["##[group]Run build", "built ok"]);
 });
 
+test("serveJobLogs: 404 on a mismatched runId, 200 with lines on the right one (#81)", async () => {
+  const home = freshHome();
+  const db = await openDb(join(home, "hub", "joblogs.db"));
+  new JobLogWriter(db, 10_000, 1).add([{ runId: 7, timelineId: "tl-owned", recordId: null, ts: 1, line: "mine" }]);
+  db.close();
+  const wrong = capRes();
+  await serveJobLogs("/api/local/joblogs/9/tl-owned", wrong.res);
+  assert.equal(wrong.rec.code, 404, "a timeline paired to run 7 must 404 for run 9");
+  assert.match(wrong.rec.body!, /does not belong/);
+  const right = capRes();
+  await serveJobLogs("/api/local/joblogs/7/tl-owned", right.res);
+  assert.equal(right.rec.code, 200);
+  assert.deepEqual(JSON.parse(right.rec.body!), { retained: true, lines: ["mine"] });
+});
+
+test("storedRunId: resolved id, null for unknown/unresolved timelines, null on a missing DB", async () => {
+  const path = tmp();
+  const db = await openDb(path);
+  const w = new JobLogWriter(db, 10_000, 1);
+  w.add([{ runId: 4, timelineId: "known", recordId: null, ts: 1, line: "a" }]);
+  w.add([{ runId: null, timelineId: "unresolved", recordId: null, ts: 1, line: "b" }]);
+  db.close();
+  assert.equal(await storedRunId(path, "known"), 4);
+  assert.equal(await storedRunId(path, "unresolved"), null);
+  assert.equal(await storedRunId(path, "absent"), null);
+  assert.equal(await storedRunId(join(tmpdir(), "no-such-jl", "j.db"), "known"), null);
+});
+
 // ── run_id resolver ──────────────────────────────────────────────────────────
 test("makeRunIdResolver: case-insensitive hit, null miss, caches, tolerates a null db", async () => {
   const hubPath = tmp();
@@ -298,6 +327,12 @@ test("makeRunIdResolver: case-insensitive hit, null miss, caches, tolerates a nu
   assert.equal(resolve("abcdef-upper"), 42); // COLLATE NOCASE
   assert.equal(resolve("abcdef-upper"), 42); // cached
   assert.equal(resolve("unknown-tl"), null);
+  // provider form: the handle can appear (or change) after construction
+  let handle: DatabaseSync | null = null;
+  const lazy = makeRunIdResolver(() => handle);
+  assert.equal(lazy("abcdef-upper"), null);
+  handle = hub;
+  assert.equal(lazy("abcdef-upper"), 42);
   hub.close();
   assert.equal(makeRunIdResolver(null)("anything"), null);
 });

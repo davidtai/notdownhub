@@ -13,7 +13,8 @@ import { ndhHome, hubDbPath } from "./lib.js";
  *
  * Flow: a long-lived reader consumes the hub's global TimeLineWebConsoleLog SSE feed,
  * batches lines, and commits them per flush interval. Retrieval reconstructs the
- * ordered lines for a job's timeline. Retention deletes timelines older than 14 days
+ * ordered lines for a job's timeline and enforces the run/timeline pairing (a wrong
+ * run id 404s, issue #81). Retention deletes timelines older than 14 days
  * (matching the file-log default).
  */
 
@@ -318,9 +319,32 @@ export async function readJobLog(dbPath: string, timelineId: string, runId?: num
 }
 
 /**
+ * The run a stored timeline belongs to, from our streams table. Returns null when the
+ * pairing is unknown: no row for the timeline, an unresolved (NULL) run_id, or an
+ * unreadable database. Never throws.
+ */
+export async function storedRunId(dbPath: string, timelineId: string): Promise<number | null> {
+  try {
+    const db = await openDb(dbPath, true);
+    try {
+      const row = db.prepare("SELECT run_id AS r FROM streams WHERE timeline_id=?").get(timelineId) as
+        | { r: number | null }
+        | undefined;
+      return typeof row?.r === "number" ? row.r : null;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
  * GET /api/local/joblogs/<runId>/<timelineId> → { retained, lines }. `retained` is
  * false when nothing was stored (a run predating this feature, or an unknown job),
- * so the UI can show a calm "not retained" note instead of an empty pane.
+ * so the UI can show a calm "not retained" note instead of an empty pane. A timeline
+ * whose stored run_id contradicts the requested runId 404s (issue #81): the pairing
+ * is enforced, not decorative. An unresolved (NULL) run_id stays tolerant.
  */
 export async function serveJobLogs(pathname: string, res: ServerResponse): Promise<void> {
   const m = pathname.match(/^\/api\/local\/joblogs\/([^/]+)\/([^/]+)\/?$/);
@@ -331,18 +355,34 @@ export async function serveJobLogs(pathname: string, res: ServerResponse): Promi
   }
   const runIdNum = Number(decodeURIComponent(m[1]));
   const timelineId = decodeURIComponent(m[2]);
-  const lines = await readJobLog(joblogsDbPath(), timelineId, Number.isInteger(runIdNum) ? runIdNum : undefined);
+  const runId = Number.isInteger(runIdNum) ? runIdNum : undefined;
+  if (runId !== undefined) {
+    const owner = await storedRunId(joblogsDbPath(), timelineId);
+    if (owner !== null && owner !== runId) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "timeline does not belong to this run", runId, timelineId }));
+      return;
+    }
+  }
+  const lines = await readJobLog(joblogsDbPath(), timelineId, runId);
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify({ retained: !!(lines && lines.length), lines: lines ?? [] }));
 }
 
 // ── run_id resolution (best effort, read-only) ──────────────────────────────
-/** Look up the run a timeline belongs to, from the hub's own DB. Never throws. */
-export function makeRunIdResolver(hubDb: Db | null): (timelineId: string) => number | null {
+/**
+ * Look up the run a timeline belongs to, from the hub's own DB. Never throws.
+ * Accepts a handle or a provider function: the tee's hub-DB handle is opened lazily
+ * (the file may not exist yet at startup — issue #81), so the resolver must always
+ * read the CURRENT handle, not the one captured at construction.
+ */
+export function makeRunIdResolver(hubDbOrGet: Db | null | (() => Db | null)): (timelineId: string) => number | null {
+  const get: () => Db | null = typeof hubDbOrGet === "function" ? (hubDbOrGet as () => Db | null) : () => hubDbOrGet;
   const cache = new Map<string, number>();
   return (timelineId: string): number | null => {
     const hit = cache.get(timelineId);
     if (hit !== undefined) return hit;
+    const hubDb = get();
     if (!hubDb) return null;
     try {
       // Jobs.TimeLineId is stored upper-cased while the console feed emits lower-case.
@@ -398,6 +438,19 @@ export function startJobLogTee(hubPort: number, opts: TeeOptions = {}): JobLogTe
   let currentReq: http.ClientRequest | null = null;
   let pruneTimer: NodeJS.Timeout | null = null;
 
+  // The hub creates its DB after we start (fresh NDH_HOME), so a one-shot open at
+  // startup left run_id unresolved forever (issue #81). Open lazily and keep retrying.
+  const ensureHubDb = async (): Promise<Db | null> => {
+    if (!hubDb) {
+      try {
+        hubDb = await openDb(opts.hubDbPath ?? hubDbPath(), true);
+      } catch {
+        hubDb = null;
+      }
+    }
+    return hubDb;
+  };
+
   const connect = () => {
     if (stopped) return;
     const parse = createSseParser((ev) => {
@@ -444,12 +497,9 @@ export function startJobLogTee(hubPort: number, opts: TeeOptions = {}): JobLogTe
     try {
       db = await openDb(dbPath);
       writer = new JobLogWriter(db, opts.flushMs ?? 250);
-      try {
-        hubDb = await openDb(opts.hubDbPath ?? hubDbPath(), true);
-      } catch {
-        hubDb = null;
-      }
-      resolve1 = makeRunIdResolver(hubDb);
+      await ensureHubDb();
+      // The resolver reads the CURRENT handle: hub.db often appears after startup.
+      resolve1 = makeRunIdResolver(() => hubDb);
       const prune = () => {
         try {
           pruneOldRuns(db, now() - (opts.retentionMs ?? RETENTION_MS));
