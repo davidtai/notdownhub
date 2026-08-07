@@ -136,7 +136,7 @@ test("hubUp: spawns Runner.Server, tees its output, wires signals + exit, starts
 
   assert.equal(code, 0);
   assert.match(spawnCmd, /Runner\.Server$/);
-  assert.deepEqual(spawnArgs, ["--urls", "http://*:4950"]);
+  assert.deepEqual(spawnArgs, ["--urls", "http://127.0.0.1:4950"]);
   assert.deepEqual(frontOpts, {
     port: 4949,
     hubPort: 4950,

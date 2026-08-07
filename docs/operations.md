@@ -164,6 +164,13 @@ which is which before you open the firewall.
   `4949` as a **LAN / tailnet** surface; never expose it publicly, and do not
   hand out the registration token.
 
+**Crossing the internet? Use a private overlay network.**
+
+- Connect an off-LAN hub and its runners with **Tailscale** or **WireGuard**.
+  Then bind or firewall `4949` to that overlay interface. Do not port-forward
+  `4949` on a public router. The overlay encrypts and authenticates the link.
+  The hub API does not. This matters most while notdownhub is alpha.
+
 **Jobs inherit the operator's shell environment:**
 
 - A self-hosted job runs as a child process of the runner or hub. So the job

@@ -22,6 +22,13 @@
 > Interfaces and behavior can change between releases. Use at your own risk —
 > see the [Disclaimer](#disclaimer).
 
+> **Networking (please read):** the hub's port `4949` carries the web UI, an API,
+> and the runner protocol. That surface is **LAN / tailnet only — never public**.
+> If your hub and runners span the internet, put them on a private overlay network.
+> Use **[Tailscale](https://tailscale.com/)** or **[WireGuard](https://www.wireguard.com/)**,
+> and bind or firewall `4949` to that interface. This matters most while notdownhub
+> is alpha. Details: [operations → security model](docs/operations.md#security-model-v01).
+
 `ndh` runs your **unmodified** GitHub Actions workflows on infrastructure you
 control — your laptop, one box under a desk, or a fleet of machines behind
 NAT. Same YAML, same `runs-on`, same `actions/checkout@v4`, same matrix and

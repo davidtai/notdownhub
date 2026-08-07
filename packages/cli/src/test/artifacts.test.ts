@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer, type Fixture } from "./helpers.js";
@@ -55,6 +55,14 @@ function fakeHub(): Promise<Fixture> {
     } else if (url.pathname === "/_apis/pipelines/workflows/artifact/6") {
       res.writeHead(500);
       res.end("blob gone");
+    } else if (url.pathname === "/_apis/pipelines/workflows/60/artifacts") {
+      // run 60 → a MALICIOUS artifact whose file path escapes the output dir (zip-slip)
+      j({ count: 1, value: [{ containerId: 8, size: 0, name: "evil", type: "actions_storage" }] });
+    } else if (url.pathname === "/_apis/pipelines/workflows/container/8") {
+      j({ value: [{ path: "../escape.txt", itemType: "file", fileLength: 4 }] });
+    } else if (url.pathname === "/_apis/pipelines/workflows/artifact/8") {
+      res.writeHead(200, { "content-type": "application/octet-stream" });
+      res.end("pwnd");
     } else {
       res.writeHead(404);
       res.end("no");
@@ -75,6 +83,21 @@ async function fetchThrough(
     await srv.close();
   }
 }
+
+test("downloadArtifact rejects a zip-slip path and writes nothing outside outDir (#157)", async () => {
+  const hub = await fakeHub();
+  const base = mkdtempSync(join(tmpdir(), "ndh-artdl-"));
+  const out = join(base, "dl");
+  try {
+    // An attacker-controlled artifact file path of "../escape.txt" must be refused, not written.
+    await assert.rejects(() => downloadArtifact(hub.url, 60, "evil", out), /unsafe artifact path/);
+    // The traversal target (base/escape.txt — one level ABOVE out) must not have been created.
+    assert.equal(existsSync(join(base, "escape.txt")), false);
+  } finally {
+    await hub.close();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
 
 test("parseArtifactPrettyUrl matches the printed URL only", () => {
   assert.deepEqual(parseArtifactPrettyUrl("/local/repro/actions/runs/4/artifacts/5"), { runId: 4, artifactId: "5" });

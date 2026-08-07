@@ -389,7 +389,10 @@ async function hubUp(opts: HubUpOptions, deps: HubDeps = {}): Promise<number> {
   const removePid = deps.removePid ?? ((path) => rmSync(path, { force: true }));
   const pidPath = join(hubHome, "hub.pid");
 
-  const child = spawnFn(vendorExe("Runner.Server"), ["--urls", `http://*:${hubPort}`], {
+  // Bind the internal engine to loopback only. The front dials it over 127.0.0.1 (front.ts), and
+  // remote runners reach the hub through the public front on --port — never this port. Binding on
+  // `*`/0.0.0.0 would expose the raw, unauthenticated engine off-box, bypassing every front gate.
+  const child = spawnFn(vendorExe("Runner.Server"), ["--urls", `http://127.0.0.1:${hubPort}`], {
     env,
     cwd: hubHome,
     stdio: ["ignore", "pipe", "pipe"],

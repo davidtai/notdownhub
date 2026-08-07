@@ -16,7 +16,7 @@ function req(
   method = "GET",
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const r = http.request({ host: "127.0.0.1", port, path, method, headers }, (res) => {
+    const r = http.request({ host: "127.0.0.1", port, path, method, headers: { "x-requested-by": "ndh", ...headers } }, (res) => {
       let b = "";
       res.on("data", (d) => (b += d));
       res.on("end", () => resolve({ status: res.statusCode ?? 0, body: b }));

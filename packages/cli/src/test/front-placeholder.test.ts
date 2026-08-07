@@ -21,7 +21,7 @@ function req(
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const r = http.request(
-      { host: "127.0.0.1", port, path, method, headers: { "content-type": "application/json" } },
+      { host: "127.0.0.1", port, path, method, headers: { "content-type": "application/json", "x-requested-by": "ndh" } },
       (res) => {
         let b = "";
         res.on("data", (d) => (b += d));

@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, statSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, statSync, existsSync, readFileSync, rmSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import {
@@ -14,8 +14,11 @@ import {
   formatSecretFile,
   writeSecretFile,
   resolveSecretsForRun,
+  ephemeralRunDir,
+  sweepStaleRunFiles,
 } from "../secrets.js";
 import { runCmd, dispatchCmd } from "../runcmd.js";
+import { ndhHome } from "../lib.js";
 
 function freshHome(): string {
   const home = mkdtempSync(join(tmpdir(), "ndh-test-"));
@@ -106,6 +109,35 @@ test("writeSecretFile: 0600 ephemeral file with correct contents", async () => {
   } finally {
     if (existsSync(path)) rmSync(path);
   }
+});
+
+test("writeSecretFile: lives under ndhHome/run-secrets (0700), not shared /tmp (#157)", async () => {
+  freshHome();
+  const path = await writeSecretFile(new Map([["K", "v"]]));
+  try {
+    assert.ok(
+      path.startsWith(join(ndhHome(), "run-secrets") + sep),
+      `ephemeral secret file must live under ndhHome/run-secrets, got ${path}`,
+    );
+    assert.equal(statSync(dirname(path)).mode & 0o777, 0o700, "run-secrets dir must be 0700");
+  } finally {
+    if (existsSync(path)) rmSync(path);
+  }
+});
+
+test("sweepStaleRunFiles: removes crash-orphaned files past the cutoff, keeps fresh ones (#157)", async () => {
+  freshHome();
+  const dir = ephemeralRunDir("run-secrets");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stale = join(dir, "secrets-stale.env");
+  const fresh = join(dir, "secrets-fresh.env");
+  writeFileSync(stale, "OLD=1", { mode: 0o600 });
+  writeFileSync(fresh, "NEW=1", { mode: 0o600 });
+  const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60_000);
+  utimesSync(stale, threeHoursAgo, threeHoursAgo);
+  await sweepStaleRunFiles(dir, 60 * 60_000); // 1h cutoff
+  assert.equal(existsSync(stale), false, "a file orphaned by a crash (older than the cutoff) is swept");
+  assert.equal(existsSync(fresh), true, "a concurrent run's fresh file is kept");
 });
 
 test("argv-leak guard: run injects --secret-file, never the value; file shredded after", async () => {

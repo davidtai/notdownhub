@@ -158,11 +158,11 @@ test("proxy: preserves Host verbatim and injects a minted Bearer on anonymous GE
   const hub = await fakeHub({ token: "jwt-abc" });
   const f = await front({ hubPort: hub.port, runnerToken: "reg-token" });
   try {
-    const res = await req(f.port, "/_apis/v1/Agent/1", { host: "public.example:4949" });
+    const res = await req(f.port, "/_apis/v1/Agent/1");
     assert.equal(res.status, 200);
     assert.equal(res.body, "proxied-ok");
     const seen = hub.state.last.at(-1)!;
-    assert.equal(seen.host, "public.example:4949", "Host header must pass through untouched");
+    assert.equal(seen.host, `127.0.0.1:${f.port}`, "Host header must pass through untouched");
     assert.equal(seen.auth, "Bearer jwt-abc", "bearer minted + injected");
   } finally {
     await f.close();
@@ -205,10 +205,10 @@ test("proxy: injects a minted Bearer on an anonymous DELETE to an Agent instance
   const hub = await fakeHub({ token: "jwt-del" });
   const f = await front({ hubPort: hub.port, runnerToken: "reg-token" });
   try {
-    const res = await reqm(f.port, "DELETE", "/_apis/v1/Agent/1/42", { host: "public.example:4949" });
+    const res = await reqm(f.port, "DELETE", "/_apis/v1/Agent/1/42", { "x-requested-by": "ndh" });
     assert.equal(res.status, 200);
     const seen = hub.state.last.at(-1)!;
-    assert.equal(seen.host, "public.example:4949", "Host header must pass through untouched");
+    assert.equal(seen.host, `127.0.0.1:${f.port}`, "Host header must pass through untouched");
     assert.equal(seen.auth, "Bearer jwt-del", "bearer minted + injected for the agent DELETE");
   } finally {
     await f.close();
@@ -353,8 +353,8 @@ test("join-info: defaults host to localhost and authEnabled false without a toke
 
 // ---------- UI access gates (unit-tested with synthetic requests: deterministic, no LAN needed) ----------
 
-function fakeReq(remoteAddress: string, authorization?: string): http.IncomingMessage {
-  return { socket: { remoteAddress }, headers: authorization ? { authorization } : {} } as never;
+function fakeReq(remoteAddress: string, authorization?: string, host = "localhost"): http.IncomingMessage {
+  return { socket: { remoteAddress }, headers: { host, ...(authorization ? { authorization } : {}) } } as never;
 }
 
 test("isLoopback recognizes v4/v6 loopback and rejects the rest", () => {
@@ -379,6 +379,68 @@ test("uiAccessAllowed: loopback always; non-loopback needs correct basic auth", 
   assert.equal(gate.uiAccessAllowed(fakeReq("10.0.0.9"), { basicAuth: undefined } as never), false);
   assert.equal(gate.uiAccessAllowed(fakeReq("10.0.0.9", cred), { basicAuth: "u:p" } as never), true);
   assert.equal(gate.uiAccessAllowed(fakeReq("10.0.0.9", "Basic bad"), { basicAuth: "u:p" } as never), false);
+  // Anti-rebinding: a loopback socket with a foreign Host is NOT granted (issue #157).
+  assert.equal(gate.uiAccessAllowed(fakeReq("127.0.0.1", undefined, "attacker.example"), { basicAuth: undefined } as never), false);
+});
+
+test("hostAllowed: only localhost/127.0.0.1/[::1] (any port); rejects foreign or missing Host (#157)", () => {
+  const h = (host?: string) => gate.hostAllowed({ headers: host === undefined ? {} : { host } } as never);
+  assert.equal(h("localhost"), true);
+  assert.equal(h("localhost:4949"), true);
+  assert.equal(h("127.0.0.1:4949"), true);
+  assert.equal(h("[::1]:4949"), true);
+  assert.equal(h("attacker.example"), false);
+  assert.equal(h("attacker.example:4949"), false);
+  assert.equal(h(undefined), false);
+});
+
+test("csrfOk: requires the X-Requested-By: ndh header (#157)", () => {
+  assert.equal(gate.csrfOk({ headers: { "x-requested-by": "ndh" } } as never), true);
+  assert.equal(gate.csrfOk({ headers: {} } as never), false);
+  assert.equal(gate.csrfOk({ headers: { "x-requested-by": "evil" } } as never), false);
+});
+
+test("security #157: DNS-rebinding — loopback socket + foreign Host is denied on /api/local", async () => {
+  freshHome();
+  const hub = await fakeHub({ token: "t" });
+  const f = await front({ hubPort: hub.port });
+  try {
+    const res = await req(f.port, "/api/local/config", { host: "attacker.example" });
+    assert.equal(res.status, 403); // Host allowlist blocks the rebinding read
+  } finally {
+    await f.close();
+    await hub.close();
+  }
+});
+
+test("security #157: CSRF — a state-changing /api/local POST without X-Requested-By is denied", async () => {
+  freshHome();
+  const hub = await fakeHub({ token: "t" });
+  const f = await front({ hubPort: hub.port });
+  try {
+    const res = await reqm(f.port, "POST", "/api/local/vars", {}); // loopback+Host ok, but no CSRF header
+    assert.equal(res.status, 403);
+    assert.match(res.body, /CSRF/);
+  } finally {
+    await f.close();
+    await hub.close();
+  }
+});
+
+test("security #157: anonymous Agent mint denied off-Host (rebinding) and CSRF-gated for DELETE", async () => {
+  freshHome();
+  const hub = await fakeHub({ token: "jwt" });
+  const f = await front({ hubPort: hub.port, runnerToken: "reg" });
+  try {
+    const read = await req(f.port, "/_apis/v1/Agent/1", { host: "attacker.example" });
+    assert.equal(read.status, 403);
+    const del = await reqm(f.port, "DELETE", "/_apis/v1/Agent/1/42"); // loopback Host ok, no CSRF header
+    assert.equal(del.status, 403);
+    assert.equal(hub.state.registrations, 0, "no management JWT minted for either blocked call");
+  } finally {
+    await f.close();
+    await hub.close();
+  }
 });
 
 test("denyUi: 401+challenge when basic auth configured, else 403", () => {

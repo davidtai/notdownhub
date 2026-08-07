@@ -59,6 +59,33 @@ function isLoopback(addr: string | undefined): boolean {
   return a === "127.0.0.1" || a === "::1" || a === "::ffff:127.0.0.1";
 }
 
+/**
+ * Anti-DNS-rebinding: a loopback grant additionally requires the request's Host header to name
+ * localhost. A rebinding attacker's page reaches 127.0.0.1 (so the socket looks loopback) but the
+ * browser sends the attacker's own hostname as Host (fetch forbids overriding it), so this rejects
+ * it. A normal operator hitting http://localhost:PORT / http://127.0.0.1:PORT passes.
+ */
+function hostAllowed(req: http.IncomingMessage): boolean {
+  const host = (req.headers.host ?? "").toLowerCase();
+  const hostname = host.replace(/:\d+$/, "").replace(/^\[|\]$/g, ""); // strip :port and [ ] around IPv6
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
+/**
+ * Anti-CSRF for state-changing /api/local + Agent-management requests. The UI adds `X-Requested-By:
+ * ndh` to every hub call; a cross-origin "simple request" from a malicious page cannot set a custom
+ * header (doing so forces a CORS preflight, which we never grant), so a bare form/fetch CSRF is
+ * rejected here even though it reaches the loopback socket.
+ */
+function csrfOk(req: http.IncomingMessage): boolean {
+  return req.headers["x-requested-by"] === "ndh";
+}
+
+function denyCsrf(res: http.ServerResponse): void {
+  res.writeHead(403, { "content-type": "application/json" });
+  res.end(JSON.stringify({ error: "missing X-Requested-By header (CSRF protection)" }));
+}
+
 function basicAuthOk(req: http.IncomingMessage, expected: string): boolean {
   const header = req.headers.authorization ?? "";
   if (!header.startsWith("Basic ")) return false;
@@ -67,9 +94,14 @@ function basicAuthOk(req: http.IncomingMessage, expected: string): boolean {
   return given.length === want.length && timingSafeEqual(given, want);
 }
 
-/** Loopback always; otherwise Basic auth when configured. Gates UI + join-info only. */
+/**
+ * Loopback (with a localhost Host, anti-rebinding) always; otherwise Basic auth when configured.
+ * Gates UI + join-info + the rest of /api/local. A remote operator authenticating with Basic auth
+ * legitimately sends the hub's own hostname as Host, so the Host check applies to the loopback
+ * grant only.
+ */
 function uiAccessAllowed(req: http.IncomingMessage, opts: FrontOptions): boolean {
-  if (isLoopback(req.socket.remoteAddress)) return true;
+  if (isLoopback(req.socket.remoteAddress)) return hostAllowed(req);
   return Boolean(opts.basicAuth) && basicAuthOk(req, opts.basicAuth!);
 }
 
@@ -121,6 +153,20 @@ async function handleRequest(
   try {
     const url = new URL(req.url ?? "/", "http://localhost");
     let m: RegExpMatchArray | null;
+    // Central gate for the whole /api/local surface: access first (loopback+Host / basic auth),
+    // then anti-CSRF on state-changing writes. OPTIONS is the unauthenticated capability probe.
+    // (Per-route checks below remain as defense-in-depth.)
+    const isLocalApi = url.pathname === "/api/local" || url.pathname.startsWith("/api/local/");
+    if (isLocalApi && req.method !== "OPTIONS") {
+      if (!uiAccessAllowed(req, opts)) {
+        denyUi(res, opts);
+        return;
+      }
+      if (req.method !== "GET" && !csrfOk(req)) {
+        denyCsrf(res);
+        return;
+      }
+    }
     if (url.pathname.startsWith("/mirror/")) {
       await serveMirror(url.pathname, res, opts.githubToken);
     } else if (url.pathname === "/api/local/join-info") {
@@ -358,11 +404,26 @@ async function handleRequest(
       //     token already carries (config.sh remove uses the identical path).
       // A client-supplied Authorization is never overwritten.
       let bearer: string | null = null;
-      const wantsAgentJwt =
+      const wantsAgentRead =
         !req.headers.authorization &&
-        ((req.method === "GET" && /^\/_apis\/v1\/Agent(Pools)?\//i.test(url.pathname + "/")) ||
-          (req.method === "DELETE" && /^\/_apis\/v1\/Agent\/[^/]+\/[^/]+\/?$/i.test(url.pathname)));
-      if (wantsAgentJwt) {
+        req.method === "GET" &&
+        /^\/_apis\/v1\/Agent(Pools)?\//i.test(url.pathname + "/");
+      const wantsAgentRemove =
+        !req.headers.authorization &&
+        req.method === "DELETE" &&
+        /^\/_apis\/v1\/Agent\/[^/]+\/[^/]+\/?$/i.test(url.pathname);
+      if (wantsAgentRead || wantsAgentRemove) {
+        // Minting a management JWT for an anonymous caller is an operator capability: gate it like
+        // /api/local so a LAN client cannot enumerate the fleet or unregister runners token-free.
+        if (!uiAccessAllowed(req, opts)) {
+          denyUi(res, opts);
+          return;
+        }
+        // The mutating removal additionally needs the anti-CSRF header (fleet-DoS via a browser).
+        if (wantsAgentRemove && !csrfOk(req)) {
+          denyCsrf(res);
+          return;
+        }
         bearer = await mint().catch(() => null);
       }
       proxy(req, res, opts.hubPort, bearer);
@@ -448,6 +509,21 @@ function isUiPath(pathname: string): boolean {
   );
 }
 
+/**
+ * Security headers for the UI documents/assets. The UI is fully self-contained (fonts self-hosted),
+ * so a strict CSP holds: no external anything, no inline scripts (`script-src 'self'`), inline
+ * styles allowed (Tailwind). `frame-ancestors 'none'` + X-Frame-Options block clickjacking; the CSP
+ * is also defense-in-depth against any future XSS.
+ */
+const UI_SECURITY_HEADERS: Record<string, string> = {
+  "x-frame-options": "DENY",
+  "x-content-type-options": "nosniff",
+  "content-security-policy":
+    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; " +
+    "font-src 'self'; connect-src 'self'; script-src 'self'; frame-ancestors 'none'; " +
+    "base-uri 'self'; object-src 'none'",
+};
+
 async function serveUi(uiDir: string, pathname: string, res: http.ServerResponse): Promise<boolean> {
   // Reserve API-ish prefixes for the hub proxy.
   if (!isUiPath(pathname)) return false;
@@ -458,7 +534,7 @@ async function serveUi(uiDir: string, pathname: string, res: http.ServerResponse
     file = join(uiDir, "index.html"); // SPA fallback
     if (!(await exists(file))) return false;
   }
-  res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
+  res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream", ...UI_SECURITY_HEADERS });
   createReadStream(file).pipe(res);
   return true;
 }
@@ -527,4 +603,4 @@ export function uiDistDir(): string {
 }
 
 /** Exposed for tests: the local-only UI access gates + the extracted request router. */
-export const __test = { isLoopback, basicAuthOk, uiAccessAllowed, denyUi, isUiPath, handleRequest, encodeSeg };
+export const __test = { isLoopback, hostAllowed, csrfOk, basicAuthOk, uiAccessAllowed, denyUi, isUiPath, handleRequest, encodeSeg };

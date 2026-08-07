@@ -1,6 +1,6 @@
 import { createWriteStream } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ServerResponse } from "node:http";
@@ -173,8 +173,15 @@ export async function downloadArtifact(
   const art = await resolveArtifact(base, runId, selector);
   if (!art) return null;
   const written: string[] = [];
+  const root = resolve(outDir);
   for (const f of art.files) {
-    const dest = join(outDir, f.path);
+    const dest = resolve(outDir, f.path);
+    // Zip-slip guard: an artifact's file path is attacker-controllable (a malicious repo's workflow
+    // chooses it). Reject anything that escapes outDir (`../…`, absolute paths) before any write, so
+    // a crafted path can never overwrite the operator's files (~/.zshrc, git hooks, ~/.ssh/…).
+    if (dest !== root && !dest.startsWith(root + sep)) {
+      throw new Error(`refusing unsafe artifact path outside the output directory: ${f.path}`);
+    }
     await mkdir(dirname(dest), { recursive: true });
     const upstream = await fetch(fileUrl(base, art.id, f.path));
     if (!upstream.ok || !upstream.body) throw new Error(`download failed for ${f.path}: ${upstream.status} ${upstream.statusText}`);

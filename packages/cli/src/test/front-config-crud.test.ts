@@ -21,7 +21,7 @@ function req(
   { method = "GET", headers = {}, body }: { method?: string; headers?: Record<string, string>; body?: string } = {},
 ): Promise<{ status: number; body: string; allow?: string }> {
   return new Promise((resolve, reject) => {
-    const r = http.request({ host: "127.0.0.1", port, path, method, headers }, (res) => {
+    const r = http.request({ host: "127.0.0.1", port, path, method, headers: { "x-requested-by": "ndh", ...headers } }, (res) => {
       let b = "";
       res.on("data", (d) => (b += d));
       res.on("end", () => resolve({ status: res.statusCode ?? 0, body: b, allow: res.headers.allow }));
@@ -301,7 +301,7 @@ test("gating: non-loopback writes are denied — 403 without basic auth, 401 whe
 
 test("gating: a correctly-authenticated non-loopback DELETE passes the gate and reaches the store", async () => {
   freshHome();
-  const auth = { authorization: `Basic ${Buffer.from("ops:pw").toString("base64")}` };
+  const auth = { authorization: `Basic ${Buffer.from("ops:pw").toString("base64")}`, "x-requested-by": "ndh" };
   const c = capRes();
   await gate.handleRequest(
     synthReq("10.0.0.4", "/api/local/vars?name=NOPE&scope=global", "DELETE", auth),

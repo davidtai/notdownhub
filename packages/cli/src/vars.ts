@@ -1,10 +1,9 @@
 import { mkdir, readFile, writeFile, chmod, rm } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Command } from "commander";
 import { ndhHome, fail, log, writeJson0600 } from "./lib.js";
-import { validEnvName } from "./secrets.js";
+import { ephemeralRunDir, sweepStaleRunFiles, validEnvName } from "./secrets.js";
 import { GLOBAL_SCOPE, runScopes, scopeFromRepo, type RepoOpt } from "./scope.js";
 
 /**
@@ -87,8 +86,10 @@ export async function withRunnerVars<T>(
 ): Promise<T> {
   const entries = await resolveVarsForRun(repoSlug);
   if (entries.size === 0) return run([]);
-  const dir = join(tmpdir(), "ndh-vars");
+  const dir = ephemeralRunDir("run-vars");
   await mkdir(dir, { recursive: true, mode: 0o700 });
+  await chmod(dir, 0o700).catch(() => {});
+  await sweepStaleRunFiles(dir);
   const path = join(dir, `vars-${randomBytes(12).toString("hex")}.yml`);
   await writeFile(path, `${JSON.stringify(Object.fromEntries(entries), null, 2)}\n`, { mode: 0o600 });
   log(`injecting ${entries.size} var${entries.size === 1 ? "" : "s"} via var-file`);

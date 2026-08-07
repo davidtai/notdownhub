@@ -1,8 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { mkdir, readFile, writeFile, chmod, rm } from "node:fs/promises";
+import { mkdir, readFile, writeFile, chmod, rm, readdir, stat } from "node:fs/promises";
 import { randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Command } from "commander";
 import { ndhHome, fail, log, writeJson0600 } from "./lib.js";
@@ -217,7 +216,7 @@ async function loadKey(): Promise<Buffer> {
     /* fall through and create */
   }
   const key = randomBytes(32);
-  await mkdir(ndhHome(), { recursive: true });
+  await mkdir(ndhHome(), { recursive: true, mode: 0o700 });
   await writeFile(keyFilePath(), `${key.toString("base64")}\n`, { mode: 0o600 });
   await chmod(keyFilePath(), 0o600).catch(() => {});
   return key;
@@ -353,11 +352,41 @@ export function formatSecretFile(entries: Map<string, string>): string {
   return lines.length ? `${lines.join("\n")}\n` : "";
 }
 
-/** Write the secret file to a 0600 temp path. Returns the path (caller must shred it). */
+/**
+ * Per-user directory for ephemeral run files (secret/var). Lives under ndhHome() ($HOME, 0700), NOT
+ * the shared system temp dir — on Linux `/tmp` is world-writable, so a local attacker could
+ * pre-create a fixed-name dir there and interfere with the run.
+ */
+export function ephemeralRunDir(name: string): string {
+  return join(ndhHome(), name);
+}
+
+/**
+ * Best-effort sweep of ephemeral run files a crashed/killed run left behind (the shred+delete only
+ * runs in a `finally`, which a SIGKILL/power-loss skips). Removes files older than `maxAgeMs`, so a
+ * concurrent in-flight run's fresh file is never touched.
+ */
+export async function sweepStaleRunFiles(dir: string, maxAgeMs = 60 * 60_000): Promise<void> {
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return; // dir not created yet — nothing to sweep
+  }
+  const cutoff = Date.now() - maxAgeMs;
+  for (const n of names) {
+    const p = join(dir, n);
+    const st = await stat(p).catch(() => null);
+    if (st?.isFile() && st.mtimeMs < cutoff) await rm(p, { force: true }).catch(() => {});
+  }
+}
+
+/** Write the secret file to a 0600 path under ndhHome(). Returns the path (caller must shred it). */
 export async function writeSecretFile(entries: Map<string, string>): Promise<string> {
-  const dir = join(tmpdir(), "ndh-secrets");
+  const dir = ephemeralRunDir("run-secrets");
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700).catch(() => {});
+  await sweepStaleRunFiles(dir);
   const path = join(dir, `secrets-${randomBytes(12).toString("hex")}.env`);
   await writeFile(path, formatSecretFile(entries), { mode: 0o600 });
   await chmod(path, 0o600).catch(() => {});
@@ -524,7 +553,7 @@ export function registerSecrets(program: Command): void {
         return;
       }
       if (mode !== "keyring" && mode !== "file") fail("backend must be 'keyring' or 'file'");
-      await mkdir(ndhHome(), { recursive: true });
+      await mkdir(ndhHome(), { recursive: true, mode: 0o700 });
       await writeFile(togglePath(), `${mode}\n`, { mode: 0o600 });
       log(`secrets backend preference set to ${mode} (active: ${backendName()})`);
       process.exitCode = 0;
