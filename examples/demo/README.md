@@ -18,10 +18,10 @@ with `ndh dispatch`.
 ```bash
 # one-time: download the pinned runner stack (~66 MB)
 ndh install
-# (or `pnpm dlx notdownhub install` / `npx notdownhub install` if ndh isn't on PATH)
+# (or `pnpm dlx notdownhub install` / `npx notdownhub install` if ndh is not on PATH)
 ```
 
-If you don't have Docker, `ubuntu-latest` jobs run on your host machine; that's
+If you do not have Docker, `ubuntu-latest` jobs run on your host machine; that is
 fine for this demo. With Docker present they run in `catthehacker/ubuntu:act-latest`.
 
 ## Run it locally (one-shot)
@@ -39,7 +39,7 @@ logs, and exits. Useful variations:
 ndh run -l                              # list the jobs for the default (push) event
 ndh run -W .github/workflows/ci.yml     # point at this workflow explicitly
 ndh run --event pull_request            # run as if triggered by a PR
-ndh run -j build -m flavor:beta         # just one job, just one matrix leg
+ndh run -j build -m flavor:beta         # one job, one matrix leg
 ```
 
 Expected: three `build` legs (alpha/beta/gamma) run, then `report` prints
@@ -47,8 +47,8 @@ Expected: three `build` legs (alpha/beta/gamma) run, then `report` prints
 
 ## Run it on a fleet (dispatch)
 
-With a hub already up (`ndh hub up` on the hub machine) and at least one runner
-joined and started, dispatch this repo's workflow to the fleet:
+First start a hub (`ndh hub up` on the hub machine) and join and start at least
+one runner. Then dispatch this repo's workflow to the fleet:
 
 ```bash
 ndh dispatch --server http://hub.tailnet:4949 --event push

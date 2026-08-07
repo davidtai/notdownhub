@@ -8,6 +8,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
+    "docs:style": "node scripts/doc-style-check.mjs",
     "dev:web": "pnpm --filter @notdownhub/web dev"
   }
 }
