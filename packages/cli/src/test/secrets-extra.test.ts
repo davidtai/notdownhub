@@ -36,8 +36,18 @@ test("keychain backend: set/get/list/rm via the `security` CLI (fake shim on PAT
     assert.equal(await removeSecret(GLOBAL_SCOPE, "KC"), true);
     assert.equal(await removeSecret(GLOBAL_SCOPE, "KC"), false);
     assert.equal(await getSecret(GLOBAL_SCOPE, "KC"), null);
-    // a keychain write failure is surfaced as an error
-    await assert.rejects(() => setSecret(GLOBAL_SCOPE, "BAD", "FAILWRITE"), /keychain write failed/);
+    // a keychain write failure is surfaced as an error whose extra line names the headless/SSH
+    // fix (`ndh secrets backend file`) so an SSH-only user is not dead in the water (#42).
+    await assert.rejects(
+      () => setSecret(GLOBAL_SCOPE, "BAD", "FAILWRITE"),
+      (err: Error) => {
+        assert.match(err.message, /^keychain write failed:/, "keeps the original failure prefix");
+        assert.match(err.message, /headless\/SSH sessions often cannot unlock the login Keychain/);
+        assert.match(err.message, /ndh secrets backend file/, "names the file-backend fix");
+        assert.match(err.message, /encrypted-file backend/);
+        return true;
+      },
+    );
   } finally {
     process.env.PATH = savedPath;
     if (savedBackend === undefined) delete process.env.NDH_SECRETS_BACKEND;

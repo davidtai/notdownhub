@@ -159,6 +159,10 @@ override by exporting `NDH_HOME=/some/path`). After installing and running a hub
 > in `$TMPDIR/ndh-secrets`, and macOS Keychain entries. Each entry gives purpose,
 > sensitivity, and safe-to-delete guidance.
 
+On a headless or SSH-only macOS account, the login Keychain is often locked, and
+`ndh secrets set` fails with "Unable to obtain authorization". Run
+`ndh secrets backend file` first to store secrets in the encrypted file backend.
+
 ### `--force`, proxies, and tokens
 
 - **`ndh install --force`** re-downloads and re-extracts even if the marker
