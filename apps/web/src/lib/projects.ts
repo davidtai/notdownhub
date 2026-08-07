@@ -27,9 +27,10 @@ import { projectLabel } from "./format";
 export type ProjectKind = "repo" | "local" | "unattributed" | "planned";
 
 /**
- * Classify a run's attribution. `local` is #59's `local/<dir>` fallback slug
- * for checkouts without an origin remote. `unattributed` covers runs with no
- * usable attribution: the engine's `Unknown/Unknown`, or a missing half.
+ * Classify a run's attribution. `local` is a `local/<dir>` slug — formerly
+ * #59's no-origin fallback, now only an explicit `--repository` value or older
+ * recorded history. `unattributed` covers runs with no usable attribution: the
+ * engine's `Unknown/Unknown`, or a missing half.
  */
 export function projectKind(run: { owner?: string | null; repo?: string | null }): ProjectKind {
   const owner = run.owner?.trim();

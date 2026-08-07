@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { ensureVendor } from "./vendor.js";
 import { hubProbeAmbiguousMessage, hubUnreachableMessage, isDefinitiveDown, log, ndhHome, probeServer, run, vendorExe, type Reachability } from "./lib.js";
 import { initFileLog } from "./filelog.js";
@@ -25,18 +25,21 @@ function defaultPlatformArgs(argv: string[], docker: () => boolean = dockerAvail
   ];
 }
 
+/** Where a run is attributed when the checkout has no resolvable origin remote. */
+export const NO_ORIGIN_SLUG = "davidtai/notdownhub";
+
 /**
  * The project every run belongs to, as `owner/repo`. Prefer the checkout's origin
  * remote (already resolved for secrets scoping); when there is none, fall back to
- * `local/<dirname>`. The engine records `github.repository` verbatim and derives
- * the owner by splitting on "/", so a bare, ownerless value renders as
- * `Unknown/Unknown` — the fallback is deliberately a two-part slug so a run never
- * shows up as "Unknown" (verified against the vendored Runner.Client).
+ * `davidtai/notdownhub` (formerly #59's `local/<dirname>`). An explicit
+ * `--repository` always wins over both (repositoryArgs). The engine records
+ * `github.repository` verbatim and derives the owner by splitting on "/", so a
+ * bare, ownerless value renders as `Unknown/Unknown` — the fallback is
+ * deliberately a two-part slug so a run never shows up as "Unknown" (verified
+ * against the vendored Runner.Client).
  */
-export function projectSlug(originSlug: string | null, cwd: string = process.cwd()): string {
-  if (originSlug) return originSlug;
-  const dir = basename(cwd).replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-  return `local/${dir || "workspace"}`;
+export function projectSlug(originSlug: string | null): string {
+  return originSlug ?? NO_ORIGIN_SLUG;
 }
 
 /**

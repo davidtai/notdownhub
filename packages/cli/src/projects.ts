@@ -23,8 +23,8 @@ import { deletePlaceholders, frontStateDbPath, listPlaceholders, type ProjectPla
 
   local / unattributed runs are never merged into one fake project: each recorded
   label stays its own row, and rows are classified (`kind`) so callers can say
-  honestly what the row is — a real repo, a `local/<dir>` checkout slug (#59's
-  fallback, grouped only by directory name), or unattributed runs
+  honestly what the row is — a real repo, a `local/<dir>` checkout slug (an
+  explicit or historical label, grouped only by directory name), or unattributed runs
   (`Unknown/Unknown`, the engine's value when a run carried no usable
   `github.repository` at all).
 */
@@ -68,10 +68,11 @@ export interface ProjectSummary {
 }
 
 /**
- * Classify a run's attribution. `local` is #59's `local/<dir>` fallback slug for
- * checkouts without an origin remote — a real recorded label, but grouped only by
- * directory name. `unattributed` covers runs with no usable attribution at all:
- * the engine's `Unknown/Unknown`, or a missing owner/repo half (pre-#59 data).
+ * Classify a run's attribution. `local` is a `local/<dir>` slug — formerly #59's
+ * no-origin fallback, now only an explicit `--repository` value or older recorded
+ * history — a real recorded label, but grouped only by directory name.
+ * `unattributed` covers runs with no usable attribution at all: the engine's
+ * `Unknown/Unknown`, or a missing owner/repo half (pre-#59 data).
  */
 export function projectKind(run: { owner?: string | null; repo?: string | null }): ProjectKind {
   const owner = run.owner?.trim();
