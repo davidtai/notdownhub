@@ -33,6 +33,7 @@ const DEFAULT_FILES = [
   "docs/collaboration.md",
   "docs/architecture.md",
   "docs/files.md",
+  "docs/testing/hook-types.md",
   "examples/demo/README.md",
 ];
 

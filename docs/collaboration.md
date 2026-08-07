@@ -173,9 +173,12 @@ Facts about the push, all verified:
 - The engine masks each secret value as `***` in all job output.
 - The run executes the pushed commit, checked out by the hook into a
   temporary work-tree on the server.
-- CI cannot reject the push. The refs are already updated when `post-receive`
-  runs; a failed workflow shows as a red run and as failed steps in the push
-  output.
+- CI cannot reject the push with this default `post-receive` hook. The refs
+  are already updated when it runs; a failed workflow shows as a red run and
+  as failed steps in the push output. To gate pushes on CI, install
+  `--type pre-receive` instead; client-side `pre-push` and `post-commit`
+  hooks exist too. See
+  [operations.md → Hook types](operations.md#hook-types).
 - A push while the hub is down still lands. The push output then shows
   `[ndh] can't reach the hub at http://… — is it up?`, and no run is
   recorded. Dispatch the missed commit later from any checkout, or push
