@@ -18,7 +18,7 @@ describe("AppBar", () => {
   it("shows the wordmark, all nav links and marks the current route active", () => {
     renderAt("/");
     expect(screen.getByLabelText("notdownhub home")).toBeTruthy();
-    for (const label of ["Runs", "Runners", "Settings"]) {
+    for (const label of ["Runs", "Projects", "Runners", "Settings"]) {
       expect(screen.getByRole("link", { name: label })).toBeTruthy();
     }
     // At "/", the Runs link is active (renders the underline span); others are not,

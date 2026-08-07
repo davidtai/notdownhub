@@ -11,6 +11,10 @@ import {
   getJoinInfo,
   getArtifacts,
   artifactDownloadUrl,
+  getWorkflowDefinition,
+  getRunLastActivity,
+  deleteProjectRuns,
+  probeDeleteProjectSupport,
 } from "./api";
 import { mockFetch, routes } from "../test/helpers";
 
@@ -144,6 +148,117 @@ describe("artifactDownloadUrl", () => {
   it("builds a same-origin URL with the name url-encoded", () => {
     expect(artifactDownloadUrl(4, "my-artifact")).toBe("/api/local/artifacts/4/my-artifact");
     expect(artifactDownloadUrl(4, "cover report/x")).toBe("/api/local/artifacts/4/cover%20report%2Fx");
+  });
+});
+
+describe("getWorkflowDefinition", () => {
+  it("returns the latest attempt's YAML and timeline id", async () => {
+    mockFetch(
+      routes({
+        "/attempts": [
+          { id: 1, attempt: 1, workflow: "old", timeLineId: "t1" },
+          { id: 1, attempt: 2, workflow: "new", timeLineId: "t2" },
+        ],
+      }),
+    );
+    expect(await getWorkflowDefinition(1)).toEqual({ yaml: "new", timelineId: "t2" });
+  });
+
+  it("returns nulls when there are no attempts", async () => {
+    mockFetch(routes({ "/attempts": [] }));
+    expect(await getWorkflowDefinition(1)).toEqual({ yaml: null, timelineId: null });
+  });
+
+  it("returns nulls when the attempt carries no workflow/timeline", async () => {
+    mockFetch(routes({ "/attempts": [{ id: 1, attempt: 1 }] }));
+    expect(await getWorkflowDefinition(1)).toEqual({ yaml: null, timelineId: null });
+  });
+
+  it("swallows a fetch failure", async () => {
+    mockFetch(() => ({ status: 500 }));
+    expect(await getWorkflowDefinition(1)).toEqual({ yaml: null, timelineId: null });
+  });
+});
+
+describe("getRunLastActivity", () => {
+  it("returns the widest finish across the latest attempt's job timelines", async () => {
+    mockFetch((url) => {
+      if (/attempt\/\d+\/jobs/.test(url)) return { body: [{ jobId: "j1", timeLineId: "job-1" }] };
+      if (/\/attempts/.test(url)) return { body: [{ id: 1, attempt: 1, timeLineId: "t" }] };
+      if (/Timeline\/job-1/.test(url))
+        return { body: [{ type: "Job", startTime: "2020-01-01T00:00:00Z", finishTime: "2020-01-01T00:00:05Z" }] };
+      return undefined;
+    });
+    expect(await getRunLastActivity(1)).toBe("2020-01-01T00:00:05.000Z");
+  });
+
+  it("returns null when there are no attempts", async () => {
+    mockFetch(routes({ "/attempts": [] }));
+    expect(await getRunLastActivity(1)).toBeNull();
+  });
+
+  it("tolerates a timeline fetch failing (per-job catch)", async () => {
+    mockFetch((url) => {
+      if (/attempt\/\d+\/jobs/.test(url)) return { body: [{ jobId: "j1", timeLineId: "job-1" }] };
+      if (/\/attempts/.test(url)) return { body: [{ id: 1, attempt: 1, timeLineId: "t" }] };
+      if (/Timeline\//.test(url)) return { throw: true };
+      return undefined;
+    });
+    // No timeline records → no span → null, not a throw.
+    expect(await getRunLastActivity(1)).toBeNull();
+  });
+
+  it("swallows an attempts fetch failure", async () => {
+    mockFetch(() => ({ status: 500 }));
+    expect(await getRunLastActivity(1)).toBeNull();
+  });
+});
+
+describe("probeDeleteProjectSupport", () => {
+  it("is true when the OPTIONS probe resolves with a non-404 status (backend present)", async () => {
+    const fn = mockFetch(routes({ "/api/local/runs": { status: 204 } }));
+    expect(await probeDeleteProjectSupport()).toBe(true);
+    expect(fn).toHaveBeenCalledWith(
+      "/api/local/runs",
+      expect.objectContaining({ method: "OPTIONS" }),
+    );
+  });
+
+  it("treats a 405 (route exists, method not allowed) as present", async () => {
+    mockFetch(routes({ "/api/local/runs": { status: 405 } }));
+    expect(await probeDeleteProjectSupport()).toBe(true);
+  });
+
+  it("is false when the route 404s (backend absent, pre-#60)", async () => {
+    mockFetch(routes({ "/api/local/runs": { status: 404 } }));
+    expect(await probeDeleteProjectSupport()).toBe(false);
+  });
+
+  it("is false on a network error", async () => {
+    mockFetch(routes({ "/api/local/runs": { throw: true } }));
+    expect(await probeDeleteProjectSupport()).toBe(false);
+  });
+});
+
+describe("deleteProjectRuns", () => {
+  it("issues a DELETE against the project runs endpoint and reports ok", async () => {
+    const fn = mockFetch(routes({ "/api/local/runs": { status: 200 } }));
+    expect(await deleteProjectRuns("acme/widget")).toEqual({ ok: true, status: 200 });
+    // owner/repo is URL-encoded in the query.
+    expect(fn).toHaveBeenCalledWith(
+      "/api/local/runs?project=acme%2Fwidget",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("reports the status when the endpoint is absent (404, pre-#60)", async () => {
+    mockFetch(routes({ "/api/local/runs": { status: 404 } }));
+    expect(await deleteProjectRuns("x/y")).toEqual({ ok: false, status: 404 });
+  });
+
+  it("returns status 0 on a network error", async () => {
+    mockFetch(routes({ "/api/local/runs": { throw: true } }));
+    expect(await deleteProjectRuns("x/y")).toEqual({ ok: false, status: 0 });
   });
 });
 

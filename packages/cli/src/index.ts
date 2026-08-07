@@ -6,6 +6,7 @@ import { registerHub } from "./hub.js";
 import { registerRunner } from "./runner.js";
 import { runCmd, dispatchCmd } from "./runcmd.js";
 import { registerStatus } from "./status.js";
+import { registerProjects } from "./projects.js";
 import { registerSecrets } from "./secrets.js";
 import { registerVars } from "./vars.js";
 import { registerHook } from "./hook.js";
@@ -17,6 +18,7 @@ examples:
   ndh hub up
   ndh runner join http://hub.tailnet:4949 --token <token> --labels self-hosted,macOS,ARM64
   ndh dispatch --server http://hub.tailnet:4949 --event push
+  ndh projects --server http://hub.tailnet:4949
   ndh hook install /srv/git/app.git --server http://hub.tailnet:4949
   ndh secrets set NPM_TOKEN
   ndh vars set DEPLOY_TARGET staging
@@ -79,6 +81,7 @@ async function buildProgram(): Promise<Command> {
   registerHub(program);
   registerRunner(program);
   registerStatus(program);
+  registerProjects(program);
   registerSecrets(program);
   registerVars(program);
   registerHook(program);
