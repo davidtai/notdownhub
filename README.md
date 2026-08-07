@@ -14,7 +14,7 @@
 ![status](https://img.shields.io/badge/status-alpha-orange)
 [![website](https://img.shields.io/badge/site-notdownhub.com-f2663b)](https://notdownhub.com)
 
-[**notdownhub.com**](https://notdownhub.com) &middot; [Choose your setup](#choose-your-setup) &middot; [Docs](docs/) &middot; [Team guide](docs/collaboration.md)
+[**notdownhub.com**](https://notdownhub.com) &middot; [Screenshots](#screenshots) &middot; [Choose your setup](#choose-your-setup) &middot; [Docs](docs/) &middot; [Team guide](docs/collaboration.md)
 
 </div>
 
@@ -34,6 +34,30 @@ That project is a maintained, MIT-licensed fork of GitHub's official
 [`actions/runner`](https://github.com/actions/runner). It adds an
 Actions-protocol server and client. Execution runs on the official runner
 codebase, so workflows run with full fidelity, not a best-effort approximation.
+
+---
+
+## Screenshots
+
+<div align="center">
+
+The bundled web UI — live logs, run history, projects, your runner fleet, and
+write-only secrets. Served by the hub at `http://localhost:4949`.
+
+<table>
+  <tr>
+    <td align="center" width="33%"><a href="docs/screenshots/runs.png"><img src="docs/screenshots/runs.png" alt="Runs list with status, duration, and live filters" width="260"></a><br><sub><b>Runs</b></sub></td>
+    <td align="center" width="33%"><a href="docs/screenshots/run-detail.png"><img src="docs/screenshots/run-detail.png" alt="Run detail with streaming logs and step groups" width="260"></a><br><sub><b>Run detail — live logs</b></sub></td>
+    <td align="center" width="33%"><a href="docs/screenshots/projects.png"><img src="docs/screenshots/projects.png" alt="Projects with per-workflow status" width="260"></a><br><sub><b>Projects</b></sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%"><a href="docs/screenshots/runners.png"><img src="docs/screenshots/runners.png" alt="Runner fleet with labels and liveness" width="260"></a><br><sub><b>Runner fleet</b></sub></td>
+    <td align="center" width="33%"><a href="docs/screenshots/settings.png"><img src="docs/screenshots/settings.png" alt="Secrets and variables, scoped per repo" width="260"></a><br><sub><b>Secrets &amp; variables</b></sub></td>
+    <td width="33%"></td>
+  </tr>
+</table>
+
+</div>
 
 ---
 
