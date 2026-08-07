@@ -22,6 +22,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const DEFAULT_FILES = [
   "README.md",
+  "packages/cli/README.md",
   "CONTRIBUTING.md",
   "SECURITY.md",
   "CODE_OF_CONDUCT.md",
