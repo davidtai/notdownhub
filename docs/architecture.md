@@ -147,6 +147,24 @@ streams it back. `GITHUB_TOKEN` in the hub's environment is added as
 `authorization: token …` to dodge anonymous rate limits. After the first fetch,
 that action resolves with the network down.
 
+### Request flow: the local-checkout shim
+
+When you dispatch a local repo, the engine swaps `actions/checkout` for its
+"localcheckout" composite action. The engine's own composite passes `fetch-tags`
+to an inner action that does not declare it. Every such run then gets an
+"Unexpected input(s) 'fetch-tags'" warning annotation (issue #98). Runners
+download actions through the front, so the front intercepts
+`GET …/_apis/v1/ActionDownloadInfo/localcheckout` and serves an ndh-owned
+composite instead (`localcheckout.ts`).
+
+That shim declares the full
+`actions/checkout@v4` input surface. On the local path it applies
+`sparse-checkout` and `set-safe-directory` to the copied tree. The copied `.git`
+already carries all local tags, so `fetch-tags` logs the available tag count.
+Each input that cannot apply to a copied tree logs one explicit line and does
+nothing. If the front cannot render the shim, it proxies the engine's own copy
+unchanged.
+
 ### Request flow: JWT injection for agent-status reads
 
 `Runner.Server`'s `AgentPools` / `Agent` endpoints require a **management JWT**

@@ -14,6 +14,7 @@ import { serveRunCancel, serveRunDelete, serveFilteredRuns, serveProjectDelete }
 import { serveProjects } from "./projects.js";
 import { appendDefaultPlatform, serveRerun } from "./rerunmap.js";
 import { serveRunsMeta } from "./runs-meta.js";
+import { serveLocalcheckout } from "./localcheckout.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -247,6 +248,15 @@ async function handleRequest(
       // shape we cannot replay (unreadable attempts, no stored YAML, onLatestCommit) fall back
       // to the native endpoint — the pre-#92 behavior.
       if (!(await serveRerun(opts.hubPort, Number(m[2]), /failed/i.test(m[1]), res))) {
+        proxy(req, res, opts.hubPort);
+      }
+    } else if (req.method === "GET" && /\/_apis\/v1\/ActionDownloadInfo\/localcheckout$/i.test(url.pathname)) {
+      // #98: the engine's localcheckout composite passes `fetch-tags` to an inner action that
+      // does not declare it — an "Unexpected input(s)" warning annotation on every localcheckout
+      // run — and drops modern checkout inputs on the local path. Runners download actions
+      // through this front, so serve the ndh-owned checkout@v4-parity composite instead
+      // (localcheckout.ts). Any shape we cannot render falls back to the engine's own shim.
+      if (!(await serveLocalcheckout(opts.hubPort, url, res))) {
         proxy(req, res, opts.hubPort);
       }
     } else if (req.method === "POST" && url.pathname.match(/^\/_apis\/v1\/Message\/schedule2\/?$/i)) {
