@@ -744,7 +744,8 @@ ndh hook install /srv/git/app.git --server http://hub.tailnet:4949
 Add `-W .github/workflows/ci.yml` to dispatch one workflow. The default
 dispatches all workflows. Use `--force` to overwrite a hook ndh did not write.
 The command validates the path, confirms a bare repo, and writes an executable
-`post-receive` hook.
+`post-receive` hook. Other hook types exist too; see
+[Hook types](#hook-types).
 
 The hook labels every run with a project slug, so runs group per repo. The
 default slug comes from the repo path: `/srv/git/team/app.git` becomes
@@ -789,6 +790,53 @@ Point the forge at a bare repo it pushes or mirrors to. Install the hook on
 that bare repo. [collaboration.md](collaboration.md) shows the full team topology
 around that git server. A native webhook endpoint would be a separate future
 feature, not a configuration option today.
+
+### Hook types
+
+`ndh hook install <repo> --type <t>` writes one of four hooks:
+
+| `--type` | Side | Installs into | Effect |
+|---|---|---|---|
+| `post-receive` (default) | server | bare repo `hooks/` | A push dispatches CI. CI never rejects the push. |
+| `pre-receive` | server | bare repo `hooks/` | The push waits for CI. A failed workflow rejects it. |
+| `pre-push` | client | checkout `.git/hooks/` | CI runs before the push leaves the machine. A failure blocks it. |
+| `post-commit` | client | checkout `.git/hooks/` | Advisory CI after each commit. It never blocks. |
+
+Server types need `--server` and a bare repo. Client types need the root of a
+working checkout. Client hooks run CI locally through `ndh run` by default.
+Pass `--server` to make a client hook dispatch to the hub instead. The marker
+and `--force` rules apply to each hook file separately. Client installs derive
+the default slug from the origin remote, then from the path.
+
+#### The pre-receive gate
+
+The `pre-receive` type turns CI into a push gate. The push waits for the
+dispatched workflows and streams their output. A failed workflow makes the
+hook exit nonzero, so git rejects the whole push. The tradeoff: every push to
+that repo blocks for the full CI duration.
+
+A workflow skipped by an `on: push: branches:` filter is not a failure. The
+hook detects the engine's `All Workflows skipped` line and accepts the push.
+An unreachable hub rejects the push: the gate fails closed. Keep the
+fire-and-forget `post-receive` type when that tradeoff does not fit.
+
+#### Client hooks: pre-push and post-commit
+
+`--type pre-push` gates `git push` on the developer's machine. The hook
+exports each pushed commit to a temporary work-tree with `git archive`. CI
+then runs on that exact tree, not on the working tree. A failure blocks the
+push; a filter skip does not. A branch deletion tests nothing and passes
+through.
+
+`--type post-commit` runs CI after each commit and reports the outcome. The
+exit status of a `post-commit` hook has no effect in git, so no hook can
+block or undo a commit. This hook is therefore advisory by design and always
+exits 0. There
+is no strict mode for that reason. Each commit waits for its advisory run to
+finish before it returns.
+
+Every type was verified live, edge cases included. The record is in
+[testing/hook-types.md](testing/hook-types.md).
 
 ### Branch tracking
 

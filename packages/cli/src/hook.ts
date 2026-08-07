@@ -1,16 +1,28 @@
 import { spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile, chmod } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import type { Command } from "commander";
 import { exists, log } from "./lib.js";
+import { currentRepoSlug } from "./scope.js";
 
 /**
- * `ndh hook install <bare-repo.git> --server <hub>` (issue #23).
+ * `ndh hook install <repo> [--type <t>] [--server <hub>]` (issues #23, #120).
  *
- * Writes a `post-receive` hook onto a bare git server so a `git push` triggers CI on the hub.
- * The generated hook is the automated form of the manual recipe in docs/operations.md
- * ("Triggering CI"): for each pushed branch it checks the pushed tree into a temp work-tree and
- * runs `ndh dispatch` from there, so a workflow's `on: push: branches:` filter applies per branch.
+ * Writes a git hook that triggers CI. Four types:
+ *
+ *   post-receive (default, server) — a push to a bare repo dispatches CI on the hub;
+ *                                    the push itself never fails on CI (#23).
+ *   pre-receive          (server)  — CI-gated push: dispatch the pushed tree and REJECT
+ *                                    the push when a workflow fails (#120).
+ *   pre-push             (client)  — run CI on what is about to be pushed, from the
+ *                                    developer's checkout; a failure blocks the push.
+ *   post-commit          (client)  — advisory CI after each commit; never blocks (git
+ *                                    ignores a post-commit hook's exit status).
+ *
+ * Server types validate a bare repo and write into `<repo>/hooks/`. Client types validate
+ * a working checkout root and write into its `git rev-parse --git-path hooks` directory.
+ * Client hooks run `ndh run` locally by default; `--server` switches them to dispatch.
  */
 
 /**
@@ -19,6 +31,34 @@ import { exists, log } from "./lib.js";
  * it makes older managed hooks look foreign.
  */
 export const HOOK_MARKER = "# managed by: ndh hook install (regenerate to update)";
+
+/**
+ * The line Runner.Client prints when EVERY workflow was skipped by an `on: push: branches:`
+ * filter. The pre-receive/pre-push gates grep for it: a filtered-out branch is not a CI
+ * failure, so it must never reject or block a push (see preReceiveShouldReject).
+ */
+export const ALL_SKIPPED_MARKER = "All Workflows skipped";
+
+export const HOOK_TYPES = ["post-receive", "pre-receive", "pre-push", "post-commit"] as const;
+export type HookType = (typeof HOOK_TYPES)[number];
+
+/** Server-side types install into a bare repo; the other two into a working checkout. */
+export function isServerHookType(type: HookType): boolean {
+  return type === "post-receive" || type === "pre-receive";
+}
+
+/**
+ * The pre-receive gate decision, as one pure testable rule. Reject the push only when the
+ * dispatch failed FOR REAL: exit 0 always accepts; a nonzero exit accepts anyway when the
+ * output proves every workflow was skipped by branch filters (ALL_SKIPPED_MARKER) — a
+ * branch no workflow tracks must never be rejected. Anything else nonzero (failed job,
+ * unreachable hub, infra error) rejects: a gate that cannot verify CI fails closed.
+ * The generated pre-receive/pre-push shell mirrors this exact rule.
+ */
+export function preReceiveShouldReject(exitCode: number, output: string): boolean {
+  if (exitCode === 0) return false;
+  return !output.includes(ALL_SKIPPED_MARKER);
+}
 
 /** Quote an arbitrary value for safe single-quoted embedding in POSIX sh. */
 export function shSingleQuote(value: string): string {
@@ -31,7 +71,7 @@ function slugSegment(raw: string): string {
 }
 
 /**
- * Default `owner/repo` slug for a bare repo, derived from its path (#99): the repo's directory
+ * Default `owner/repo` slug for a repo, derived from its path (#99): the repo's directory
  * name minus a trailing `.git`, owned by the name of its parent directory. So
  * `/srv/git/team/app.git` → `team/app`, and a flat layout `/srv/git/app.git` → `git/app`.
  * `--repository` always overrides. Two parts always: the engine records the value verbatim and
@@ -45,12 +85,69 @@ export function deriveRepoSlug(repoPath: string): string {
 }
 
 export interface HookConfig {
-  /** Hub base url passed to `ndh dispatch --server`. */
-  server: string;
-  /** Project slug (`owner/repo`) passed to `ndh dispatch --repository`; labels every hook run. */
+  /**
+   * Hub base url passed to `ndh dispatch --server`. Required for the server types; optional
+   * for client types, where its absence means "run CI locally via `ndh run`".
+   */
+  server?: string;
+  /** Project slug (`owner/repo`) passed via `--repository`; labels every hook run (#99). */
   repository: string;
   /** Optional workflow file; when set the hook adds `-W <workflow>`. Default: dispatch all. */
   workflow?: string;
+}
+
+/** The `HUB=`/`REPO=`/`WORKFLOW=` variable block, every value single-quote-escaped. */
+function hookVars(config: HookConfig): string {
+  const lines: string[] = [];
+  if (config.server) lines.push(`HUB=${shSingleQuote(config.server)}`);
+  lines.push(`REPO=${shSingleQuote(config.repository)}`);
+  if (config.workflow) lines.push(`WORKFLOW=${shSingleQuote(config.workflow)}`);
+  return lines.join("\n");
+}
+
+/**
+ * The `ndh` invocation for a client or gated hook: dispatch when a server is configured,
+ * a local one-shot `ndh run` otherwise. `refArgs` is the shell fragment naming the ref
+ * (already quoted), e.g. `--ref "$ref"`, or `"$@"` for post-commit's precomputed args.
+ */
+function ndhCiInvocation(config: HookConfig, refArgs: string): string {
+  const wf = config.workflow ? ` -W "$WORKFLOW"` : "";
+  const base = config.server ? `ndh dispatch --server "$HUB" --repository "$REPO"` : `ndh run --repository "$REPO"`;
+  return `${base} --event push ${refArgs}${wf}`;
+}
+
+/**
+ * The shared gate body for pre-receive/pre-push: run CI on the tree in `$work`, stream the
+ * output to the pusher AND capture it, then apply preReceiveShouldReject. POSIX sh has no
+ * pipefail, so the exit code travels through a status file ($st) written inside the pipeline;
+ * a missing/garbled status counts as failure (fail closed, exit 90). `</dev/null` keeps ndh
+ * from eating the ref list still pending on the hook's stdin.
+ */
+function gatedRunFragment(invocation: string, failMsg: string, allowMsg: string): string {
+  const skip = shSingleQuote(ALL_SKIPPED_MARKER);
+  return `  out=$(mktemp)
+  st=$(mktemp)
+  ( set +e
+    cd "$work" || exit 90
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+    ${invocation} </dev/null 2>&1
+    echo $? >"$st"
+  ) | tee "$out"
+  code=$(cat "$st" 2>/dev/null || echo 90)
+  case "$code" in ''|*[!0-9]*) code=90 ;; esac
+  rm -rf "$work"
+  if [ "$code" -ne 0 ] && ! grep -q ${skip} "$out"; then
+    echo "[ndh] CI failed for $branch (exit $code) — ${failMsg}" >&2
+    grep "Completed with Status: Failed" "$out" | sed 's/^/[ndh]   /' >&2 || true
+    rm -f "$out" "$st"
+    exit 1
+  fi
+  if grep -q ${skip} "$out"; then
+    echo "[ndh] workflows skipped by filters for $branch — ${allowMsg}"
+  else
+    echo "[ndh] CI passed for $branch — ${allowMsg}"
+  fi
+  rm -f "$out" "$st"`;
 }
 
 /**
@@ -62,8 +159,12 @@ export interface HookConfig {
  * remote (and git runs post-receive with a relative GIT_DIR), so ndh cannot infer the project
  * there — without it every push was labeled `local/<mktemp-dir>` and repo-scoped secrets never
  * resolved (#99).
+ *
+ * Branch deletions (all-zero new sha) have no tree to dispatch and are skipped (#120) — the
+ * original template tried to check out sha 0{40} and errored into the push output.
  */
 export function generateHook(config: HookConfig): string {
+  if (!config.server) throw new Error("post-receive hooks dispatch to a hub — a server url is required");
   const server = shSingleQuote(config.server);
   const repository = shSingleQuote(config.repository);
   const workflowArg = config.workflow ? ` -W "$WORKFLOW"` : "";
@@ -71,7 +172,8 @@ export function generateHook(config: HookConfig): string {
   return `#!/bin/sh
 ${HOOK_MARKER}
 # On push, dispatch CI on the hub for each updated branch. The workflow's
-# 'on: push: branches:' filter is applied per branch via --ref.
+# 'on: push: branches:' filter is applied per branch via --ref. Branch
+# deletions dispatch nothing.
 set -eu
 
 HUB=${server}
@@ -80,6 +182,10 @@ ${workflowVar}
 while read -r _old new ref; do
   case "$ref" in
     refs/heads/*) ;;
+    *) continue ;;
+  esac
+  case "$new" in
+    *[!0]*) ;;
     *) continue ;;
   esac
   branch=\${ref#refs/heads/}
@@ -93,11 +199,170 @@ done
 }
 
 /**
- * Injectable seams so the install flow is testable without shelling out. `isBareRepo` defaults to
- * `git rev-parse --is-bare-repository`; tests point it at a real `git init --bare` dir or stub it.
+ * Build the pre-receive hook script: the CI-gated push. Per pushed branch, dispatch the pushed
+ * tree and wait; a real failure exits 1, which makes git reject the ENTIRE push (git's
+ * pre-receive is all-or-nothing) — the gate stops at the first failing branch. The skip-vs-fail
+ * rule is preReceiveShouldReject, mirrored in shell (exit code + ALL_SKIPPED_MARKER grep).
+ *
+ * Unlike post-receive, the tree is exported with `git archive`, NOT `git checkout`: pre-receive
+ * runs inside git's quarantine environment, where checkout's HEAD update is forbidden
+ * ("ref updates forbidden inside quarantine environment" — found live). Archive only reads
+ * objects, which quarantine allows. Branch deletions (all-zero new sha) have no tree and pass.
+ */
+export function generatePreReceiveHook(config: HookConfig): string {
+  if (!config.server) throw new Error("pre-receive hooks dispatch to a hub — a server url is required");
+  const gate = gatedRunFragment(ndhCiInvocation(config, '--ref "$ref"'), "push rejected", "branch gate passed");
+  return `#!/bin/sh
+${HOOK_MARKER}
+# CI-GATED PUSH (pre-receive): each pushed branch is exported to a temp
+# work-tree and dispatched to the hub, and the push WAITS for the result.
+# A failing workflow REJECTS the whole push (all refs — git's pre-receive is
+# all-or-nothing); an unreachable hub rejects too (the gate fails closed).
+# Workflows skipped by an 'on: push: branches:' filter never reject, and
+# branch deletions are not gated. Tradeoff: every push to this repo blocks
+# for the full CI duration — the post-receive type is the fire-and-forget
+# alternative.
+set -eu
+
+${hookVars(config)}
+
+while read -r _old new ref; do
+  case "$ref" in
+    refs/heads/*) ;;
+    *) continue ;;
+  esac
+  case "$new" in
+    *[!0]*) ;;
+    *) continue ;;
+  esac
+  branch=\${ref#refs/heads/}
+  work=$(mktemp -d)
+  git archive "$new" | tar -xf - -C "$work"
+${gate}
+done
+`;
+}
+
+/**
+ * Build the pre-push hook script (client). For each branch being pushed it exports the pushed
+ * COMMIT (not the possibly-dirty working tree) with `git archive` — a plain `git checkout`
+ * here would move the checkout's own HEAD/index — and runs CI on it: `ndh run` locally, or
+ * `ndh dispatch` when a server is configured. A real failure exits 1, which makes git abort
+ * the push before anything leaves the machine; the skip rule matches preReceiveShouldReject.
+ * Branch deletions (all-zero local sha) have no tree to test and pass through.
+ */
+export function generatePrePushHook(config: HookConfig): string {
+  const gate = gatedRunFragment(ndhCiInvocation(config, '--ref "$rref"'), "push blocked", "branch gate passed");
+  return `#!/bin/sh
+${HOOK_MARKER}
+# CI gate before push (pre-push): each branch being pushed is exported to a
+# temp work-tree and CI runs on it${config.server ? " via the hub" : " locally with `ndh run`"}. A failing
+# workflow blocks the push before it leaves this machine. Workflows skipped
+# by branch filters never block. stdin lines: <lref> <lsha> <rref> <rsha>.
+set -eu
+
+${hookVars(config)}
+
+while read -r _lref lsha rref _rsha; do
+  case "$rref" in
+    refs/heads/*) ;;
+    *) continue ;;
+  esac
+  case "$lsha" in
+    *[!0]*) ;;
+    *) continue ;;
+  esac
+  branch=\${rref#refs/heads/}
+  work=$(mktemp -d)
+  git archive "$lsha" | tar -xf - -C "$work"
+${gate}
+done
+`;
+}
+
+/**
+ * Build the post-commit hook script (client). Advisory by design: git IGNORES a post-commit
+ * hook's exit status — the commit object already exists before the hook runs — so no exit
+ * code could ever block or undo it. Hence no --strict variant: it would change nothing. The
+ * hook exports the committed tree (HEAD, not the working tree), runs CI on it, prints a
+ * passed/failed/skipped verdict, and always exits 0.
+ */
+export function generatePostCommitHook(config: HookConfig): string {
+  const skip = shSingleQuote(ALL_SKIPPED_MARKER);
+  const invocation = ndhCiInvocation(config, '"$@"');
+  return `#!/bin/sh
+${HOOK_MARKER}
+# ADVISORY CI after each commit: the committed tree (HEAD) is exported to a
+# temp work-tree and CI runs on it${config.server ? " via the hub" : " locally with `ndh run`"}. git ignores this
+# hook's exit status — a post-commit hook can never block or undo a commit —
+# so this hook only reports the outcome and always exits 0.
+set -u
+
+${hookVars(config)}
+
+sha=$(git rev-parse --short HEAD)
+if ref=$(git symbolic-ref -q HEAD); then
+  set -- --ref "$ref"
+else
+  set --
+fi
+work=$(mktemp -d)
+out=$(mktemp)
+st=$(mktemp)
+if ! git archive HEAD | tar -xf - -C "$work"; then
+  echo "[ndh] advisory CI skipped: cannot export HEAD" >&2
+  rm -rf "$work"
+  rm -f "$out" "$st"
+  exit 0
+fi
+( set +e
+  cd "$work" || exit 90
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+  ${invocation} </dev/null 2>&1
+  echo $? >"$st"
+) | tee "$out"
+code=$(cat "$st" 2>/dev/null || echo 90)
+case "$code" in ''|*[!0-9]*) code=90 ;; esac
+rm -rf "$work"
+if grep -q ${skip} "$out"; then
+  echo "[ndh] advisory CI: workflows skipped by filters for commit $sha"
+elif [ "$code" -eq 0 ]; then
+  echo "[ndh] advisory CI passed for commit $sha"
+else
+  echo "[ndh] advisory CI FAILED for commit $sha (exit $code) — the commit itself stands" >&2
+  grep "Completed with Status: Failed" "$out" | sed 's/^/[ndh]   /' >&2
+fi
+rm -f "$out" "$st"
+exit 0
+`;
+}
+
+/** Generate the hook script for any type; the per-type builders stay individually testable. */
+export function generateHookOfType(type: HookType, config: HookConfig): string {
+  switch (type) {
+    case "post-receive":
+      return generateHook(config);
+    case "pre-receive":
+      return generatePreReceiveHook(config);
+    case "pre-push":
+      return generatePrePushHook(config);
+    case "post-commit":
+      return generatePostCommitHook(config);
+  }
+}
+
+/**
+ * Injectable seams so the install flow is testable without shelling out. Defaults shell out to
+ * git; tests point them at real `git init` dirs or stub them.
  */
 export interface HookDeps {
   isBareRepo?: (repoPath: string) => boolean;
+  /** True when repoPath is the ROOT of a non-bare checkout (client hooks install there). */
+  isWorkingRepoRoot?: (repoPath: string) => boolean;
+  /** Absolute hooks dir of a working checkout (`git rev-parse --git-path hooks`), or null. */
+  hooksPath?: (repoPath: string) => string | null;
+  /** Origin-remote slug of a working checkout, for client attribution. Default: currentRepoSlug. */
+  originSlug?: (repoPath: string) => string | null;
 }
 
 /** True when `git rev-parse --is-bare-repository` reports true for `repoPath`. */
@@ -106,80 +371,162 @@ function gitIsBareRepo(repoPath: string): boolean {
   return r.status === 0 && r.stdout.trim() === "true";
 }
 
+/**
+ * True when `repoPath` is the top level of a working (non-bare) checkout. `--show-toplevel`
+ * fails in a bare repo and outside any repo; comparing real paths rejects a subdirectory of
+ * a larger repo, whose hooks dir would belong to the parent.
+ */
+function gitIsWorkingRepoRoot(repoPath: string): boolean {
+  const r = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd: repoPath, encoding: "utf8" });
+  if (r.status !== 0) return false;
+  const top = r.stdout.trim();
+  if (!top) return false;
+  try {
+    return realpathSync(top) === realpathSync(repoPath);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The checkout's hooks directory via `git rev-parse --git-path hooks`, resolved absolute.
+ * Honors core.hooksPath and linked work-trees, unlike a hardcoded `.git/hooks`.
+ */
+function gitHooksPath(repoPath: string): string | null {
+  const r = spawnSync("git", ["rev-parse", "--git-path", "hooks"], { cwd: repoPath, encoding: "utf8" });
+  if (r.status !== 0) return null;
+  const p = r.stdout.trim();
+  return p ? resolve(repoPath, p) : null;
+}
+
 export interface InstallOptions {
-  server: string;
-  /** Explicit `owner/repo` project slug; default: derived from the repo path (deriveRepoSlug). */
+  /** Hook type to install; default post-receive (the original behavior). */
+  type?: string;
+  /** Hub url. Required for server types; optional for client types (default: local `ndh run`). */
+  server?: string;
+  /** Explicit `owner/repo` project slug; default: derived (origin remote, then repo path). */
   repository?: string;
   workflow?: string;
   force?: boolean;
 }
 
+/** One post-install hint line per type, printed after the config summary. */
+const TYPE_HINTS: Record<HookType, string> = {
+  "post-receive": "push a branch to this repo to trigger CI (needs `ndh` on the server's PATH)",
+  "pre-receive": "pushes now wait for CI; a failing workflow rejects the push (needs `ndh` on the server's PATH)",
+  "pre-push": "`git push` from this checkout now runs CI first; a failing workflow blocks the push",
+  "post-commit": "every commit now gets an advisory CI run; the commit itself is never blocked",
+};
+
 /**
- * Validate the target bare repo and write its `post-receive` hook (0755). Throws (surfaced by
- * index.ts as `[ndh] <message>`, exit 1) on a bad path, a non-bare repo, or a foreign existing
- * hook without --force.
+ * Validate the target repo for the requested hook type and write the hook (0755). Server types
+ * (post-receive, pre-receive) require a bare repo and `--server`; client types (pre-push,
+ * post-commit) require a working checkout root. Throws (surfaced by index.ts as
+ * `[ndh] <message>`, exit 1) on a bad path, a wrong-shaped repo, an unknown type, or a
+ * foreign existing hook without --force.
  */
 export async function installHook(repoPath: string, opts: InstallOptions, deps: HookDeps = {}): Promise<void> {
+  const type = (opts.type ?? "post-receive") as HookType;
+  if (!HOOK_TYPES.includes(type)) {
+    throw new Error(`unknown hook type: ${opts.type} — valid types: ${HOOK_TYPES.join(", ")}`);
+  }
+  const serverSide = isServerHookType(type);
+  if (serverSide && !opts.server) {
+    throw new Error(`--type ${type} dispatches to a hub — pass --server <url>`);
+  }
+
   if (!(await exists(repoPath))) throw new Error(`no such path: ${repoPath}`);
   if (!(await stat(repoPath)).isDirectory()) throw new Error(`not a directory: ${repoPath}`);
 
-  const isBare = deps.isBareRepo ?? gitIsBareRepo;
-  if (!isBare(repoPath)) {
-    throw new Error(`not a bare git repository: ${repoPath} — pass the path to a bare *.git repo (git init --bare)`);
+  let hooksDir: string;
+  let repository: string;
+  let derivation = "";
+  if (serverSide) {
+    const isBare = deps.isBareRepo ?? gitIsBareRepo;
+    if (!isBare(repoPath)) {
+      throw new Error(`not a bare git repository: ${repoPath} — pass the path to a bare *.git repo (git init --bare)`);
+    }
+    hooksDir = join(repoPath, "hooks");
+    repository = opts.repository ?? deriveRepoSlug(repoPath);
+    if (!opts.repository) derivation = " (derived from the repo path; override with --repository)";
+  } else {
+    const isWorkingRoot = deps.isWorkingRepoRoot ?? gitIsWorkingRepoRoot;
+    if (!isWorkingRoot(repoPath)) {
+      throw new Error(
+        `not a working checkout: ${repoPath} — --type ${type} is a client-side hook; pass the root of a non-bare clone`,
+      );
+    }
+    hooksDir = (deps.hooksPath ?? gitHooksPath)(repoPath) ?? join(repoPath, ".git", "hooks");
+    if (opts.repository) {
+      repository = opts.repository;
+    } else {
+      const origin = (deps.originSlug ?? currentRepoSlug)(repoPath);
+      repository = origin ?? deriveRepoSlug(repoPath);
+      derivation = origin
+        ? " (derived from the origin remote; override with --repository)"
+        : " (derived from the repo path; override with --repository)";
+    }
   }
 
-  const hooksDir = join(repoPath, "hooks");
-  const hookPath = join(hooksDir, "post-receive");
-
+  const hookPath = join(hooksDir, type);
   if (await exists(hookPath)) {
     const current = await readFile(hookPath, "utf8");
     if (!current.includes(HOOK_MARKER) && !opts.force) {
-      throw new Error(`refusing to overwrite an existing post-receive hook at ${hookPath} — pass --force to replace it`);
+      throw new Error(`refusing to overwrite an existing ${type} hook at ${hookPath} — pass --force to replace it`);
     }
   }
 
   await mkdir(hooksDir, { recursive: true });
-  const repository = opts.repository ?? deriveRepoSlug(repoPath);
-  const script = generateHook({ server: opts.server, repository, workflow: opts.workflow });
+  const script = generateHookOfType(type, { server: opts.server, repository, workflow: opts.workflow });
   await writeFile(hookPath, script, { mode: 0o755 });
   await chmod(hookPath, 0o755);
 
-  log(`installed post-receive hook: ${hookPath}`);
-  log(`  server:     ${opts.server}`);
-  log(`  repository: ${repository}${opts.repository ? "" : " (derived from the repo path; override with --repository)"}`);
+  log(`installed ${type} hook: ${hookPath}`);
+  log(`  server:     ${opts.server ?? "(none — CI runs locally via `ndh run`; pass --server to dispatch)"}`);
+  log(`  repository: ${repository}${derivation}`);
   log(`  workflow:   ${opts.workflow ?? "(all workflows)"}`);
-  log("push a branch to this repo to trigger CI (needs `ndh` on the server's PATH)");
+  log(TYPE_HINTS[type]);
 }
 
 export function registerHook(program: Command): void {
   const hook = program
     .command("hook")
-    .description("install git-server hooks that trigger CI on push")
+    .description("install git hooks (server- or client-side) that trigger CI")
     .action(() => {
       hook.help();
     });
 
   hook
     .command("install")
-    .description("write a post-receive hook onto a bare repo so a push triggers CI")
-    .argument("<repo>", "path to a bare git repo (e.g. /srv/git/app.git)")
-    .requiredOption("--server <url>", "hub base url, e.g. http://hub.local:4949")
+    .description("write a git hook so a push or commit triggers CI (see --type)")
+    .argument("<repo>", "target repo: a bare repo for server hooks, a checkout root for client hooks")
+    .option("--type <type>", `hook type: ${HOOK_TYPES.join(" | ")}`, "post-receive")
+    .option(
+      "--server <url>",
+      "hub base url, e.g. http://hub.local:4949 (required for server hooks; switches client hooks from local `ndh run` to dispatch)",
+    )
     .option(
       "--repository <owner/repo>",
-      "project slug for hook runs (default: derived from the repo path, e.g. /srv/git/team/app.git -> team/app)",
+      "project slug for hook runs (default: derived from the origin remote or the repo path)",
     )
     .option("-W, --workflow <path>", "dispatch a specific workflow file (default: all workflows)")
-    .option("--force", "overwrite an existing post-receive hook that ndh did not write")
-    .action(async (repo: string, opts: { server: string; repository?: string; workflow?: string; force?: boolean }) => {
-      await installHook(repo, {
-        server: opts.server,
-        repository: opts.repository,
-        workflow: opts.workflow,
-        force: opts.force,
-      });
-      process.exitCode = 0;
-    });
+    .option("--force", "overwrite an existing hook of the same type that ndh did not write")
+    .action(
+      async (
+        repo: string,
+        opts: { type: string; server?: string; repository?: string; workflow?: string; force?: boolean },
+      ) => {
+        await installHook(repo, {
+          type: opts.type,
+          server: opts.server,
+          repository: opts.repository,
+          workflow: opts.workflow,
+          force: opts.force,
+        });
+        process.exitCode = 0;
+      },
+    );
 }
 
 /** Exposed for tests. */
-export const __test = { gitIsBareRepo };
+export const __test = { gitIsBareRepo, gitIsWorkingRepoRoot, gitHooksPath };
