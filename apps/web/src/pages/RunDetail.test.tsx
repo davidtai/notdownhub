@@ -44,6 +44,8 @@ describe("RunDetail", () => {
               eventName: "push",
               ref: "refs/heads/main",
               sha: "abc1234def",
+              owner: "acme",
+              repo: "widget",
             },
           ],
         };
@@ -76,6 +78,7 @@ describe("RunDetail", () => {
     expect(screen.getByText("#5")).toBeTruthy();
     expect(screen.getByText("Passed")).toBeTruthy();
     expect(screen.getByText("push")).toBeTruthy();
+    expect(screen.getByText("acme/widget")).toBeTruthy(); // project shown on the run-detail header
     expect(screen.getByText("main")).toBeTruthy();
     expect(screen.getByText("abc1234")).toBeTruthy();
 

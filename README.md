@@ -78,6 +78,11 @@ ndh run -j build -m os:ubuntu-latest           # one job / one matrix leg
 > `--event`, `-j/--job`, `-m/--matrix`, `-s/--secret`, `--env`, `-P/--platform`,
 > `-C/--directory`, and more).
 
+> Each run records its project (`owner/repo`) from the checkout's origin remote,
+> so the Runs UI and `ndh status` show which project it belongs to. Without an
+> origin remote, the project falls back to `local/<dirname>`. Pass `--repository
+> owner/name` to override.
+
 By default, `ubuntu-*` jobs run in a Linux container
 (`catthehacker/ubuntu:act-latest`) when Docker is available, and on the host
 otherwise. `macos-latest`, `windows-latest`, and `self-hosted` always run on the

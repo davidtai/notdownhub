@@ -5,6 +5,7 @@ import { usePoll } from "../lib/hooks";
 import { AppBar } from "../components/AppBar";
 import { RunRow } from "../components/RunRow";
 import { Card } from "../components/ui/card";
+import { projectLabel } from "../lib/format";
 import { cn } from "../lib/utils";
 
 const RUNS_INTERVAL = 2500;
@@ -21,26 +22,40 @@ function workflowLabel(run: WorkflowRun): string {
 export function Runs() {
   const runs = usePoll(() => getRuns(0), RUNS_INTERVAL);
   const [filter, setFilter] = useState<string>(ALL);
+  const [project, setProject] = useState<string>(ALL);
 
   const all = useMemo(() => runs.data ?? [], [runs.data]);
 
+  // Runs left after applying the project filter — the set the workflow filter and
+  // its counts are derived from, so the two filters compose.
+  const byProject = useMemo(
+    () => (project === ALL ? all : all.filter((r) => projectLabel(r) === project)),
+    [all, project],
+  );
+
   const workflows = useMemo(() => {
     const map = new Map<string, { key: string; label: string; count: number }>();
-    for (const r of all) {
+    for (const r of byProject) {
       const key = workflowKey(r);
       const cur = map.get(key);
       if (cur) cur.count += 1;
       else map.set(key, { key, label: workflowLabel(r), count: 1 });
     }
     return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
+  }, [byProject]);
+
+  const projects = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const r of all) map.set(projectLabel(r), (map.get(projectLabel(r)) ?? 0) + 1);
+    return [...map.entries()].map(([key, count]) => ({ key, count })).sort((a, b) => a.key.localeCompare(b.key));
   }, [all]);
 
   const shown = useMemo(
-    () => (filter === ALL ? all : all.filter((r) => workflowKey(r) === filter)),
-    [all, filter],
+    () => (filter === ALL ? byProject : byProject.filter((r) => workflowKey(r) === filter)),
+    [byProject, filter],
   );
 
-  const options = [{ key: ALL, label: "All workflows", count: all.length }, ...workflows];
+  const options = [{ key: ALL, label: "All workflows", count: byProject.length }, ...workflows];
 
   return (
     <div className="min-h-full">
@@ -105,7 +120,34 @@ export function Runs() {
           </aside>
 
           {/* Run list */}
-          <Card className="overflow-hidden">
+          <div className="min-w-0">
+            {/* Project filter — every run belongs to a project; filter across them. */}
+            {projects.length > 1 && (
+              <div className="mb-3 flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by project">
+                <span className="eyebrow mr-1">Project</span>
+                {[{ key: ALL, count: all.length }, ...projects].map((p) => {
+                  const active = project === p.key;
+                  return (
+                    <button
+                      key={p.key}
+                      onClick={() => setProject(p.key)}
+                      aria-pressed={active}
+                      className={cn(
+                        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[11px] transition-colors",
+                        active
+                          ? "border-accent bg-accent text-white"
+                          : "border-line text-fg-muted hover:bg-raised hover:text-fg",
+                      )}
+                    >
+                      <span className="truncate">{p.key === ALL ? "All projects" : p.key}</span>
+                      <span className="tnum shrink-0 opacity-70">{p.count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            <Card className="overflow-hidden">
             {runs.initial ? (
               <SkeletonRows />
             ) : runs.error && !runs.data ? (
@@ -127,7 +169,8 @@ export function Runs() {
                 ))}
               </ul>
             )}
-          </Card>
+            </Card>
+          </div>
         </div>
       </main>
     </div>

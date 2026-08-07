@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, GitBranch, GitCommitHorizontal } from "lucide-react";
 import { getRuns, getAttempts, getJobs, getTimeline, type Job, type TimelineRecord } from "../lib/api";
-import { toState, shortRef, shortSha, elapsedMs, timelineSpan } from "../lib/format";
+import { toState, shortRef, shortSha, elapsedMs, timelineSpan, projectLabel } from "../lib/format";
 import { usePoll } from "../lib/hooks";
 import { AppBar } from "../components/AppBar";
 import { JobList } from "../components/JobList";
@@ -75,6 +75,7 @@ export function RunDetail() {
   const ref = shortRef(summary?.ref ?? attempt?.ref);
   const sha = shortSha(summary?.sha ?? attempt?.sha);
   const eventName = summary?.eventName ?? attempt?.eventName;
+  const project = summary ? projectLabel(summary) : null;
   const title = summary?.displayName || summary?.fileName || `Run ${runId}`;
 
   return (
@@ -100,6 +101,7 @@ export function RunDetail() {
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-2.5 text-[12px] text-fg-muted">
                 <StatePill state={headerState} />
+                {project && <span className="truncate font-mono text-[11px]">{project}</span>}
                 {eventName && <Badge variant="outline">{eventName}</Badge>}
                 {ref && (
                   <span className="flex items-center gap-1 font-mono text-[11px]">
