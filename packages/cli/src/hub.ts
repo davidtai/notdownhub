@@ -1,6 +1,8 @@
 import type { Command } from "commander";
 import { spawn, type SpawnOptions } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createNetServer } from "node:net";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import { ensureVendor } from "./vendor.js";
@@ -66,14 +68,77 @@ export function registerHub(program: Command): void {
     .action(async (opts: HubUpOptions) => {
       process.exitCode = await hubUp(opts);
     });
+
+  hub
+    .command("down")
+    .description("stop a hub started by `ndh hub up` (front + Runner.Server) and free its ports")
+    .action(async () => {
+      process.exitCode = await hubDown();
+    });
 }
 
 /** Minimal shape of the spawned child we depend on (kept tiny so tests can fake it). */
 interface ChildLike {
+  pid?: number;
   on(event: "exit", cb: (code: number | null) => void): unknown;
   kill(sig: NodeJS.Signals): unknown;
   stdout?: { on(event: "data", cb: (d: Buffer) => void): unknown } | null;
   stderr?: { on(event: "data", cb: (d: Buffer) => void): unknown } | null;
+}
+
+/** Minimal shape of the front server we depend on for listen/error wiring (real: http.Server). */
+interface ServerLike {
+  on(event: "listening" | "error", cb: (err?: Error) => void): unknown;
+}
+
+/** On-disk record `hub up` writes so `hub down` can stop the right processes. */
+export interface HubPidFile {
+  frontPid: number;
+  childPid: number;
+  port: number;
+  hubPort: number;
+}
+
+/** Path to the hub pid file for the current NDH_HOME. */
+export function hubPidPath(): string {
+  return join(ndhHome(), "hub", "hub.pid");
+}
+
+/**
+ * Resolve whether `port` is bindable right now. Binds an ephemeral listener on 0.0.0.0 (matching how
+ * the front / Runner.Server bind all interfaces) and closes it immediately: resolves false if the
+ * bind errors (e.g. EADDRINUSE), true otherwise. Never throws.
+ */
+export function portFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const srv = createNetServer();
+    srv.once("error", () => resolve(false));
+    srv.once("listening", () => srv.close(() => resolve(true)));
+    srv.listen(port, "0.0.0.0");
+  });
+}
+
+/** True if a process with `pid` currently exists (EPERM means it exists but isn't ours to signal). */
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** Read + validate the hub pid file; returns null if missing or malformed. */
+function readPidFile(path: string): HubPidFile | null {
+  try {
+    const o = JSON.parse(readFileSync(path, "utf8")) as Partial<HubPidFile>;
+    if (typeof o.frontPid === "number" && typeof o.childPid === "number" && typeof o.port === "number" && typeof o.hubPort === "number") {
+      return o as HubPidFile;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -88,6 +153,11 @@ export interface HubDeps {
   onSignal?: (sig: NodeJS.Signals, fn: () => void) => void;
   exit?: (code: number) => void;
   block?: () => Promise<number>;
+  /** Pre-flight: resolve false if a port is already taken. Defaults to a real bind probe. */
+  portFree?: (port: number) => Promise<boolean>;
+  /** Persist / drop the pid file so `ndh hub down` can find these processes. */
+  writePid?: (path: string, data: HubPidFile) => void;
+  removePid?: (path: string) => void;
 }
 
 export interface HubPlan {
@@ -193,6 +263,16 @@ async function hubUp(opts: HubUpOptions, deps: HubDeps = {}): Promise<number> {
   const plan = await prepareHub(opts);
   const { port, scheme, origin, hubPort, host, hubHome, token, env, uiDir, basicAuth } = plan;
 
+  // Pre-flight: refuse before spawning anything if either port is already taken, so a second
+  // `hub up` prints one human line and exits 1 instead of orphaning a fresh Runner.Server child.
+  const isFree = deps.portFree ?? portFree;
+  for (const p of [port, hubPort]) {
+    if (!(await isFree(p))) {
+      log(`a hub is already running on :${p} — run 'ndh hub down' first (or pass --port)`);
+      return 1;
+    }
+  }
+
   // Start the hub log before the cert/TLS block so the certificate path + fingerprint are logged.
   const logPath = initFileLog(join(hubHome, "logs"), "hub");
 
@@ -202,6 +282,9 @@ async function hubUp(opts: HubUpOptions, deps: HubDeps = {}): Promise<number> {
   const startFrontFn = deps.startFront ?? startFront;
   const onSignal = deps.onSignal ?? ((sig, fn) => process.on(sig, fn));
   const exit = deps.exit ?? ((code: number) => process.exit(code));
+  const writePid = deps.writePid ?? ((path, data) => writeFileSync(path, `${JSON.stringify(data)}\n`, { mode: 0o600 }));
+  const removePid = deps.removePid ?? ((path) => rmSync(path, { force: true }));
+  const pidPath = join(hubHome, "hub.pid");
 
   const child = spawnFn(vendorExe("Runner.Server"), ["--urls", `http://*:${hubPort}`], {
     env,
@@ -216,31 +299,145 @@ async function hubUp(opts: HubUpOptions, deps: HubDeps = {}): Promise<number> {
     process.stderr.write(d);
     fileLogWrite(d);
   });
-  child.on("exit", (code) => exit(code ?? 1));
+  child.on("exit", (code) => {
+    dropPid(pidPath, removePid);
+    exit(code ?? 1);
+  });
 
   // Persist job console output so completed runs stay readable after a restart.
   const tee = (deps.startTee ?? startJobLogTee)(hubPort);
+  const stopTee = () => {
+    /* c8 ignore next 3 — tee.stop() failure is a best-effort guard on the shutdown path */
+    try {
+      tee.stop();
+    } catch {
+      /* best effort */
+    }
+  };
   for (const sig of ["SIGINT", "SIGTERM"] as const)
     onSignal(sig, () => {
       // Flush + close the job-log writer before the process exits, so the last batch is durable.
-      /* c8 ignore next 3 — tee.stop() failure is a best-effort guard on the shutdown path */
-      try {
-        tee.stop();
-      } catch {
-        /* best effort */
-      }
+      stopTee();
+      dropPid(pidPath, removePid);
       child.kill(sig);
     });
 
-  startFrontFn({ port, hubPort, uiDir, runnerToken: token || undefined, host, basicAuth, tls, githubToken: opts.githubToken });
+  const front = startFrontFn({ port, hubPort, uiDir, runnerToken: token || undefined, host, basicAuth, tls, githubToken: opts.githubToken });
+
+  // Crash safety: record the pid file once the front is actually listening, and — if it fails to
+  // bind for any reason (a port stolen between the pre-flight check and now, EACCES, …) — kill the
+  // just-spawned Runner.Server child so nothing is left orphaned, then exit 1 with one line.
+  const pidRecord: HubPidFile = { frontPid: process.pid, childPid: child.pid ?? -1, port, hubPort };
+  const server = front as ServerLike | null | undefined;
+  if (server && typeof server.on === "function") {
+    server.on("listening", () => writePid(pidPath, pidRecord));
+    server.on("error", (err) => {
+      log(`could not start the hub front on :${port} — ${err?.message ?? err} (stopping Runner.Server)`);
+      stopTee();
+      child.kill("SIGKILL");
+      dropPid(pidPath, removePid);
+      exit(1);
+    });
+  } else {
+    // No server object handed back (e.g. a test fake) — still record the pid file synchronously.
+    writePid(pidPath, pidRecord);
+  }
 
   log(`hub up on ${scheme}://localhost${port === (scheme === "https" ? 443 : 80) ? "" : `:${port}`}  (ui: ${uiDir ? (basicAuth ? "yes, basic-auth" : "yes, local-only") : "no"}, auth: ${token ? "on" : "OFF"}, mirror: ${opts.mirrorRewrite ? `on @ ${origin}/mirror` : "off"})`);
   log(`logging to ${logPath} (daily rotation)`);
   if (token) log(`runner registration token: ${token}`);
   log(`join a runner:   ndh runner join ${origin}${token ? ` --token ${token}` : ""}${opts.tls && !opts.tlsCert ? " --ca <cert.pem>" : ""}`);
   log(`dispatch a repo: ndh dispatch --server ${origin}`);
+  log(`stop the hub:    ndh hub down`);
   return await (deps.block ?? (() => new Promise<number>(() => {})))();
 }
 
+/** Best-effort pid-file removal on the shutdown path (never throws). */
+function dropPid(path: string, removePid: (path: string) => void): void {
+  /* c8 ignore next 3 — guard on the shutdown path; removePid failure must not mask the exit code */
+  try {
+    removePid(path);
+  } catch {
+    /* best effort */
+  }
+}
+
+/** Injectable seams for `hub down` so signalling/probing is unit-testable without real processes. */
+export interface HubDownDeps {
+  readPid?: (path: string) => HubPidFile | null;
+  removePid?: (path: string) => void;
+  alive?: (pid: number) => boolean;
+  kill?: (pid: number, sig: NodeJS.Signals) => void;
+  portFree?: (port: number) => Promise<boolean>;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** How long to wait after SIGTERM before escalating to SIGKILL. */
+const HUB_DOWN_GRACE_MS = 3000;
+
+/**
+ * Stop a hub started by `ndh hub up`, using the pid file it wrote. Idempotent: with no pid file it
+ * prints "no hub running" and exits 0. If the pid file is stale (the recorded pids are gone) it
+ * refuses to guess — it never port-scans and kills blindly — and instead names any port still held.
+ * When the pids are live it sends SIGTERM, escalates to SIGKILL after a short grace, then verifies
+ * the ports are free.
+ */
+async function hubDown(deps: HubDownDeps = {}): Promise<number> {
+  const readPid = deps.readPid ?? readPidFile;
+  const removePid = deps.removePid ?? ((path) => rmSync(path, { force: true }));
+  const alive = deps.alive ?? pidAlive;
+  const kill = deps.kill ?? ((pid, sig) => process.kill(pid, sig));
+  const isFree = deps.portFree ?? portFree;
+  const sleep = deps.sleep ?? ((ms) => new Promise<void>((r) => setTimeout(r, ms)));
+  const pidPath = hubPidPath();
+
+  const rec = readPid(pidPath);
+  if (!rec) {
+    log("no hub running");
+    return 0;
+  }
+
+  const targets: { label: string; pid: number }[] = [
+    { label: "hub front", pid: rec.frontPid },
+    { label: "Runner.Server", pid: rec.childPid },
+  ].filter((t) => t.pid > 0);
+  const live = targets.filter((t) => alive(t.pid));
+
+  if (live.length === 0) {
+    // Stale pid file: the recorded processes are gone. Never kill by port-scan — just report.
+    const busy: number[] = [];
+    for (const p of [rec.port, rec.hubPort]) if (!(await isFree(p))) busy.push(p);
+    if (busy.length) {
+      log(
+        `stale pid file: recorded pids (${rec.frontPid}, ${rec.childPid}) are not running, but ${busy.map((p) => `:${p}`).join(" and ")} ${busy.length > 1 ? "are" : "is"} still in use by an unknown process — stop it manually`,
+      );
+      return 1;
+    }
+    dropPid(pidPath, removePid);
+    log("no hub running (cleared a stale pid file)");
+    return 0;
+  }
+
+  for (const t of live) {
+    kill(t.pid, "SIGTERM");
+    log(`sent SIGTERM to ${t.label} (pid ${t.pid})`);
+  }
+  await sleep(HUB_DOWN_GRACE_MS);
+  for (const t of live) {
+    if (alive(t.pid)) {
+      kill(t.pid, "SIGKILL");
+      log(`${t.label} (pid ${t.pid}) did not exit — sent SIGKILL`);
+    }
+  }
+
+  dropPid(pidPath, removePid);
+
+  for (const p of [rec.port, rec.hubPort]) {
+    log((await isFree(p)) ? `:${p} is free` : `warning: :${p} is still in use`);
+  }
+  log("hub stopped");
+  return 0;
+}
+
 /** Exposed for tests. */
-export const __test = { prepareHub, hubUp, detectLanIp, isValidPort };
+export const __test = { prepareHub, hubUp, hubDown, detectLanIp, isValidPort, portFree, pidAlive, hubPidPath };
