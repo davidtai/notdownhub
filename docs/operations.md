@@ -196,6 +196,42 @@ Properties (verified against real files):
 
 ---
 
+## Disk retention (`ndh hub prune`)
+
+The hub keeps run records, artifact blobs, and the action mirror cache with no
+age limit. Only the job console logs auto-prune, at 14 days. Run `ndh hub prune`
+to trim the other stores on a retention policy.
+
+Run it on the hub machine. It reads the local `NDH_HOME`. It is safe to run
+while the hub is up: it removes only completed runs.
+
+| Flag | Effect |
+|---|---|
+| `--older-than <days>` | Remove items older than this many days. |
+| `--keep-last <N>` | Keep the N most recent runs per project (and N newest mirror files). |
+| `--runs` | Prune run records with their timelines, logs, and artifacts. |
+| `--mirror` | Prune the action mirror cache. |
+| `--artifacts` | Prune artifact blobs of old runs, and orphaned blob files. |
+| `--dry-run` | Report what a real run removes. Delete nothing. |
+
+With no `--runs`/`--mirror`/`--artifacts` flag, the command prunes all three.
+You must set `--older-than`, `--keep-last`, or both.
+
+A pruned run and its dependent rows, artifact blobs, and job logs are removed
+together, in one transaction. A run never survives with its logs or artifacts
+gone.
+
+```bash
+ndh hub prune --older-than 30 --dry-run       # preview counts and bytes
+ndh hub prune --older-than 30 --keep-last 20  # trim, keep 20 recent per project
+```
+
+The command compacts `hub.db` to reclaim its space. A live hub can hold the lock
+that blocks compaction. To reclaim it later, stop the hub and run the command
+again.
+
+---
+
 ## State & backup
 
 Everything is under `NDH_HOME` (default `~/.notdownhub`). What to protect:
