@@ -180,6 +180,19 @@ DigitalOcean referral link with $25 of credit to try it.
 
 ---
 
+## Working with a team
+
+Teammates do not need `ndh` — only `git`. Put a bare repo on a git server,
+install `ndh` there, and let a hook dispatch each push. The git server is the
+dispatching machine: the hook runs `ndh dispatch` on the server, and the
+team's secrets live in the server account. Teammates watch results in the hub
+UI, or with `ndh watch` and `ndh status --server`. Start the hub with
+`--basic-auth user:pass` to admit their browsers. The full, live-verified
+walkthrough — topology, setup order, secrets placement, branch rules, project
+labels — is in **[docs/collaboration.md](docs/collaboration.md)**.
+
+---
+
 ## Migrate from a GitHub Actions self-hosted runner
 
 Your workflow files do not change. notdownhub runs the same YAML, the same `runs-on` labels, and the same marketplace actions.
