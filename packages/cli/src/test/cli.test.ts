@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli, startServer, makeTarGz } from "./helpers.js";
@@ -124,6 +124,34 @@ test("runner: bare subcommand exits 2; list is empty; start without a runner fai
   const startMissing = await runCli(["runner", "start", "ghost"], { env, cwd: nonGit });
   assert.equal(startMissing.status, 1);
   assert.match(startMissing.stderr, /not found/);
+});
+
+test("runner remove: unknown name exits 1 listing known runners; --force removal is idempotent", async () => {
+  const home = newHome();
+  const env = fileEnv(home);
+  // Seed a real instance dir with a fake listener binary so it is a known runner.
+  const dir = join(home, "runners", "box");
+  mkdirSync(join(dir, "bin"), { recursive: true });
+  writeFileSync(join(dir, "bin", "Runner.Listener"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  chmodSync(join(dir, "bin", "Runner.Listener"), 0o755);
+
+  // Unknown name -> exit 1, and the known instance is listed in the hint.
+  const unknown = await runCli(["runner", "remove", "ghost"], { env, cwd: nonGit });
+  assert.equal(unknown.status, 1);
+  assert.match(unknown.stderr, /no such runner 'ghost'/);
+  assert.match(unknown.stderr, /box/);
+
+  // --force removes offline (no hub) and deletes the dir.
+  const removed = await runCli(["runner", "remove", "box", "--force"], { env, cwd: nonGit });
+  assert.equal(removed.status, 0);
+  assert.match(removed.stderr, /removed runner 'box'/);
+  assert.equal(existsSync(dir), false);
+
+  // Second remove -> idempotent "no such runner" path, exit 1.
+  const again = await runCli(["runner", "remove", "box", "--force"], { env, cwd: nonGit });
+  assert.equal(again.status, 1);
+  assert.match(again.stderr, /no such runner 'box'/);
+  assert.match(again.stderr, /none joined/);
 });
 
 test("hub: bare subcommand prints usage and exits 2", async () => {

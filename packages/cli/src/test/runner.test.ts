@@ -122,6 +122,116 @@ test("start: runs the named runner's listener; auto-selects the sole runner when
   fl.reset();
 });
 
+test("remove: happy path — no listener running, unregisters via the listener, deletes the instance dir", async () => {
+  const home = freshHome();
+  const dir = seedRunner(home, "gone");
+  let removeArgs: [string, string] | null = null;
+  const code = await runner.remove_(
+    "gone",
+    { token: "tok" },
+    {
+      findListener: async () => [],
+      removeExec: async (d, t) => ((removeArgs = [d, t]), 0),
+    },
+  );
+  assert.equal(code, 0);
+  assert.deepEqual(removeArgs, [dir, "tok"]);
+  assert.equal(existsSync(dir), false, "instance dir deleted");
+});
+
+test("remove: a running listener is SIGTERM'd, then removed and deleted", async () => {
+  const home = freshHome();
+  const dir = seedRunner(home, "live");
+  const signals: Array<[number, string]> = [];
+  let calls = 0;
+  const code = await runner.remove_(
+    "live",
+    { token: "t" },
+    {
+      // Alive on the first probe, gone after the SIGTERM.
+      findListener: async () => (calls++ === 0 ? [4242] : []),
+      kill: (pid, sig) => signals.push([pid, sig as string]),
+      delay: async () => {},
+      removeExec: async () => 0,
+    },
+  );
+  assert.equal(code, 0);
+  assert.deepEqual(signals, [[4242, "SIGTERM"]]);
+  assert.equal(existsSync(dir), false);
+});
+
+test("remove: a listener that ignores SIGTERM is SIGKILL'd after the grace window", async () => {
+  const home = freshHome();
+  seedRunner(home, "stubborn");
+  const signals: string[] = [];
+  const code = await runner.remove_(
+    "stubborn",
+    { token: "t" },
+    {
+      findListener: async () => [999], // never exits
+      kill: (_pid, sig) => signals.push(sig as string),
+      delay: async () => {},
+      removeExec: async () => 0,
+    },
+  );
+  assert.equal(code, 0);
+  assert.equal(signals[0], "SIGTERM");
+  assert.ok(signals.includes("SIGKILL"), "escalates to SIGKILL");
+});
+
+test("remove: hub unreachable — warns but still deletes the instance dir", async () => {
+  const home = freshHome();
+  const dir = seedRunner(home, "orphan");
+  const code = await runner.remove_(
+    "orphan",
+    { token: "t" },
+    { findListener: async () => [], removeExec: async () => 1 }, // non-zero == hub unreachable
+  );
+  assert.equal(code, 0, "removal still succeeds locally");
+  assert.equal(existsSync(dir), false, "dir deleted even though the hub still lists it");
+});
+
+test("remove: --force skips the hub unregister entirely", async () => {
+  const home = freshHome();
+  const dir = seedRunner(home, "offline");
+  let removeCalled = false;
+  const code = await runner.remove_(
+    "offline",
+    { token: "t", force: true },
+    { findListener: async () => [], removeExec: async () => ((removeCalled = true), 0) },
+  );
+  assert.equal(code, 0);
+  assert.equal(removeCalled, false, "--force must not invoke the listener remove");
+  assert.equal(existsSync(dir), false);
+});
+
+test("remove: the default remove-exec really spawns the instance's listener (config.sh remove counterpart)", async () => {
+  const home = freshHome();
+  // A fake listener that asserts it was called as `remove --token <t>` and exits 0.
+  const dir = join(home, "runners", "realexec");
+  const exe = runner.listenerExe(dir);
+  mkdirSync(join(exe, ".."), { recursive: true });
+  writeFileSync(exe, `#!/bin/sh\n[ "$1" = "remove" ] && [ "$2" = "--token" ] && [ "$3" = "sekret" ] || exit 3\nexit 0\n`, {
+    mode: 0o755,
+  });
+  // removeExec is NOT injected -> defaultRemoveExec runs the real subprocess.
+  const code = await runner.remove_("realexec", { token: "sekret" }, { findListener: async () => [] });
+  assert.equal(code, 0, "listener saw `remove --token sekret` and exited 0");
+  assert.equal(existsSync(dir), false, "instance dir deleted after a successful unregister");
+});
+
+test("defaultToken: explicit --token wins; else the co-located hub token; else the default", async () => {
+  const home = freshHome();
+  // No explicit token, no hub file -> the literal default.
+  assert.equal(await runner.defaultToken({ token: "notdownhub" }), "notdownhub");
+  // Explicit token always wins.
+  assert.equal(await runner.defaultToken({ token: "explicit" }), "explicit");
+  // A co-located hub's persisted registration token is reused when no explicit token is given.
+  mkdirSync(join(home, "hub"), { recursive: true });
+  writeFileSync(join(home, "hub", "runner-token"), "hubtoken\n");
+  assert.equal(await runner.defaultToken({ token: "notdownhub" }), "hubtoken");
+});
+
 test("defaultName / defaultLabels reflect host, platform and arch", () => {
   assert.equal(runner.defaultName(), `${hostname()}-ndh`);
   assert.equal(withPlatform("darwin", "arm64", runner.defaultLabels), "self-hosted,macOS,ARM64");

@@ -219,5 +219,5 @@ Override the root with the `NDH_HOME` environment variable.
 | `packages/cli/src/runcmd.ts` | `run` / `dispatch` → Runner.Client, default `-P` mappings |
 | `packages/cli/src/hub.ts`    | `hub up` → Runner.Server + env wiring + front |
 | `packages/cli/src/front.ts`  | Single-port hub HTTP front (proxy / mirror / UI / JWT) |
-| `packages/cli/src/runner.ts` | `runner join/start/list` → Runner.Listener |
+| `packages/cli/src/runner.ts` | `runner join/start/list/remove` → Runner.Listener |
 | `packages/cli/src/status.ts` | `status` → agent + run REST reads |

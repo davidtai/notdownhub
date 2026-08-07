@@ -264,6 +264,41 @@ zero or several it asks you to specify which. `ndh runner list` prints joined
 names. To start at boot, wrap it in a service (below) or use the
 [Docker runner image](install.md#4-docker-fleet-runner-image).
 
+### Removing
+
+```bash
+ndh runner remove build-box-1 --token <token>
+```
+
+```
+[ndh] stopped listener for 'build-box-1'
+# Runner removal
+√ Runner removed successfully
+[ndh] unregistered 'build-box-1' from the hub
+[ndh] removed runner 'build-box-1'
+```
+
+`remove` retires an instance in three steps. First it stops the listener process
+if one is running. It sends SIGTERM, then SIGKILL after a 5-second grace. Next it
+unregisters the agent from the hub with the vendored runner's own removal flow.
+This is the counterpart of `join`'s configure step. Last it deletes
+`runners/<name>/`.
+
+Without this the agent lingers **Offline** in the UI and in `ndh status` forever.
+
+- **Token handling:** the unregister step authenticates with the hub's
+  registration token, same as `join`. Pass `--token <token>`. When `remove` runs
+  on the hub machine, it also reads the hub's persisted `hub/runner-token`
+  automatically.
+- **`--force`:** skip the hub step and remove the instance offline. Use it when
+  the hub is gone for good. The agent is not unregistered, so delete it from the
+  hub separately if the hub still exists.
+- **Hub unreachable:** `remove` does not hang if the hub cannot be reached. It
+  warns that the hub can still list the agent. It then stops the listener and
+  deletes the directory.
+- **Unknown name / idempotent:** an unknown name exits `1` and lists the known
+  instances. A second `remove` of an already-removed runner takes the same path.
+
 ### Multiple runners per machine
 
 Each runner is a separate `runners/<name>/` instance (its own `bin/`,
