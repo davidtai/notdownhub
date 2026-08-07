@@ -543,7 +543,7 @@ export async function rerunWorkflow(runId: number, opts: { failed?: boolean } = 
 /** A deliberate hub-side refusal whose message is meant for the operator's eyes, verbatim. */
 export class HubRefusalError extends Error {}
 
-// ── Settings (read-only view of secrets/variables) ──────────────────────────
+// ── Settings (secrets/variables) ─────────────────────────────────────────────
 export interface ConfigInfo {
   /** Where secrets live: keychain / libsecret / file. */
   backend: string;
@@ -557,6 +557,71 @@ export interface ConfigInfo {
 export async function getConfig(): Promise<ConfigInfo> {
   const d = await getJson<Partial<ConfigInfo>>(`/api/local/config`);
   return { backend: d.backend ?? "unknown", secrets: d.secrets ?? [], vars: d.vars ?? [] };
+}
+
+/** The env-identifier rule a secret/var name must satisfy — same as the CLI's `validEnvName`. */
+export function validEnvName(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+}
+
+/** Outcome of a settings write; `error` carries the hub's message verbatim (e.g. the keychain hint). */
+export interface WriteResult {
+  ok: boolean;
+  status: number;
+  error: string | null;
+}
+
+async function writeLocal(path: string, init: RequestInit): Promise<WriteResult> {
+  try {
+    const res = await fetch(path, { ...init, headers: { ...init.headers, accept: "application/json" } });
+    if (res.ok) return { ok: true, status: res.status, error: null };
+    let error: string | null = null;
+    try {
+      const body = (await res.json()) as { error?: unknown };
+      if (typeof body?.error === "string") error = body.error;
+    } catch {
+      /* non-JSON deny body (401/403 gate text) — fall through to the status */
+    }
+    return { ok: false, status: res.status, error: error ?? `HTTP ${res.status}` };
+  } catch {
+    return { ok: false, status: 0, error: "network error — is the hub running?" };
+  }
+}
+
+/**
+ * POST /api/local/secrets — store a secret through the hub's own `ndh secrets`
+ * store (#145). The value is sent EXACTLY as typed (byte-exact, like piped
+ * stdin) and is write-only: no response or list ever returns it.
+ */
+export function addSecret(name: string, value: string, scope = "global"): Promise<WriteResult> {
+  return writeLocal("/api/local/secrets", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, value, scope }),
+  });
+}
+
+/** DELETE /api/local/secrets?name=…&scope=… — remove a secret (idempotent). */
+export function deleteSecret(name: string, scope = "global"): Promise<WriteResult> {
+  return writeLocal(`/api/local/secrets?name=${encodeURIComponent(name)}&scope=${encodeURIComponent(scope)}`, {
+    method: "DELETE",
+  });
+}
+
+/** POST /api/local/vars — store a plain variable via the `ndh vars` store (#145). */
+export function addVar(name: string, value: string, scope = "global"): Promise<WriteResult> {
+  return writeLocal("/api/local/vars", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, value, scope }),
+  });
+}
+
+/** DELETE /api/local/vars?name=…&scope=… — remove a variable (idempotent). */
+export function deleteVar(name: string, scope = "global"): Promise<WriteResult> {
+  return writeLocal(`/api/local/vars?name=${encodeURIComponent(name)}&scope=${encodeURIComponent(scope)}`, {
+    method: "DELETE",
+  });
 }
 
 // ── Pairing ─────────────────────────────────────────────────────────────────

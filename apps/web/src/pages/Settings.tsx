@@ -1,15 +1,29 @@
-import { useMemo } from "react";
-import { KeyRound, Variable, Lock, Tag, TriangleAlert } from "lucide-react";
-import { getConfig } from "../lib/api";
+import { useMemo, useState } from "react";
+import { KeyRound, Variable, Lock, Tag, TriangleAlert, Trash2, Info } from "lucide-react";
+import {
+  getConfig,
+  addSecret,
+  deleteSecret,
+  addVar,
+  deleteVar,
+  validEnvName,
+  type WriteResult,
+} from "../lib/api";
 import { usePoll } from "../lib/hooks";
 import { AppBar } from "../components/AppBar";
 import { Card } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
 
 const GLOBAL = "global";
 
 function scopeLabel(scope: string): string {
   return scope === GLOBAL ? "global" : scope;
+}
+
+/** The CLI's invalid-name message, mirrored so the form and `ndh` agree word-for-word. */
+function badNameMsg(name: string): string {
+  return `invalid name '${name}' — use letters, digits, and underscore; must not start with a digit`;
 }
 
 export function Settings() {
@@ -26,8 +40,8 @@ export function Settings() {
         <div className="mb-5">
           <h1 className="text-lg font-semibold text-fg">Secrets and variables</h1>
           <p className="mt-0.5 max-w-2xl text-[13px] text-fg-muted">
-            Values injected into workflow runs on this hub. This view is read-only — add or change
-            them from the CLI. Secret values are never shown here.
+            Values injected into workflow runs dispatched from this hub. Secret values are
+            write-only — once stored, they are never shown here.
           </p>
         </div>
 
@@ -42,6 +56,8 @@ export function Settings() {
           </Card>
         ) : (
           <div className="flex flex-col gap-6">
+            <DispatchRealityNote />
+
             {/* Secrets */}
             <section>
               <div className="mb-2 flex items-center justify-between">
@@ -66,7 +82,7 @@ export function Settings() {
                   />
                 ) : (
                   <table className="w-full text-left text-[13px]">
-                    <THead cols={["Scope", "Name", "Value"]} />
+                    <THead cols={["Scope", "Name", "Value", ""]} />
                     <tbody className="divide-y divide-line-muted">
                       {secrets.map((s) => (
                         <tr key={`${s.scope}/${s.name}`} className="hover:bg-raised">
@@ -80,11 +96,15 @@ export function Settings() {
                               hidden
                             </span>
                           </Td>
+                          <Td className="w-12 text-right">
+                            <DeleteSecretButton name={s.name} scope={s.scope} onDone={cfg.refresh} />
+                          </Td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 )}
+                {!cfg.initial && <AddEntryForm kind="secret" onDone={cfg.refresh} />}
               </Card>
             </section>
 
@@ -105,7 +125,7 @@ export function Settings() {
                   />
                 ) : (
                   <table className="w-full text-left text-[13px]">
-                    <THead cols={["Scope", "Name", "Value"]} />
+                    <THead cols={["Scope", "Name", "Value", ""]} />
                     <tbody className="divide-y divide-line-muted">
                       {vars.map((v) => (
                         <tr key={`${v.scope}/${v.name}`} className="hover:bg-raised">
@@ -114,11 +134,15 @@ export function Settings() {
                           </Td>
                           <Td className="font-mono text-fg">{v.name}</Td>
                           <Td className="max-w-0 truncate font-mono text-fg-muted">{v.value}</Td>
+                          <Td className="w-12 text-right">
+                            <DeleteVarButton name={v.name} scope={v.scope} onDone={cfg.refresh} />
+                          </Td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 )}
+                {!cfg.initial && <AddEntryForm kind="var" onDone={cfg.refresh} />}
               </Card>
             </section>
           </div>
@@ -128,12 +152,271 @@ export function Settings() {
   );
 }
 
+/**
+ * The #47/#102 reality, stated where the forms are: values resolve on the machine that
+ * DISPATCHES a run, and this page edits the hub host's store — so it affects hook and
+ * schedule runs dispatched from this host, not a laptop dispatching remotely.
+ */
+function DispatchRealityNote() {
+  return (
+    <div className="flex items-start gap-2.5 rounded-lg border border-line bg-raised/50 px-4 py-3 text-[12.5px] text-fg-muted">
+      <Info size={15} className="mt-0.5 shrink-0 text-accent" />
+      <p>
+        Secrets and variables resolve on the <span className="font-medium text-fg">dispatching machine</span>.
+        Values managed here live on this hub host and are used by runs dispatched from it — hook and
+        schedule runs. A laptop dispatching remotely still uses its own local store.{" "}
+        <a
+          className="text-accent hover:underline"
+          href="https://github.com/davidtai/notdownhub/blob/main/docs/collaboration.md#where-secrets-live-and-why"
+          target="_blank"
+          rel="noreferrer"
+        >
+          How values reach a run
+        </a>
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Add-secret / add-variable form. Writes through the gated /api/local endpoints, which call
+ * the same store the CLI uses. The value is sent EXACTLY as typed (byte-exact, like piped
+ * stdin — #135): no newline is added or removed, so a trailing newline exists only if typed.
+ */
+function AddEntryForm({ kind, onDone }: { kind: "secret" | "var"; onDone: () => void }) {
+  const isSecret = kind === "secret";
+  const noun = isSecret ? "secret" : "variable";
+  const [name, setName] = useState("");
+  const [value, setValue] = useState("");
+  const [scopeKind, setScopeKind] = useState<"global" | "repo">("global");
+  const [repo, setRepo] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    if (!validEnvName(name)) {
+      setError(badNameMsg(name));
+      return;
+    }
+    if (value === "") {
+      setError(`empty ${noun} value`);
+      return;
+    }
+    const scope = scopeKind === "global" ? GLOBAL : repo.trim();
+    if (scopeKind === "repo" && !/^[^/\s]+\/[^/\s]+$/.test(scope)) {
+      setError("repository scope must be owner/name");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r: WriteResult = isSecret ? await addSecret(name, value, scope) : await addVar(name, value, scope);
+      if (!r.ok) {
+        setError(r.error ?? `HTTP ${r.status}`);
+        return;
+      }
+      setName("");
+      setValue("");
+      onDone();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="border-t border-line px-4 py-3">
+      <div className="flex flex-wrap items-start gap-2">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          aria-label={`New ${noun} name`}
+          placeholder={isSecret ? "NAME (e.g. NPM_TOKEN)" : "NAME (e.g. DEPLOY_TARGET)"}
+          spellCheck={false}
+          className="h-8 w-48 rounded-md border border-line bg-surface px-2.5 font-mono text-[12px] text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-1 focus:ring-accent"
+        />
+        {isSecret ? (
+          <textarea
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            aria-label="New secret value"
+            placeholder="value (multiline is safe — e.g. a PEM key)"
+            rows={value.includes("\n") ? 4 : 1}
+            spellCheck={false}
+            className="min-h-8 min-w-64 flex-1 rounded-md border border-line bg-surface px-2.5 py-1.5 font-mono text-[12px] text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-1 focus:ring-accent"
+          />
+        ) : (
+          <input
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            aria-label="New variable value"
+            placeholder="value (visible — variables are not secret)"
+            spellCheck={false}
+            className="h-8 min-w-64 flex-1 rounded-md border border-line bg-surface px-2.5 font-mono text-[12px] text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-1 focus:ring-accent"
+          />
+        )}
+        <select
+          value={scopeKind}
+          onChange={(e) => setScopeKind(e.target.value as "global" | "repo")}
+          aria-label={`New ${noun} scope`}
+          className="h-8 rounded-md border border-line bg-surface px-2 text-[12px] text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+        >
+          <option value="global">global</option>
+          <option value="repo">repository…</option>
+        </select>
+        {scopeKind === "repo" && (
+          <input
+            value={repo}
+            onChange={(e) => setRepo(e.target.value)}
+            aria-label={`New ${noun} repository (owner/name)`}
+            placeholder="owner/name"
+            spellCheck={false}
+            className="h-8 w-40 rounded-md border border-line bg-surface px-2.5 font-mono text-[12px] text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-1 focus:ring-accent"
+          />
+        )}
+        <Button type="submit" variant="outline" size="sm" disabled={busy}>
+          {isSecret ? "Add secret" : "Add variable"}
+        </Button>
+      </div>
+      {isSecret && (
+        <p className="mt-1.5 text-[11px] text-fg-subtle">
+          Stored exactly as typed — a trailing newline is part of the value only if you type one.
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="mt-1.5 text-[12px] text-fail">
+          {error}
+        </p>
+      )}
+    </form>
+  );
+}
+
+/** Per-row secret delete, behind a confirm dialog (a secret value is gone for good). */
+function DeleteSecretButton({ name, scope, onDone }: { name: string; scope: string; onDone: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const doDelete = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await deleteSecret(name, scope);
+      if (!r.ok) {
+        setError(r.error ?? `HTTP ${r.status}`);
+        return;
+      }
+      setConfirming(false);
+      onDone();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label={`Delete secret ${name} (${scopeLabel(scope)})`}
+        title="Delete secret"
+        onClick={() => setConfirming(true)}
+      >
+        <Trash2 size={14} />
+      </Button>
+      {confirming && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div
+            role="dialog"
+            aria-label="Confirm delete secret"
+            className="w-full max-w-sm rounded-lg border border-line bg-surface p-5 text-left shadow-lg"
+          >
+            <h2 className="text-sm font-semibold text-fg">
+              Delete secret <span className="font-mono">{name}</span>?
+            </h2>
+            <p className="mt-2 text-[13px] text-fg-muted">
+              Scope: <span className="font-mono">{scopeLabel(scope)}</span>. Runs dispatched from
+              this hub can no longer resolve it, and the value can&apos;t be recovered.
+            </p>
+            {error && (
+              <p role="alert" className="mt-2 text-[12px] text-fail">
+                {error}
+              </p>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={busy}
+                onClick={() => {
+                  setConfirming(false);
+                  setError(null);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button variant="default" size="sm" disabled={busy} onClick={doDelete}>
+                Delete
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Per-row variable delete — no confirm (the value stays visible right up to the click). */
+function DeleteVarButton({ name, scope, onDone }: { name: string; scope: string; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const doDelete = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await deleteVar(name, scope);
+      if (!r.ok) {
+        setError(r.error ?? `HTTP ${r.status}`);
+        return;
+      }
+      onDone();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      {error && (
+        <span role="alert" className="text-[11px] text-fail">
+          {error}
+        </span>
+      )}
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label={`Delete variable ${name} (${scopeLabel(scope)})`}
+        title="Delete variable"
+        disabled={busy}
+        onClick={doDelete}
+      >
+        <Trash2 size={14} />
+      </Button>
+    </span>
+  );
+}
+
 function THead({ cols }: { cols: string[] }) {
   return (
     <thead>
       <tr className="border-b border-line">
-        {cols.map((c) => (
-          <th key={c} className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-fg-subtle">
+        {cols.map((c, i) => (
+          <th
+            key={`${c}-${i}`}
+            className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-fg-subtle"
+          >
             {c}
           </th>
         ))}
@@ -146,20 +429,19 @@ function Td({ children, className }: { children: React.ReactNode; className?: st
   return <td className={`px-4 py-2.5 align-middle ${className ?? ""}`}>{children}</td>;
 }
 
+/** Empty state: the form right below is the primary path now; the CLI copy is secondary. */
 function EmptyRow({ icon, label, example }: { icon: React.ReactNode; label: string; example: string }) {
   return (
-    <div className="px-4 py-10 text-center">
+    <div className="px-4 py-8 text-center">
       <span className="inline-flex items-center gap-2 text-[13px] text-fg-muted">
         <span className="text-fg-subtle">{icon}</span>
-        {label}
+        {label} Add one with the form below.
       </span>
       <p className="mx-auto mt-1.5 max-w-md text-[12px] text-fg-subtle">
-        These are your own — notdownhub requires none. Manage them from the CLI on the machine
-        that runs <code className="font-mono">ndh dispatch</code>. For example:
+        These are your own — notdownhub requires none. You can also manage them from the CLI on the
+        machine that runs <code className="font-mono">ndh dispatch</code>, for example{" "}
+        <code className="rounded-md bg-raised px-1.5 py-0.5 font-mono text-[11px] text-fg">{example}</code>
       </p>
-      <div className="mt-2">
-        <code className="rounded-md bg-raised px-2.5 py-1 font-mono text-[12px] text-fg">{example}</code>
-      </div>
     </div>
   );
 }
