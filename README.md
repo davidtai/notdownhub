@@ -10,7 +10,7 @@
 **GitHub can go down. Your CI does not have to.**
 
 [![ci](https://github.com/davidtai/notdownhub/actions/workflows/ci.yml/badge.svg)](https://github.com/davidtai/notdownhub/actions/workflows/ci.yml)
-![npm](https://img.shields.io/badge/npm-coming%20soon-lightgrey)
+[![npm](https://img.shields.io/npm/v/notdownhub)](https://www.npmjs.com/package/notdownhub)
 ![status](https://img.shields.io/badge/status-alpha-orange)
 [![website](https://img.shields.io/badge/site-notdownhub.com-f2663b)](https://notdownhub.com)
 
