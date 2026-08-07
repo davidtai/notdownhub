@@ -17,29 +17,32 @@ const ENDGROUP = /##\[endgroup\]/;
 
 export type LogNode =
   | { kind: "line"; text: string }
-  | { kind: "group"; title: string; children: LogNode[] };
+  /** `closed` is true once a matching `##[endgroup]` was seen — i.e. the group has finished
+   *  (vs. one still streaming). The view uses it to collapse completed groups, GitHub-style. */
+  | { kind: "group"; title: string; children: LogNode[]; closed: boolean };
 
 /**
  * Fold a flat list of console lines into a tree of lines and (possibly nested)
  * groups. Unbalanced markers degrade gracefully — an unclosed group simply runs
- * to the end, and a stray endgroup is ignored.
+ * to the end (and stays `closed: false`), and a stray endgroup is ignored.
  */
 export function parseLogGroups(lines: string[]): LogNode[] {
   const root: LogNode[] = [];
-  const stack: { title: string; children: LogNode[] }[] = [];
+  const stack: Extract<LogNode, { kind: "group" }>[] = [];
   const current = () => (stack.length ? stack[stack.length - 1].children : root);
 
   for (const raw of lines) {
     const line = stripAnsi(raw);
     const g = line.match(GROUP);
     if (g) {
-      const node = { kind: "group" as const, title: g[1].trim() || "Group", children: [] };
+      const node = { kind: "group" as const, title: g[1].trim() || "Group", children: [], closed: false };
       current().push(node);
       stack.push(node);
       continue;
     }
     if (ENDGROUP.test(line)) {
-      if (stack.length) stack.pop();
+      const top = stack.pop();
+      if (top) top.closed = true;
       continue;
     }
     current().push({ kind: "line", text: line });

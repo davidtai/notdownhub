@@ -44,11 +44,14 @@ function LogLine({ text, depth }: { text: string; depth: number }) {
 }
 
 function Group({ node, depth }: { node: Extract<LogNode, { kind: "group" }>; depth: number }) {
-  const [open, setOpen] = useState(true);
+  // GitHub Actions parity: a group still streaming (no `##[endgroup]` yet) stays expanded so its
+  // live output is visible; a completed group collapses by default. A user click overrides and sticks.
+  const [override, setOverride] = useState<boolean | null>(null);
+  const open = override ?? !node.closed;
   return (
     <div>
       <button
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => setOverride(!open)}
         aria-expanded={open}
         className="flex w-full items-center gap-1.5 py-1 pr-3 text-left transition-colors hover:bg-raised"
         style={{ paddingLeft: 12 + depth * 14 }}

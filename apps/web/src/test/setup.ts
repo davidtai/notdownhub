@@ -1,16 +1,18 @@
 import { afterEach, beforeEach, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
-import { MockEventSource, resetMatchMedia } from "./helpers";
+import { MockEventSource, MockResizeObserver, resetMatchMedia } from "./helpers";
 
-// jsdom ships no matchMedia, EventSource, or clipboard. Install controllable
-// stand-ins so the theme engine, log stream, and copy button run under test.
-// Each is reset before every test so cases never leak into one another.
+// jsdom ships no matchMedia, EventSource, ResizeObserver, or clipboard. Install
+// controllable stand-ins so the theme engine, log stream, auto-scroll, and copy
+// button run under test. Each is reset before every test so cases never leak.
 
 beforeEach(() => {
   resetMatchMedia();
   MockEventSource.reset();
+  MockResizeObserver.reset();
 
   globalThis.EventSource = MockEventSource as unknown as typeof EventSource;
+  globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
 
   // Clipboard: default to a working async writeText; tests may override.
   Object.defineProperty(globalThis.navigator, "clipboard", {

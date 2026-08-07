@@ -50,6 +50,7 @@ export function JobLog({
   const [pinned, setPinned] = useState(true);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(pinned);
   pinnedRef.current = pinned;
   const stepsRef = useRef(steps);
@@ -77,7 +78,10 @@ export function JobLog({
     es.onerror = () => setConnected(false);
     const onLog = (ev: MessageEvent) => {
       try {
-        const data = JSON.parse(ev.data) as { record?: { value?: string[]; stepId?: string } };
+        const data = JSON.parse(ev.data) as { timelineId?: string; record?: { value?: string[]; stepId?: string } };
+        // The hub multiplexes every job's console onto one feed; keep only this job's timeline
+        // (the `?timelineId=` query param is advisory — the hub does not filter server-side).
+        if (data.timelineId && data.timelineId !== job.timeLineId) return;
         const value = data.record?.value;
         if (!value?.length) return;
         const cur = stepsRef.current;
@@ -103,9 +107,12 @@ export function JobLog({
     };
   }, [job?.timeLineId, jobActive]);
 
-  // Historical fallback: a finished job whose live stream yielded nothing.
+  // Once the job is finished, load the persisted (complete) console from the hub DB and show it.
+  // The live buffer is ephemeral and lossy — lines can arrive attributed to the job record before
+  // steps load, or flush right as the job ends and the stream closes — so a watched-to-completion
+  // job must fall back to the retained log instead of whatever the live stream happened to capture.
   useEffect(() => {
-    if (!job || jobActive || hasLive) return;
+    if (!job || jobActive) return;
     let alive = true;
     setHistorical("loading");
     getJobLogs(runId, job.timeLineId).then((r) => {
@@ -114,7 +121,7 @@ export function JobLog({
     return () => {
       alive = false;
     };
-  }, [job?.timeLineId, jobActive, hasLive, runId]);
+  }, [job?.timeLineId, jobActive, runId]);
 
   // Auto-expand the running step so its output is visible without a click.
   useEffect(() => {
@@ -124,12 +131,26 @@ export function JobLog({
     }
   }, [steps]);
 
-  // Keep the view pinned to the newest output while streaming.
-  useLayoutEffect(() => {
-    if (pinnedRef.current && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [liveByStep, expanded]);
+  const stickToBottom = () => {
+    const el = scrollRef.current;
+    if (pinnedRef.current && el) el.scrollTop = el.scrollHeight;
+  };
+
+  // Immediate stick on the common content updates (new lines, a step folding).
+  useLayoutEffect(stickToBottom, [liveByStep, expanded]);
+
+  // Robust auto-scroll: a ResizeObserver re-sticks on ANY content-height change — not only the
+  // few state updates a dependency array can name. Previously a growth the deps didn't cover
+  // (step rows re-rendering, the job finishing, the retained log loading) left the view stranded
+  // mid-log while the control still read "Pinned". Observing the content element catches them all.
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => stickToBottom());
+    ro.observe(content);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -145,7 +166,8 @@ export function JobLog({
       return next;
     });
 
-  const liveMode = hasLive || jobActive;
+  // Stream while the job is active; a finished job renders the retained (complete) log instead.
+  const liveMode = jobActive;
   const retained = typeof historical === "object" ? historical : null;
 
   return (
@@ -170,11 +192,12 @@ export function JobLog({
             </span>
             <button
               onClick={() => {
-                setPinned(true);
-                if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+                const next = !pinned;
+                setPinned(next);
+                if (next && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
               }}
               aria-pressed={pinned}
-              title="Pin to bottom"
+              title={pinned ? "Following new output — click to unpin" : "Pin to bottom and follow output"}
               className={cn(
                 "inline-flex min-h-9 items-center gap-1 rounded-md px-2 text-[12px] transition-colors",
                 pinned ? "bg-raised text-accent" : "text-fg-muted hover:text-fg",
@@ -192,6 +215,7 @@ export function JobLog({
         onScroll={onScroll}
         className="min-h-0 flex-1 overflow-auto [-webkit-overflow-scrolling:touch]"
       >
+        <div ref={contentRef}>
         {loading && !records && !hasLive ? (
           <StepSkeleton />
         ) : !job ? (
@@ -265,6 +289,15 @@ export function JobLog({
               })}
             </ul>
 
+            {/* Live lines the hub attributed to the job (not a specific step) — e.g. a burst
+                flushed before the step records loaded. Shown so they are never orphaned. */}
+            {liveMode && liveByStep[FALLBACK_KEY]?.length ? (
+              <section className="border-t border-line">
+                <p className="eyebrow px-3 pb-1 pt-2.5">Job output</p>
+                <LogGroups lines={liveByStep[FALLBACK_KEY]} />
+              </section>
+            ) : null}
+
             {!liveMode &&
               (historical === "loading" ? (
                 <Note>Loading logs…</Note>
@@ -278,6 +311,7 @@ export function JobLog({
               ) : null)}
           </>
         )}
+        </div>
       </div>
     </div>
   );

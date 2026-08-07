@@ -99,6 +99,36 @@ export class MockEventSource {
   }
 }
 
+// ── ResizeObserver ─────────────────────────────────────────────────────────────
+// jsdom ships no ResizeObserver; the log view uses one to keep a pinned view stuck
+// to the bottom on any content-height change. A controllable stand-in lets a test
+// fire a "resize" on demand (no layout engine, no timers).
+export class MockResizeObserver {
+  static instances: MockResizeObserver[] = [];
+  cb: ResizeObserverCallback;
+  elements = new Set<Element>();
+  constructor(cb: ResizeObserverCallback) {
+    this.cb = cb;
+    MockResizeObserver.instances.push(this);
+  }
+  observe(el: Element) {
+    this.elements.add(el);
+  }
+  unobserve(el: Element) {
+    this.elements.delete(el);
+  }
+  disconnect() {
+    this.elements.clear();
+  }
+  static reset() {
+    MockResizeObserver.instances = [];
+  }
+  /** Fire every live observer's callback, simulating a content-size change. */
+  static trigger() {
+    for (const o of MockResizeObserver.instances) o.cb([], o as unknown as ResizeObserver);
+  }
+}
+
 // ── fetch ────────────────────────────────────────────────────────────────────
 export interface RouteResult {
   status?: number;

@@ -41,6 +41,14 @@ describe("parseLogGroups", () => {
     expect(grp.children).toHaveLength(2);
   });
 
+  it("marks a group closed only once its endgroup is seen", () => {
+    const tree = parseLogGroups(["##[group]Done", "x", "##[endgroup]", "##[group]Live", "y"]);
+    const done = tree[0] as Extract<LogNode, { kind: "group" }>;
+    const live = tree[1] as Extract<LogNode, { kind: "group" }>;
+    expect(done.closed).toBe(true); // terminated
+    expect(live.closed).toBe(false); // still streaming
+  });
+
   it("ignores a stray endgroup", () => {
     const tree = parseLogGroups(["##[endgroup]", "a"]);
     expect(tree).toEqual([{ kind: "line", text: "a" }]);

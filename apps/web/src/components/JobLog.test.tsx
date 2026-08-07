@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { JobLog } from "./JobLog";
 import type { Job, TimelineRecord } from "../lib/api";
-import { MockEventSource, mockFetch, routes } from "../test/helpers";
+import { MockEventSource, MockResizeObserver, mockFetch, routes } from "../test/helpers";
 
 function job(over: Partial<Job>): Job {
   return {
@@ -233,5 +233,89 @@ describe("JobLog — live streaming", () => {
     const es = MockEventSource.last();
     act(() => es.emit("log", { record: { value: ["job-level line"] } }));
     expect(screen.getByText("job-level line")).toBeTruthy();
+  });
+});
+
+describe("JobLog — streaming correctness (#28) and auto-scroll (#30)", () => {
+  const activeJob = job({ status: "inProgress", result: null });
+  const steps = [
+    task({ id: "s1", name: "Checkout", order: 1, state: "completed", result: "succeeded" }),
+    task({ id: "s2", name: "Build", order: 2, state: "inProgress", result: null, finishTime: null }),
+  ];
+
+  it("ignores SSE frames from a different job's timeline", () => {
+    mockFetch(() => ({ status: 404 }));
+    render(<JobLog runId={1} job={activeJob} records={steps} loading={false} />);
+    const es = MockEventSource.last();
+    act(() => es.open());
+    // A frame for this job's timeline is shown…
+    act(() => es.emit("log", { timelineId: "tl1", record: { value: ["mine"], stepId: "s2" } }));
+    expect(screen.getByText("mine")).toBeTruthy();
+    // …but a frame tagged with another timeline (feed is multiplexed) is dropped.
+    act(() => es.emit("log", { timelineId: "other", record: { value: ["not-mine"], stepId: "s2" } }));
+    expect(screen.queryByText("not-mine")).toBeNull();
+  });
+
+  it("keeps job-level lines visible once step rows load (no orphaning)", () => {
+    mockFetch(() => ({ status: 404 }));
+    const { rerender } = render(<JobLog runId={1} job={activeJob} records={[]} loading={false} />);
+    const es = MockEventSource.last();
+    act(() => es.open());
+    // Lines arrive before the timeline is known → job-level bucket, shown as the sole content.
+    act(() => es.emit("log", { record: { value: ["early job line"] } }));
+    expect(screen.getByText("early job line")).toBeTruthy();
+    // The step timeline then loads. Previously these lines were orphaned and vanished; now a
+    // "Job output" section keeps them on screen.
+    rerender(<JobLog runId={1} job={activeJob} records={steps} loading={false} />);
+    expect(screen.getByText("Job output")).toBeTruthy();
+    expect(screen.getByText("early job line")).toBeTruthy();
+  });
+
+  it("loads the retained log when a watched job finishes (no reload needed)", async () => {
+    // Active first: stream a line, then flip the same job to finished. The retained log — not the
+    // ephemeral live buffer — must render once it resolves.
+    mockFetch(() => ({ status: 404 }));
+    const { rerender } = render(<JobLog runId={1} job={activeJob} records={steps} loading={false} />);
+    act(() => MockEventSource.last().open());
+    act(() => MockEventSource.last().emit("log", { record: { value: ["ephemeral"], stepId: "s2" } }));
+    expect(screen.getByText("ephemeral")).toBeTruthy();
+
+    mockFetch(routes({ "/api/local/joblogs/": { retained: true, lines: ["persisted line"] } }));
+    rerender(
+      <JobLog
+        runId={1}
+        job={job({ status: "completed", result: "succeeded" })}
+        records={steps}
+        loading={false}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("Job log")).toBeTruthy());
+    expect(screen.getByText("persisted line")).toBeTruthy();
+  });
+
+  it("re-sticks to the bottom on a content resize while pinned, and stays put when unpinned", () => {
+    mockFetch(() => ({ status: 404 }));
+    render(<JobLog runId={1} job={activeJob} records={steps} loading={false} />);
+    act(() => MockEventSource.last().open());
+
+    const el = scrollEl();
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 500 });
+    Object.defineProperty(el, "scrollTop", { configurable: true, writable: true, value: 0 });
+
+    // Pinned by default: a resize (content grew) snaps the view to the bottom.
+    act(() => MockResizeObserver.trigger());
+    expect(el.scrollTop).toBe(500);
+
+    // Toggle the pin OFF via the button; a further resize must NOT move the view.
+    fireEvent.click(screen.getByRole("button", { name: "Pinned" }));
+    expect(screen.getByText("Pin")).toBeTruthy();
+    (el as unknown as { scrollTop: number }).scrollTop = 42;
+    act(() => MockResizeObserver.trigger());
+    expect(el.scrollTop).toBe(42); // unpinned → left where the reader put it
+
+    // Re-pin via the button jumps back to the bottom.
+    fireEvent.click(screen.getByRole("button", { name: "Pin" }));
+    expect(screen.getByText("Pinned")).toBeTruthy();
+    expect(el.scrollTop).toBe(500);
   });
 });
