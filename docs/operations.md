@@ -536,6 +536,28 @@ A full forge can replace this hook. Gitea and Forgejo can point a webhook at the
 hub instead. Issue #23 tracks a future `ndh hook install` that will automate the
 hook.
 
+### Branch tracking
+
+A workflow with `on: push: branches:` runs only for the branches it lists. The
+engine evaluates the filter against the ref the event claims, exactly like a
+GitHub push. `--ref refs/heads/<branch>` sets that ref; the checked-out tree is
+always the local working tree you dispatch from.
+
+Confirm the filter with two dispatches of a workflow that tracks `main`. A
+non-tracked ref is skipped; the tracked ref runs to completion:
+
+```bash
+# Non-tracked ref — the engine skips the workflow:
+ndh dispatch --server http://hub.tailnet:4949 -W .github/workflows/ci.yml \
+    --event push --ref refs/heads/feature
+# Skipping Workflow, due to branches filter. github.ref='refs/heads/feature'
+# All Workflows skipped, due to filters
+
+# Tracked ref — the workflow runs to completion:
+ndh dispatch --server http://hub.tailnet:4949 -W .github/workflows/ci.yml \
+    --event push --ref refs/heads/main
+```
+
 ---
 
 ## Troubleshooting
