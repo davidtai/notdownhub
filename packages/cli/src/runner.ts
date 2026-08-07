@@ -4,8 +4,9 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { spawn, type SpawnOptions } from "node:child_process";
 import { ensureVendor } from "./vendor.js";
-import { exists, fail, log, ndhHome, run, vendorDir } from "./lib.js";
+import { connErrorCode, exists, fail, hubUnreachableMessage, log, ndhHome, rootErrorMessage, run, vendorDir } from "./lib.js";
 import { initFileLog } from "./filelog.js";
+import { getFleet, stateLabel, type Fleet } from "./fleet.js";
 
 /** Default registration token — the literal used when no hub-issued token is supplied (open hubs). */
 const DEFAULT_TOKEN = "notdownhub";
@@ -108,9 +109,10 @@ export function registerRunner(program: Command): void {
 
   runner
     .command("list")
-    .description("list joined runners")
-    .action(async () => {
-      process.exitCode = await list();
+    .description("list joined runners (this machine), or the hub's fleet with --server")
+    .option("--server <url>", "show the hub's fleet (labels + live state) instead of local instances")
+    .action(async (opts: { server?: string }) => {
+      process.exitCode = await list(opts);
     });
 
   runner
@@ -194,9 +196,26 @@ async function join_(hubUrl: string, opts: JoinOptions, deps: RunnerDeps = {}): 
     log(`configure failed (exit ${code}) — cleaned up ${dir}; '${opts.name}' is not joined`);
     return code;
   }
+  // The listener's .runner config does not persist labels, so record them alongside the instance:
+  // `ndh runner list` (no --server) can then show what this runner offers without reaching the hub.
+  await writeFile(labelsPath(dir), `${opts.labels}\n`, { mode: 0o600 }).catch(() => {});
   log(`runner '${opts.name}' joined ${hubUrl}`);
   log(`start it: ndh runner start ${opts.name}`);
   return 0;
+}
+
+/** File recording the labels a runner was joined with (the listener's .runner does not keep them). */
+function labelsPath(dir: string): string {
+  return join(dir, "labels");
+}
+
+/** The labels a runner instance was joined with, or "" when not recorded (e.g. joined pre-#68). */
+async function readLabels(dir: string): Promise<string> {
+  try {
+    return (await readFile(labelsPath(dir), "utf8")).trim();
+  } catch {
+    return "";
+  }
 }
 
 async function start(name?: string, deps: RunnerDeps = {}): Promise<number> {
@@ -226,8 +245,55 @@ async function listNames(): Promise<string[]> {
   }
 }
 
-async function list(): Promise<number> {
-  for (const n of await listNames()) console.log(n);
+interface ListOptions {
+  server?: string;
+}
+
+/** Extra seams for `list` so the fleet source and running-state probe are testable. */
+export interface ListDeps {
+  fleet?: (server: string) => Promise<Fleet>;
+  findListener?: (dir: string) => Promise<number[]>;
+}
+
+/**
+ * `ndh runner list` — the instances joined on THIS machine, each with its labels and whether its
+ * listener is running. With `--server`, the hub's whole fleet instead (labels + live state), the
+ * same view the UI shows — so a headless-hub operator finally has a CLI window on the fleet (#68).
+ */
+async function list(opts: ListOptions = {}, deps: ListDeps = {}): Promise<number> {
+  if (opts.server) {
+    try {
+      const { rich, agents } = await (deps.fleet ?? getFleet)(opts.server);
+      console.log(`fleet @ ${opts.server}:`);
+      if (agents.length === 0) {
+        console.log("  (none registered)");
+        return 0;
+      }
+      for (const a of agents) {
+        console.log(rich ? `  ${a.name}  [${a.labels.join(",")}]  ${stateLabel(a)}` : `  ${a.name}  [${a.labels.join(",")}]`);
+      }
+      return 0;
+    } catch (err) {
+      if (!connErrorCode(err)) throw err;
+      log(hubUnreachableMessage(opts.server));
+      log(`  ${rootErrorMessage(err)}`);
+      return 1;
+    }
+  }
+
+  const names = await listNames();
+  console.log("local runner instances:");
+  if (names.length === 0) {
+    console.log("  (none joined — ndh runner join <hub-url>)");
+    return 0;
+  }
+  const find = deps.findListener ?? defaultFindListener;
+  for (const name of names) {
+    const dir = runnerDir(name);
+    const running = (await find(dir)).length > 0;
+    const labels = await readLabels(dir);
+    console.log(`  ${name}  [${labels}]  ${running ? "running" : "stopped"}`);
+  }
   return 0;
 }
 
@@ -345,4 +411,4 @@ async function remove_(name: string, opts: RemoveOptions, deps: RunnerDeps = {})
 }
 
 /** Exposed for tests. */
-export const __test = { join_, start, remove_, defaultToken, listenerExe, defaultName, defaultLabels };
+export const __test = { join_, start, remove_, defaultToken, listenerExe, defaultName, defaultLabels, list, readLabels };

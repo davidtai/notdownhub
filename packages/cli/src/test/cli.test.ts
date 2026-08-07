@@ -117,7 +117,9 @@ test("runner: bare subcommand exits 2; list is empty; start without a runner fai
   assert.equal((await runCli(["runner"], { env, cwd: nonGit })).status, 2);
   const list = await runCli(["runner", "list"], { env, cwd: nonGit });
   assert.equal(list.status, 0);
-  assert.equal(list.stdout.trim(), "");
+  // With no runners joined, list names the section and says so (rather than printing nothing).
+  assert.match(list.stdout, /local runner instances:/);
+  assert.match(list.stdout, /none joined/);
   const start = await runCli(["runner", "start"], { env, cwd: nonGit });
   assert.equal(start.status, 1);
   assert.match(start.stderr, /none joined yet/);
