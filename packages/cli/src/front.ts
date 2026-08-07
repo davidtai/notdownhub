@@ -213,8 +213,10 @@ function proxy(req: http.IncomingMessage, res: http.ServerResponse, hubPort: num
 /**
  * Paths the static UI would serve — everything except paths the hub itself serves to runners.
  * These MUST always proxy (never be gated as local-only UI), or a remote runner is refused
- * resources it needs: the runner protocol (/_apis, /runner), the action mirror (/mirror), and the
- * generic local-repo checkout action the hub builds for a dispatched repo (/localcheckout*).
+ * resources it needs: the runner protocol (/_apis, /runner), the action mirror (/mirror), the
+ * generic local-repo checkout action the hub builds for a dispatched repo (/localcheckout*), and
+ * the cache/results service v2, which actions/cache (and setup-*'s cache) speaks over Twirp at
+ * /twirp/github.actions.results.api.v1.CacheService/... (/twirp).
  */
 function isUiPath(pathname: string): boolean {
   return !(
@@ -222,7 +224,8 @@ function isUiPath(pathname: string): boolean {
     pathname.startsWith("/runner/") ||
     pathname.startsWith("/api/") ||
     pathname.startsWith("/mirror/") ||
-    pathname.startsWith("/localcheckout")
+    pathname.startsWith("/localcheckout") ||
+    pathname.startsWith("/twirp/")
   );
 }
 
