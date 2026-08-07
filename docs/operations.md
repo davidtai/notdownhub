@@ -561,6 +561,32 @@ ndh status --server http://hub-host:4949
 
 ---
 
+## Re-run a finished run
+
+The hub can re-run a finished run on the fleet. It re-queues the recorded
+workflow as a new attempt of the same run. The re-run keeps the same project and
+the same ref and sha.
+
+In the UI, open a finished run and select **Re-run**. Each finished row in the
+runs list also carries a **Re-run** control.
+
+From the CLI:
+
+```bash
+ndh run rerun <run-id> --server http://hub-host:4949
+ndh run rerun <run-id> --server http://hub-host:4949 --failed   # re-run only the failed jobs
+```
+
+The hub retains the workflow and the event for each attempt. So it re-runs from
+its own record, with no checkout on hand.
+
+One workflow shape cannot re-run from the hub. A workflow that checks out the
+dispatched local tree needs that tree. The tree lived on the machine that ran
+`ndh dispatch`, and the hub never kept it. Re-run that workflow from the checkout
+with `ndh dispatch`.
+
+---
+
 ## Mirror operations
 
 The hub's action mirror caches `uses:` archives so workflows keep running during

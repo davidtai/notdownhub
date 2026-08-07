@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   toState,
+  isFinished,
   STATE_LABEL,
   shortSha,
   shortRef,
@@ -218,5 +219,17 @@ describe("humanSize", () => {
     expect(humanSize(null)).toBe("");
     expect(humanSize(-1)).toBe("");
     expect(humanSize(Number.NaN)).toBe("");
+  });
+});
+
+describe("isFinished", () => {
+  it("is true for terminal states only", () => {
+    expect(isFinished("success")).toBe(true);
+    expect(isFinished("fail")).toBe(true);
+    expect(isFinished("cancelled")).toBe(true);
+    expect(isFinished("skipped")).toBe(true);
+    expect(isFinished("running")).toBe(false);
+    expect(isFinished("queued")).toBe(false);
+    expect(isFinished("unknown")).toBe(false);
   });
 });

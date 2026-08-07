@@ -15,6 +15,7 @@ import {
   getRunLastActivity,
   deleteProjectRuns,
   probeDeleteProjectSupport,
+  rerunWorkflow,
 } from "./api";
 import { mockFetch, routes } from "../test/helpers";
 
@@ -281,5 +282,26 @@ describe("getJoinInfo", () => {
   it("returns status 0 on a network error", async () => {
     mockFetch(routes({ "/api/local/join-info": { throw: true } }));
     expect(await getJoinInfo()).toEqual({ ok: false, status: 0 });
+  });
+});
+
+describe("rerunWorkflow", () => {
+  it("POSTs the whole-workflow re-run by default", async () => {
+    const fn = mockFetch(() => ({ status: 200, body: {} }));
+    await rerunWorkflow(5);
+    const [url, init] = fn.mock.calls[0] as [string, { method?: string }];
+    expect(url).toBe("/_apis/v1/Message/rerunworkflow/5");
+    expect(init?.method).toBe("POST");
+  });
+
+  it("POSTs the failed-jobs re-run when opts.failed is set", async () => {
+    const fn = mockFetch(() => ({ status: 200, body: {} }));
+    await rerunWorkflow(5, { failed: true });
+    expect((fn.mock.calls[0] as [string])[0]).toBe("/_apis/v1/Message/rerunFailed/5");
+  });
+
+  it("throws with the status on a non-OK response", async () => {
+    mockFetch(() => ({ status: 404, body: {} }));
+    await expect(rerunWorkflow(9)).rejects.toThrow(/rerunworkflow\/9 → 404/);
   });
 });

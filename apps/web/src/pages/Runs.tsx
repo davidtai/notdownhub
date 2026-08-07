@@ -88,7 +88,7 @@ export function Runs() {
             <ul className="divide-y divide-line-muted">
               {shown.map((r) => (
                 <li key={r.id}>
-                  <RunRow run={r} onMutated={runs.refresh} warnings={warnings[r.id] ?? 0} />
+                  <RunRow run={r} onMutated={runs.refresh} onRerun={runs.refresh} warnings={warnings[r.id] ?? 0} />
                 </li>
               ))}
             </ul>

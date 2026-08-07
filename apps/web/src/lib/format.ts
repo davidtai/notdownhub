@@ -20,6 +20,11 @@ export function toState(status?: string | null, result?: string | null): State {
   return "unknown";
 }
 
+/** A run/job in a terminal state — the only runs it makes sense to offer a re-run for. */
+export function isFinished(state: State): boolean {
+  return state === "success" || state === "fail" || state === "cancelled" || state === "skipped";
+}
+
 export const STATE_LABEL: Record<State, string> = {
   success: "Passed",
   fail: "Failed",
