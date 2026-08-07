@@ -42,10 +42,9 @@ export async function statusCmd(server: string): Promise<number> {
   }
   if (!any) console.log("  (none registered)");
 
-  const runs = await getJson<{ id: number; fileName?: string; displayName?: string; status?: string; result?: string; eventName?: string }[]>(
-    base,
-    "_apis/v1/Message/workflow/runs?page=0",
-  );
+  type Run = { id: number; fileName?: string; displayName?: string; status?: string; result?: string; eventName?: string };
+  const runsRaw = await getJson<Run[] | { value: Run[] }>(base, "_apis/v1/Message/workflow/runs?page=0");
+  const runs = Array.isArray(runsRaw) ? runsRaw : (runsRaw.value ?? []);
   console.log("recent runs:");
   for (const r of runs.slice(0, 15)) {
     console.log(`  #${r.id}  ${r.displayName ?? r.fileName ?? "?"}  ${r.status ?? ""}${r.result ? `/${r.result}` : ""}  (${r.eventName ?? "?"})`);

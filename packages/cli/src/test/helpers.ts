@@ -82,7 +82,9 @@ const opt = (flag) => { const i = a.indexOf(flag); return i >= 0 ? a[i + 1] : un
 const key = (opt("-s") || "") + "\\u0000" + (opt("-a") || "");
 if (cmd === "add-generic-password") {
   const w = opt("-w");
-  if (w === "FAILWRITE") { process.stderr.write("simulated failure"); process.exit(1); }
+  // ndh base64-encodes values before -w; decode to detect the sentinel like the real value.
+  const decoded = Buffer.from(w || "", "base64").toString("utf8");
+  if (decoded === "FAILWRITE") { process.stderr.write("simulated failure"); process.exit(1); }
   const o = read(); o[key] = w; write(o); process.exit(0);
 } else if (cmd === "find-generic-password") {
   const o = read();

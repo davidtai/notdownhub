@@ -61,7 +61,7 @@ The published package is `notdownhub`; its `bin` is `ndh` (see
 ```bash
 npm install -g notdownhub      # or: pnpm add -g notdownhub
 ndh --version
-# 0.1.0
+# 0.0.1
 ```
 
 That puts `ndh` on your `PATH`. Or run it without a global install, one-shot:
@@ -90,7 +90,7 @@ pnpm -r build
 ```bash
 alias ndh="node $PWD/packages/cli/dist/index.js"
 ndh --version
-# 0.1.0
+# 0.0.1
 ```
 
 (Or symlink it onto your `PATH`:
@@ -246,7 +246,7 @@ These need no hub:
 
 ```bash
 ndh --version
-# 0.1.0
+# 0.0.1
 
 ndh install ; echo "exit=$?"        # ensures the bundle is present
 # exit=0

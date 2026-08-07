@@ -123,14 +123,15 @@ function keychainService(scope: string): string {
   return `${KEYCHAIN_PREFIX()}:${scope}`;
 }
 
+// `security -w` only prints a value verbatim when every byte is printable ASCII; for any other
+// byte (newline, tab, >=0x80) it prints a hex string instead, corrupting multiline/UTF-8 secrets.
+// Base64-encoding on write and decoding on read keeps the stored value printable ASCII, so the
+// round-trip is lossless for arbitrary bytes.
 function keychainSet(scope: string, name: string, value: string): void {
-  // Note: `security` takes the value on argv (`-w <value>`). This briefly exposes the value to
-  // `ps` during the call — it is macOS's sanctioned CLI for writing the Keychain and there is no
-  // stdin form (the interactive `-w` prompt requires a retype confirmation). Our own injection
-  // path into the runner never uses argv (see secret-file below).
+  const encoded = Buffer.from(value, "utf8").toString("base64");
   const r = spawnSync(
     "security",
-    ["add-generic-password", "-U", "-s", keychainService(scope), "-a", name, "-w", value],
+    ["add-generic-password", "-U", "-s", keychainService(scope), "-a", name, "-w", encoded],
     { stdio: ["ignore", "ignore", "pipe"] },
   );
   if (r.status !== 0) throw new Error(`keychain write failed: ${r.stderr?.toString().trim() || r.status}`);
@@ -143,8 +144,7 @@ function keychainGet(scope: string, name: string): string | null {
     { stdio: ["ignore", "pipe", "ignore"] },
   );
   if (r.status !== 0) return null;
-  // `security -w` prints the value followed by a newline.
-  return r.stdout.toString().replace(/\n$/, "");
+  return Buffer.from(r.stdout.toString().trim(), "base64").toString("utf8");
 }
 
 function keychainDelete(scope: string, name: string): void {
@@ -272,7 +272,13 @@ async function fileDelete(scope: string, name: string): Promise<void> {
 
 // ---------- public store API ----------
 
+/** A workflow secret/var name must be a valid environment identifier. */
+export function validEnvName(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+}
+
 export async function setSecret(scope: string, name: string, value: string): Promise<void> {
+  if (!validEnvName(name)) fail(`invalid name '${name}' — use letters, digits, and underscore; must not start with a digit`);
   const b = backend();
   if (b === "keychain") keychainSet(scope, name, value);
   else if (b === "libsecret") libsecretSet(scope, name, value);
