@@ -167,10 +167,11 @@ test("proxy: upstream drop mid-stream resets the client (no hang, no junk body)"
 });
 
 // Regression: runner-served paths must NOT be treated as local-only UI (else remote runners 403).
-test("isUiPath: hub/runner paths proxy; /localcheckout is never UI-gated", () => {
+test("isUiPath: hub/runner paths proxy; /localcheckout and /twirp are never UI-gated", () => {
   const { isUiPath } = frontTest;
   for (const p of ["/_apis/v1/x", "/runner/server", "/api/local/agents", "/mirror/o/r/tarball/v1",
-                   "/localcheckout.tar.gz", "/localcheckout.zip"]) {
+                   "/localcheckout.tar.gz", "/localcheckout.zip",
+                   "/twirp/github.actions.results.api.v1.CacheService/CreateCacheEntry"]) {
     assert.equal(isUiPath(p), false, `${p} must proxy, not be UI-gated`);
   }
   for (const p of ["/", "/runs/12", "/assets/app.js", "/settings"]) {
