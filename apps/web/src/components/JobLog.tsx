@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowDownToLine, ChevronRight, Radio } from "lucide-react";
+import { ArrowDownToLine, ChevronRight, Radio, TriangleAlert } from "lucide-react";
 import { getJobLogs, type Job, type JobLogs, type TimelineRecord } from "../lib/api";
 import { toState, duration } from "../lib/format";
 import { stripAnsi } from "../lib/logparse";
-import { StatusIcon } from "./StatusIcon";
+import { collectAnnotations, countAnnotations, type Annotation } from "../lib/warnings";
+import { StatusIcon, WarningMarker } from "./StatusIcon";
 import { LogGroups } from "./LogView";
 import { cn } from "../lib/utils";
 
@@ -42,6 +43,10 @@ export function JobLog({
 
   const jobState = job ? toState(job.status, job.result) : "unknown";
   const jobActive = jobState === "running" || jobState === "queued";
+
+  // Engine annotations for this job (warnings + non-fatal errors), shown above the
+  // log GitHub-style. Steps that raised one also get an inline marker.
+  const annotations = useMemo(() => collectAnnotations(records ?? []), [records]);
 
   const [liveByStep, setLiveByStep] = useState<Record<string, string[]>>({});
   const [connected, setConnected] = useState(false);
@@ -216,6 +221,7 @@ export function JobLog({
         className="min-h-0 flex-1 overflow-auto [-webkit-overflow-scrolling:touch]"
       >
         <div ref={contentRef}>
+        {annotations.length > 0 && <Annotations items={annotations} />}
         {loading && !records && !hasLive ? (
           <StepSkeleton />
         ) : !job ? (
@@ -238,6 +244,7 @@ export function JobLog({
               {steps.map((s) => {
                 const st = toState(s.state, s.result);
                 const d = duration(s.startTime, s.finishTime);
+                const sw = st === "success" ? countAnnotations([s]) : 0;
                 if (liveMode) {
                   const lines = liveByStep[s.id] ?? [];
                   const open = expanded.has(s.id);
@@ -258,6 +265,7 @@ export function JobLog({
                         />
                         <StatusIcon state={st} size={14} withTooltip={false} />
                         <span className="min-w-0 flex-1 truncate text-[13px] text-fg">{s.name}</span>
+                        {sw > 0 && <WarningMarker count={sw} size={13} />}
                         {d && (
                           <span className="tnum shrink-0 font-mono text-[11px] text-fg-subtle">{d}</span>
                         )}
@@ -281,6 +289,7 @@ export function JobLog({
                   <li key={s.id} className="flex items-center gap-2.5 px-3 py-2.5">
                     <StatusIcon state={st} size={14} withTooltip={false} />
                     <span className="min-w-0 flex-1 truncate text-[13px] text-fg">{s.name}</span>
+                    {sw > 0 && <WarningMarker count={sw} size={13} />}
                     {d && (
                       <span className="tnum shrink-0 font-mono text-[11px] text-fg-subtle">{d}</span>
                     )}
@@ -319,6 +328,46 @@ export function JobLog({
 
 function Note({ children }: { children: React.ReactNode }) {
   return <p className="px-4 py-10 text-center text-[12px] text-fg-muted">{children}</p>;
+}
+
+/**
+ * GitHub-parity annotation banner: the engine's warning/non-fatal-error issues for
+ * this job, listed above the log so a green-but-noisy job's problems are visible
+ * without reading the console. Warnings read amber; non-fatal errors read red.
+ */
+function Annotations({ items }: { items: Annotation[] }) {
+  const warns = items.filter((a) => a.type === "warning").length;
+  const errs = items.length - warns;
+  const summary = [
+    warns > 0 ? `${warns} warning${warns === 1 ? "" : "s"}` : null,
+    errs > 0 ? `${errs} error${errs === 1 ? "" : "s"}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <section className="border-b border-line bg-warn/[0.06] px-3 py-2.5" aria-label="Annotations">
+      <p className="eyebrow mb-1.5 flex items-center gap-1.5 text-warn">
+        <TriangleAlert size={12} />
+        Annotations
+        <span className="tnum font-mono text-[11px] font-normal text-fg-muted">{summary}</span>
+      </p>
+      <ul className="space-y-1">
+        {items.map((a, i) => (
+          <li key={i} className="flex items-start gap-2 text-[12px] leading-snug">
+            <TriangleAlert
+              size={13}
+              className={cn("mt-0.5 shrink-0", a.type === "error" ? "text-fail" : "text-warn")}
+            />
+            <span className="min-w-0">
+              <span className="font-medium text-fg">{a.stepName || "Job"}</span>
+              <span className="text-fg-subtle"> — </span>
+              <span className="break-words text-fg-muted">{a.message}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }
 
 function StepSkeleton() {

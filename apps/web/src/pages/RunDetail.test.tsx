@@ -218,6 +218,51 @@ describe("RunDetail", () => {
     expect(screen.getByText("It may have been deleted.")).toBeTruthy();
   });
 
+  it("surfaces 'Passed with warnings' with a count when a green run has annotations", async () => {
+    const warnStep = {
+      id: "w",
+      parentId: null,
+      type: "Task",
+      name: "emit a warning",
+      startTime: "2020-01-01T00:00:00Z",
+      finishTime: "2020-01-01T00:00:01Z",
+      state: "completed",
+      result: "succeeded",
+      percentComplete: 100,
+      order: 2,
+      issues: [{ type: "warning", message: "this API is deprecated" }],
+    };
+    const softFail = {
+      ...warnStep,
+      id: "e",
+      name: "soft-failing step",
+      order: 3,
+      issues: [{ type: "error", message: "Process completed with exit code 1." }],
+    };
+    mockFetch((url) => {
+      if (url.includes("/workflow/runs"))
+        return { body: [{ id: 5, displayName: "Noisy CI", status: "completed", result: "succeeded" }] };
+      if (url.includes("/run/5/attempts")) return { body: [{ id: 1, attempt: 1, timeLineId: "at1" }] };
+      if (url.includes("/attempt/1/jobs"))
+        return {
+          body: [
+            { jobId: "jA", timeLineId: "tlA", name: "build", matrix: null, workflowIdentifier: "build", status: "completed", result: "succeeded", requestId: 1, runid: 5, attempt: 1 },
+          ],
+        };
+      if (url.includes("/Timeline/tlA")) return { body: [taskRec, warnStep, softFail] };
+      if (url.includes("/api/local/joblogs/")) return { body: { retained: true, lines: ["done"] } };
+      return { status: 404 };
+    });
+
+    renderDetail();
+    // Run badge switches from plain "Passed" to the warnings variant with the total count (2).
+    await waitFor(() => expect(screen.getByText("Passed with warnings")).toBeTruthy());
+    expect(screen.queryByText("Passed")).toBeNull();
+    // The annotation banner lists both messages above the log.
+    await waitFor(() => expect(screen.getByText("this API is deprecated")).toBeTruthy());
+    expect(screen.getByText("Process completed with exit code 1.")).toBeTruthy();
+  });
+
   it("renders an unknown state with no attempts or jobs", async () => {
     mockFetch((url) => {
       if (url.includes("/workflow/runs")) return { body: [] };

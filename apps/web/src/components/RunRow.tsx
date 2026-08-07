@@ -2,12 +2,25 @@ import { Link } from "react-router-dom";
 import { GitBranch, GitCommitHorizontal } from "lucide-react";
 import type { WorkflowRun } from "../lib/api";
 import { toState, shortRef, shortSha, relativeTime, projectLabel } from "../lib/format";
-import { StatusIcon } from "./StatusIcon";
+import { StatusIcon, WarningMarker } from "./StatusIcon";
 import { RunActions } from "./RunActions";
 import { Badge } from "./ui/badge";
 
-/** One row in the runs list. The row links to the run detail; the trailing actions sit beside it. */
-export function RunRow({ run, onMutated }: { run: WorkflowRun; onMutated?: () => void }) {
+/**
+ * One row in the runs list. The row links to the run detail; the trailing actions
+ * sit beside it. `warnings` is the count of warning signals on a green run
+ * (0/undefined for a clean run, or one still being resolved) — shown as an amber
+ * marker so a green-but-noisy run stands out at a glance.
+ */
+export function RunRow({
+  run,
+  onMutated,
+  warnings = 0,
+}: {
+  run: WorkflowRun;
+  onMutated?: () => void;
+  warnings?: number;
+}) {
   const state = toState(run.status, run.result);
   const ref = shortRef(run.ref);
   const sha = shortSha(run.sha);
@@ -29,6 +42,11 @@ export function RunRow({ run, onMutated }: { run: WorkflowRun; onMutated?: () =>
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-semibold text-fg">{title}</span>
             <span className="tnum shrink-0 font-mono text-xs text-fg-subtle">#{run.id}</span>
+            {state === "success" && warnings > 0 && (
+              <span className="shrink-0">
+                <WarningMarker count={warnings} size={13} />
+              </span>
+            )}
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12px] text-fg-muted">
             {run.eventName && <Badge variant="outline">{run.eventName}</Badge>}

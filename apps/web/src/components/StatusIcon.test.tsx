@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { StatusIcon, StatePill, RunnerStateDot } from "./StatusIcon";
+import { StatusIcon, StatePill, RunnerStateDot, WarningMarker } from "./StatusIcon";
 import type { State } from "../lib/format";
 
 const STATES: State[] = ["success", "fail", "running", "queued", "cancelled", "skipped", "unknown"];
@@ -29,6 +29,49 @@ describe("StatePill", () => {
       expect(screen.getByText(/passed|failed|running|queued|cancelled|skipped|unknown/i)).toBeTruthy();
       unmount();
     }
+  });
+
+  it("reads 'Passed with warnings' + count for a green run carrying warnings", () => {
+    render(<StatePill state="success" warnings={3} />);
+    expect(screen.getByText("Passed with warnings")).toBeTruthy();
+    expect(screen.getByText("3")).toBeTruthy();
+  });
+
+  it("stays plain 'Passed' when a success run has zero warnings", () => {
+    render(<StatePill state="success" warnings={0} />);
+    expect(screen.getByText("Passed")).toBeTruthy();
+    expect(screen.queryByText("Passed with warnings")).toBeNull();
+  });
+
+  it("never shows the warnings variant for a non-success state", () => {
+    render(<StatePill state="fail" warnings={5} />);
+    expect(screen.getByText("Failed")).toBeTruthy();
+    expect(screen.queryByText("Passed with warnings")).toBeNull();
+  });
+});
+
+describe("WarningMarker", () => {
+  it("renders an amber triangle with the count and a pluralized aria-label", () => {
+    render(<WarningMarker count={2} />);
+    expect(screen.getByText("2")).toBeTruthy();
+    expect(screen.getByLabelText("2 warnings")).toBeTruthy();
+  });
+
+  it("uses the singular label for a single warning", () => {
+    render(<WarningMarker count={1} />);
+    expect(screen.getByLabelText("1 warning")).toBeTruthy();
+  });
+
+  it("omits the tooltip wrapper when asked", () => {
+    const { container } = render(<WarningMarker count={1} withTooltip={false} />);
+    // aria-label still present on the glyph, but no relative Tooltip wrapper around it.
+    expect(screen.getByLabelText("1 warning")).toBeTruthy();
+    expect(container.querySelector(".relative")).toBeNull();
+  });
+
+  it("renders nothing for a zero or negative count", () => {
+    const { container } = render(<WarningMarker count={0} />);
+    expect(container.firstChild).toBeNull();
   });
 });
 

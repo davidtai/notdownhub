@@ -236,6 +236,61 @@ describe("JobLog — live streaming", () => {
   });
 });
 
+describe("JobLog — warning annotations (#62)", () => {
+  const warnStep = task({
+    id: "w",
+    name: "emit a warning",
+    order: 2,
+    issues: [{ type: "warning", message: "this API is deprecated" }],
+  });
+  const softFail = task({
+    id: "e",
+    name: "soft-failing step",
+    order: 3,
+    result: "succeeded",
+    issues: [{ type: "error", message: "Process completed with exit code 1." }],
+  });
+
+  it("lists engine annotations above the log, with per-step markers, for a green-but-noisy job", async () => {
+    mockFetch(routes({ "/api/local/joblogs/": { retained: true, lines: ["done"] } }));
+    render(
+      <JobLog
+        runId={1}
+        job={job({})}
+        records={[task({ id: "a", name: "Set up job", order: 1 }), warnStep, softFail]}
+        loading={false}
+      />,
+    );
+    // Annotation banner: both messages surfaced, keyed by step name.
+    const banner = screen.getByLabelText("Annotations");
+    expect(banner).toBeTruthy();
+    expect(screen.getByText("this API is deprecated")).toBeTruthy();
+    expect(screen.getByText("Process completed with exit code 1.")).toBeTruthy();
+    // Summary counts one warning + one error.
+    expect(screen.getByText("1 warning · 1 error")).toBeTruthy();
+    // Per-step markers on the two noisy rows, none on the clean "Set up job" row.
+    await waitFor(() => expect(screen.getByText("Job log")).toBeTruthy());
+  });
+
+  it("shows no annotation banner for a clean job", () => {
+    mockFetch(routes({ "/api/local/joblogs/": { retained: true, lines: ["done"] } }));
+    render(
+      <JobLog runId={1} job={job({})} records={[task({ id: "a", name: "Only", order: 1 })]} loading={false} />,
+    );
+    expect(screen.queryByLabelText("Annotations")).toBeNull();
+  });
+
+  it("marks a warning step while streaming (live mode)", () => {
+    mockFetch(() => ({ status: 404 }));
+    const activeJob = job({ status: "inProgress", result: null });
+    render(<JobLog runId={1} job={activeJob} records={[warnStep]} loading={false} />);
+    // The warning step (succeeded) carries an inline marker even mid-run.
+    expect(screen.getByLabelText("1 warning")).toBeTruthy();
+    // And its issue is listed in the annotation banner.
+    expect(screen.getByText("this API is deprecated")).toBeTruthy();
+  });
+});
+
 describe("JobLog — streaming correctness (#28) and auto-scroll (#30)", () => {
   const activeJob = job({ status: "inProgress", result: null });
   const steps = [

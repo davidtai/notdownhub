@@ -74,4 +74,40 @@ describe("JobList", () => {
     fireEvent.click(screen.getByText("build"));
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ jobId: "p1" }));
   });
+
+  it("marks a green job and a green matrix group with a warning glyph, summing legs", () => {
+    // A plain green job with 2 warnings, and a green matrix parent whose legs carry 1 + 2 → group 3.
+    const greenMatrix: Job[] = [
+      job({ jobId: "p1", workflowIdentifier: "build", name: "build" }), // green
+      job({ jobId: "gp", workflowIdentifier: "test", name: "test" }), // green matrix parent
+      job({ jobId: "l1", workflowIdentifier: "test", name: "test (linux)", matrix: '{"os":"linux"}' }),
+      job({ jobId: "l2", workflowIdentifier: "test", name: "test (mac)", matrix: '{"os":"mac"}' }),
+    ];
+    render(
+      <JobList
+        jobs={greenMatrix}
+        durations={{}}
+        warnings={{ p1: 2, l1: 1, l2: 2 }}
+        selectedJobId={null}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText("3 warnings")).toBeTruthy(); // group total (1 + 2)
+    expect(screen.getByText("1")).toBeTruthy(); // the linux leg's per-row count (unique)
+  });
+
+  it("does not mark a failed matrix leg, and shows no glyph when counts are absent", () => {
+    const failedLeg = job({ jobId: "l1", workflowIdentifier: "test", name: "test (linux)", matrix: '{"os":"linux"}', result: "failed" });
+    render(
+      <JobList
+        jobs={[job({ jobId: "p1", workflowIdentifier: "build", name: "build" }), failedLeg]}
+        durations={{}}
+        warnings={{ l1: 4 }}
+        selectedJobId={null}
+        onSelect={vi.fn()}
+      />,
+    );
+    // A failed job never carries the "passed with warnings" glyph.
+    expect(screen.queryByLabelText(/warning/)).toBeNull();
+  });
 });

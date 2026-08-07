@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Layers } from "lucide-react";
 import type { Job } from "../lib/api";
 import { toState, matrixLabel } from "../lib/format";
-import { StatusIcon } from "./StatusIcon";
+import { StatusIcon, WarningMarker } from "./StatusIcon";
 import { cn } from "../lib/utils";
 
 type Group =
@@ -43,11 +43,14 @@ function legLabel(job: Job): string {
 export function JobList({
   jobs,
   durations,
+  warnings = {},
   selectedJobId,
   onSelect,
 }: {
   jobs: Job[];
   durations: Record<string, number>;
+  /** Warning-signal count per jobId; a green job with >0 gets an amber marker. */
+  warnings?: Record<string, number>;
   selectedJobId: string | null;
   onSelect: (job: Job) => void;
 }) {
@@ -68,6 +71,7 @@ export function JobList({
                 label={g.job.name}
                 selected={selectedJobId === g.job.jobId}
                 ms={durations[g.job.jobId] ?? 0}
+                warnings={warnings[g.job.jobId] ?? 0}
                 longest={longest}
                 onSelect={onSelect}
               />
@@ -75,12 +79,16 @@ export function JobList({
           );
         }
         const state = toState(g.parent?.status, g.parent?.result);
+        const groupWarnings = g.legs.reduce((n, leg) => n + (warnings[leg.jobId] ?? 0), 0);
         return (
           <li key={g.ident} className="py-0.5">
             <div className="flex items-center gap-2 px-3 py-1.5 text-[13px] font-medium text-fg-muted">
               <Layers size={14} className="shrink-0 text-fg-subtle" />
               <span className="truncate">{g.parent?.name ?? g.ident}</span>
               {g.parent && <StatusIcon state={state} size={13} />}
+              {state === "success" && groupWarnings > 0 && (
+                <WarningMarker count={groupWarnings} size={13} />
+              )}
               <span className="tnum ml-auto font-mono text-[11px] text-fg-subtle">
                 {g.legs.length}
               </span>
@@ -93,6 +101,7 @@ export function JobList({
                     label={legLabel(leg)}
                     selected={selectedJobId === leg.jobId}
                     ms={durations[leg.jobId] ?? 0}
+                    warnings={warnings[leg.jobId] ?? 0}
                     longest={longest}
                     onSelect={onSelect}
                   />
@@ -111,6 +120,7 @@ function JobRow({
   label,
   selected,
   ms,
+  warnings,
   longest,
   onSelect,
 }: {
@@ -118,6 +128,7 @@ function JobRow({
   label: string;
   selected: boolean;
   ms: number;
+  warnings: number;
   longest: number;
   onSelect: (job: Job) => void;
 }) {
@@ -142,7 +153,12 @@ function JobRow({
           <span className={cn("truncate text-[13px]", selected ? "font-medium text-fg" : "text-fg")}>
             {label}
           </span>
-          {dur && <span className="tnum shrink-0 font-mono text-[11px] text-fg-subtle">{dur}</span>}
+          <span className="flex shrink-0 items-center gap-1.5">
+            {state === "success" && warnings > 0 && (
+              <WarningMarker count={warnings} size={12} withTooltip={false} />
+            )}
+            {dur && <span className="tnum font-mono text-[11px] text-fg-subtle">{dur}</span>}
+          </span>
         </div>
         {/* Signature: a thin proportional duration bar, relative to the run's longest job. */}
         <div className="mt-1.5 h-[3px] w-full overflow-hidden rounded-full bg-line-muted">
