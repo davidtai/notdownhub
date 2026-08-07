@@ -5,7 +5,7 @@
     <path d="M32 28 L 32 49" />
     <path d="M50.5 32 Q 48 41 43 49" />
   </g>
-  <g fill="#14171f">
+  <g fill="#d5501d">
     <ellipse cx="13.5" cy="19" rx="9.5" ry="11" />
     <path d="M11.8 29.6 L 15.2 29.6 L 13.5 32.6 Z" />
     <ellipse cx="50.5" cy="19" rx="9.5" ry="11" />
