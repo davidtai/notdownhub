@@ -27,6 +27,7 @@
   --running: #bf8700;
   --queued: #6e7781;
   --skipped: #8b949e;
+  --warn: #9a6700;
 
   color-scheme: light;
 }
@@ -48,6 +49,7 @@
   --running: #d29922;
   --queued: #8b949e;
   --skipped: #6e7781;
+  --warn: #d29922;
 
   color-scheme: dark;
 }
@@ -69,6 +71,7 @@
   --color-running: var(--running);
   --color-queued: var(--queued);
   --color-skipped: var(--skipped);
+  --color-warn: var(--warn);
 
   --font-sans:
     "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;

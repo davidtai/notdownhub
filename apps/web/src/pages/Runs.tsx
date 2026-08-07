@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { TriangleAlert } from "lucide-react";
 import { getRuns, type WorkflowRun } from "../lib/api";
 import { useInfiniteList, usePersistentStrings } from "../lib/hooks";
+import { useRunWarnings } from "../lib/warnings";
 import { filterByTerms, runHaystack } from "../lib/filter";
 import { AppBar } from "../components/AppBar";
 import { RunRow } from "../components/RunRow";
@@ -39,6 +40,10 @@ export function Runs() {
   // Runs load a page at a time (hub API: ?page=N) and accumulate as you scroll.
   const runs = useInfiniteList<WorkflowRun>(getRuns, (r) => r.id, RUNS_INTERVAL);
   const all = runs.items;
+
+  // Warning-signal counts for the green runs loaded so far (resolved lazily,
+  // cached per run). Powers the amber "noisy run" marker; composes with the filters.
+  const warnings = useRunWarnings(all);
 
   const terms = useMemo(() => [...pills, draft], [pills, draft]);
   const shown = useMemo(() => filterByTerms(all, terms, runHaystack), [all, terms]);
@@ -83,7 +88,7 @@ export function Runs() {
             <ul className="divide-y divide-line-muted">
               {shown.map((r) => (
                 <li key={r.id}>
-                  <RunRow run={r} onMutated={runs.refresh} />
+                  <RunRow run={r} onMutated={runs.refresh} warnings={warnings[r.id] ?? 0} />
                 </li>
               ))}
             </ul>

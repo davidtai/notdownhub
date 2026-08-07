@@ -3,6 +3,7 @@ import { Link, useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, GitBranch, GitCommitHorizontal } from "lucide-react";
 import { getRuns, getAttempts, getJobs, getTimeline, getArtifacts, type Job, type TimelineRecord, type WorkflowRun } from "../lib/api";
 import { toState, shortRef, shortSha, elapsedMs, timelineSpan, projectLabel } from "../lib/format";
+import { countAnnotations } from "../lib/warnings";
 import { usePoll } from "../lib/hooks";
 import { AppBar } from "../components/AppBar";
 import { Artifacts } from "../components/Artifacts";
@@ -66,6 +67,18 @@ export function RunDetail() {
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobList, timelines.data]);
+
+  // Warning signals per job (from the engine's timeline annotations), and the run total.
+  const warningsByJob = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const j of jobList) out[j.jobId] = countAnnotations(byTimeline[j.timeLineId] ?? []);
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobList, timelines.data]);
+  const runWarnings = useMemo(
+    () => Object.values(warningsByJob).reduce((a, b) => a + b, 0),
+    [warningsByJob],
+  );
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selectedJob: Job | undefined = jobList.find((j) => j.jobId === selectedId);
@@ -133,7 +146,7 @@ export function RunDetail() {
                 <span className="tnum font-mono text-sm text-fg-subtle">#{runId}</span>
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-2.5 text-[12px] text-fg-muted">
-                <StatePill state={headerState} />
+                <StatePill state={headerState} warnings={headerState === "success" ? runWarnings : 0} />
                 {project && <span className="truncate font-mono text-[11px]">{project}</span>}
                 {eventName && <Badge variant="outline">{eventName}</Badge>}
                 {ref && (
@@ -201,7 +214,7 @@ export function RunDetail() {
             ) : jobList.length === 0 ? (
               <p className="px-3 py-10 text-center text-[12px] text-fg-muted">No jobs for this attempt yet.</p>
             ) : (
-              <JobList jobs={jobList} durations={durations} selectedJobId={selectedId} onSelect={(j) => setSelectedId(j.jobId)} />
+              <JobList jobs={jobList} durations={durations} warnings={warningsByJob} selectedJobId={selectedId} onSelect={(j) => setSelectedId(j.jobId)} />
             )}
           </Card>
 

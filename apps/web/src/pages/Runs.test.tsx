@@ -137,6 +137,37 @@ describe("Runs", () => {
     await waitFor(() => expect(screen.queryByTestId("infinite-sentinel")).toBeNull());
   });
 
+  it("marks a green-but-noisy run in the list once its warnings resolve", async () => {
+    // #62: run 1 is green but its timeline carries a warning + a non-fatal error;
+    // run 2 is genuinely clean. Only run 1 gets the amber marker.
+    const noisy = { id: 1, fileName: "ci.yml", displayName: "Noisy", status: "completed", result: "succeeded" };
+    const clean = { id: 2, fileName: "ci.yml", displayName: "Clean", status: "completed", result: "succeeded" };
+    mockFetch((url) => {
+      if (url.includes("/workflow/runs")) {
+        const m = url.match(/page=(\d+)/);
+        return { body: (m ? Number(m[1]) : 0) === 0 ? [noisy, clean] : [] };
+      }
+      if (url.includes("/run/1/attempts")) return { body: [{ id: 1, attempt: 1 }] };
+      if (url.includes("/run/2/attempts")) return { body: [{ id: 1, attempt: 1 }] };
+      if (url.includes("/run/1/attempt/1/jobs")) return { body: [{ jobId: "a", timeLineId: "tl1" }] };
+      if (url.includes("/run/2/attempt/1/jobs")) return { body: [{ jobId: "b", timeLineId: "tl2" }] };
+      if (url.includes("/Timeline/tl1"))
+        return {
+          body: [
+            { id: "s1", type: "Task", name: "warn", result: "succeeded", issues: [{ type: "warning", message: "w" }] },
+            { id: "s2", type: "Task", name: "soft", result: "succeeded", issues: [{ type: "error", message: "e" }] },
+          ],
+        };
+      if (url.includes("/Timeline/tl2")) return { body: [{ id: "s", type: "Task", name: "ok", result: "succeeded" }] };
+      return { status: 404 };
+    });
+    renderRuns();
+    await waitFor(() => expect(screen.getByText("Noisy")).toBeTruthy());
+    // Run 1 resolves to 2 warning signals → amber marker; run 2 stays clean.
+    await waitFor(() => expect(screen.getByLabelText("2 warnings")).toBeTruthy());
+    expect(screen.getAllByLabelText(/warning/)).toHaveLength(1);
+  });
+
   it("shows the empty state when the hub has no runs", async () => {
     mockFetch(pagedRuns({ 0: [] }));
     renderRuns();

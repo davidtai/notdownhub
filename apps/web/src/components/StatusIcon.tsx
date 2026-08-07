@@ -6,6 +6,7 @@ import {
   MinusCircle,
   CircleHelp,
   LoaderCircle,
+  TriangleAlert,
 } from "lucide-react";
 import type { State } from "../lib/format";
 import { STATE_LABEL } from "../lib/format";
@@ -76,8 +77,21 @@ const PILL: Record<State, string> = {
   unknown: "bg-fg-subtle/12 text-fg-subtle",
 };
 
-/** Soft tinted status word — Passed / Failed / Running / Queued / … */
-export function StatePill({ state }: { state: State }) {
+/**
+ * Soft tinted status word — Passed / Failed / Running / Queued / …
+ * A successful run carrying warning signals reads "Passed with warnings" in warn
+ * amber with the count, so a green-but-noisy run is never mistaken for clean.
+ */
+export function StatePill({ state, warnings = 0 }: { state: State; warnings?: number }) {
+  if (state === "success" && warnings > 0) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-warn/12 px-2.5 py-0.5 text-xs font-medium text-warn">
+        <TriangleAlert size={12} />
+        Passed with warnings
+        <span className="tnum">{warnings}</span>
+      </span>
+    );
+  }
   return (
     <span
       className={cn(
@@ -88,6 +102,32 @@ export function StatePill({ state }: { state: State }) {
       {STATE_LABEL[state]}
     </span>
   );
+}
+
+/**
+ * Compact warning marker: an amber triangle with a count, shown next to a
+ * green run/job that carries warning signals. `withTooltip` names the count for
+ * assistive tech and hover. Renders nothing when `count` is 0.
+ */
+export function WarningMarker({
+  count,
+  size = 14,
+  withTooltip = true,
+}: {
+  count: number;
+  size?: number;
+  withTooltip?: boolean;
+}) {
+  if (count <= 0) return null;
+  const label = `${count} warning${count === 1 ? "" : "s"}`;
+  const glyph = (
+    <span className="inline-flex items-center gap-0.5 text-warn" aria-label={label}>
+      <TriangleAlert size={size} />
+      <span className="tnum font-mono text-[11px]">{count}</span>
+    </span>
+  );
+  if (!withTooltip) return glyph;
+  return <Tooltip label={label}>{glyph}</Tooltip>;
 }
 
 /** Runner liveness dot: active (filled, pulsing), idle (hollow), offline (grey hollow). */

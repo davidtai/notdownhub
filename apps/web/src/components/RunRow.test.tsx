@@ -54,4 +54,22 @@ describe("RunRow", () => {
     renderWithRouter(<RunRow run={{ id: 3, fileName: "ci.yml" }} />);
     expect(screen.getByText("ci.yml")).toBeTruthy();
   });
+
+  it("shows the amber warning marker for a green run carrying warnings", () => {
+    const run: WorkflowRun = { id: 5, fileName: "ci.yml", status: "completed", result: "succeeded" };
+    renderWithRouter(<RunRow run={run} warnings={2} />);
+    expect(screen.getByLabelText("2 warnings")).toBeTruthy();
+  });
+
+  it("omits the marker for a clean green run", () => {
+    const run: WorkflowRun = { id: 6, fileName: "ci.yml", status: "completed", result: "succeeded" };
+    renderWithRouter(<RunRow run={run} warnings={0} />);
+    expect(screen.queryByLabelText(/warning/)).toBeNull();
+  });
+
+  it("never marks a failed run, even if warnings are reported", () => {
+    const run: WorkflowRun = { id: 7, fileName: "ci.yml", status: "completed", result: "failed" };
+    renderWithRouter(<RunRow run={run} warnings={3} />);
+    expect(screen.queryByLabelText(/warning/)).toBeNull();
+  });
 });

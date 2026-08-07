@@ -55,6 +55,18 @@ export interface Job {
   repo?: string;
 }
 
+/**
+ * A single annotation the engine attached to a timeline record — the same data
+ * GitHub renders as inline annotations. `type` is "warning" | "error" | "notice".
+ * We consume these directly rather than scraping `##[warning]` text from the log.
+ */
+export interface Issue {
+  type?: string | null;
+  category?: string | null;
+  message?: string | null;
+  data?: { title?: string; stepNumber?: string; logFileLineNumber?: string } | null;
+}
+
 export interface TimelineRecord {
   id: string;
   parentId: string | null;
@@ -68,6 +80,11 @@ export interface TimelineRecord {
   order?: number;
   workerName?: string | null;
   log?: { id: number } | null;
+  /** Engine annotations for this record (warnings, non-fatal errors, notices). */
+  issues?: Issue[] | null;
+  errorCount?: number | null;
+  warningCount?: number | null;
+  noticeCount?: number | null;
 }
 
 /** A runner as reported by the hub's local dashboard endpoint (GET /api/local/agents). */
