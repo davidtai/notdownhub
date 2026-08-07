@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { Runs } from "./Runs";
+import { Runs, AUTO_SEARCH_MAX_PAGES, AUTO_SEARCH_TARGET } from "./Runs";
 import { ThemeProvider } from "../lib/theme";
 import { mockFetch } from "../test/helpers";
 import { MockIntersectionObserver } from "../test/helpers";
@@ -195,6 +195,158 @@ describe("Runs", () => {
     fireEvent.click(pill.querySelector("button")!);
     await waitFor(() => expect(runLinks()).toHaveLength(3));
     expect(pillTexts()).toEqual([]);
+  });
+
+  // ── #89: a filter searches the FULL history, not just the loaded pages ──────
+  const filler = (page: number, n = 30) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: page * 100 + i + 1,
+      fileName: "ci.yml",
+      displayName: "CI",
+      owner: "acme",
+      repo: "widget",
+      status: "completed",
+      result: "succeeded",
+    }));
+  const needle = (id: number) => ({
+    id,
+    fileName: "deploy.yml",
+    displayName: "Needle Deploy",
+    owner: "legacy",
+    repo: "archive",
+    status: "completed",
+    result: "succeeded",
+  });
+
+  it("auto-loads older pages until a term that only matches page 3 surfaces its runs", async () => {
+    // The needles live ONLY on page 3 — far past the initially loaded page 0.
+    mockFetch(
+      pagedRuns({
+        0: filler(0),
+        1: filler(1),
+        2: filler(2),
+        3: [needle(900), needle(901), needle(902)],
+        4: [],
+      }),
+    );
+    renderRuns();
+    await waitFor(() => expect(runLinks()).toHaveLength(30));
+
+    type("needle");
+    enter();
+    // The bounded auto-search walks pages 1→4 and surfaces the old matches.
+    await waitFor(() => expect(runLinks()).toHaveLength(3), { timeout: 10_000 });
+    expect(runLinks().map((a) => a.getAttribute("href"))).toEqual([
+      "/runs/900",
+      "/runs/901",
+      "/runs/902",
+    ]);
+    // History is exhausted (page 4 empty) → the search ended, nothing spins on.
+    // In a waitFor: the 3 matches render while page 4 is still in flight (3 < target),
+    // so the searching state clears only after that final fetch resolves.
+    await waitFor(
+      () => expect(screen.queryByText("Searching older runs…")).toBeNull(),
+      { timeout: 10_000 },
+    );
+  });
+
+  it("shows a searching affordance while older pages are being fetched", async () => {
+    // Page 2 hangs until released, freezing the search mid-flight so the
+    // "Searching older runs…" state is observable deterministically.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const spec = pagedRuns({ 0: filler(0), 1: filler(1), 2: [needle(900)], 3: [] });
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (/page=2/.test(url)) await gate;
+      const r = spec(url) ?? { body: [] };
+      return { ok: true, status: 200, statusText: "OK", json: async () => r.body, headers: new Headers() } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    renderRuns();
+    await waitFor(() => expect(runLinks()).toHaveLength(30));
+    type("needle");
+    enter();
+    // Stalled on page 2 → zero matches yet, and the UI says it is still looking.
+    await waitFor(() => expect(screen.getByText("Searching older runs…")).toBeTruthy());
+    expect(screen.queryByText("No runs match these filters.")).toBeNull();
+
+    release();
+    await waitFor(() => expect(runLinks()).toHaveLength(1));
+    expect(runLinks()[0].getAttribute("href")).toBe("/runs/900");
+  });
+
+  it("terminates a zero-match search at the end of history with the empty state", async () => {
+    mockFetch(pagedRuns({ 0: filler(0), 1: filler(1), 2: filler(2), 3: [] }));
+    renderRuns();
+    await waitFor(() => expect(runLinks()).toHaveLength(30));
+
+    type("nonesuch");
+    enter();
+    // The search drains every page, finds nothing, and settles on the empty state.
+    // One waitFor asserts the whole settled state, so a slow final fetch can
+    // never race an immediate assertion.
+    await waitFor(
+      () => {
+        expect(screen.getByText("No runs match these filters.")).toBeTruthy();
+        expect(screen.queryByText("Searching older runs…")).toBeNull();
+        expect(screen.queryByText("Search older runs")).toBeNull();
+      },
+      { timeout: 10_000 },
+    );
+  });
+
+  it("pauses at the page bound with a 'Search older runs' control that resumes", async () => {
+    // Endless non-matching history: every page below the needle page returns one
+    // filler row, so the tranche bound — not the data — must stop the search.
+    const needlePage = AUTO_SEARCH_MAX_PAGES + 3;
+    mockFetch((url: string) => {
+      if (!url.includes("/workflow/runs")) return undefined;
+      const p = Number(url.match(/page=(\d+)/)?.[1] ?? 0);
+      if (p === needlePage) return { body: [needle(9999)] };
+      if (p > needlePage) return { body: [] };
+      return { body: filler(p, 1) };
+    });
+    renderRuns();
+    await waitFor(() => expect(runLinks()).toHaveLength(1));
+
+    type("needle");
+    enter();
+    // Exactly AUTO_SEARCH_MAX_PAGES pages are fetched, then the search pauses.
+    await waitFor(() => expect(screen.getByText("Search older runs")).toBeTruthy(), { timeout: 10_000 });
+    expect(screen.getByText("No matches in the runs searched so far.")).toBeTruthy();
+    expect(screen.getByText(/Searched \d+ runs — 0 matches so far\./)).toBeTruthy();
+    expect(runLinks()).toHaveLength(0);
+
+    // Resuming grants a fresh tranche, which reaches the needle page.
+    fireEvent.click(screen.getByText("Search older runs"));
+    await waitFor(() => expect(runLinks()).toHaveLength(1), { timeout: 10_000 });
+    expect(runLinks()[0].getAttribute("href")).toBe("/runs/9999");
+  });
+
+  it("keeps infinite scroll working while a filter is active", async () => {
+    // Page 0 already satisfies the match target, so the auto-search idles; the
+    // sentinel must then extend the search (not stall) when it enters view.
+    const page0 = Array.from({ length: AUTO_SEARCH_TARGET }, (_, i) => needle(i + 1));
+    mockFetch(
+      pagedRuns({
+        0: page0,
+        1: [needle(500)],
+        2: [],
+      }),
+    );
+    renderRuns();
+    await waitFor(() => expect(runLinks()).toHaveLength(AUTO_SEARCH_TARGET));
+
+    type("needle");
+    enter();
+    await waitFor(() => expect(runLinks()).toHaveLength(AUTO_SEARCH_TARGET));
+
+    // Scrolling to the sentinel keeps searching older pages for more matches.
+    MockIntersectionObserver.enter();
+    await waitFor(() => expect(runLinks()).toHaveLength(AUTO_SEARCH_TARGET + 1), { timeout: 10_000 });
+    // Page 2 is empty → end of history → the sentinel retires.
+    await waitFor(() => expect(screen.queryByTestId("infinite-sentinel")).toBeNull());
   });
 
   it("does not duplicate a ?project= pill that is already saved", async () => {
