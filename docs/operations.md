@@ -262,9 +262,11 @@ Current runner version: '3.14.0'
 ```
 
 With exactly one joined runner you can omit the name (`ndh runner start`); with
-zero or several it asks you to specify which. `ndh runner list` prints joined
-names. To start at boot, wrap it in a service (below) or use the
-[Docker runner image](install.md#4-docker-fleet-runner-image).
+zero or several it asks you to specify which. `ndh runner list` shows the
+instances joined on this machine, each with its labels and whether it is running.
+`ndh runner list --server <hub>` shows the hub's whole fleet instead, with each
+runner's busy/idle/offline state. To start at boot, wrap it in a service (below)
+or use the [Docker runner image](install.md#4-docker-fleet-runner-image).
 
 ### Removing
 

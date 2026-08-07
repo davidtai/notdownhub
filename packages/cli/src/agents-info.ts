@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import { hubDbPath, unwrap } from "./lib.js";
 
 /**
@@ -151,3 +150,65 @@ export async function getAgentsInfo(hubPort: number, mint: () => Promise<string 
     };
   });
 }
+
+// ── Per-run execution metadata (which runner ran it, when, how long) ──────────
+/**
+ * How a run actually executed, derived from the hub's own DB: the runner(s) that ran its jobs
+ * (TimeLineRecords.WorkerName), when it started/finished, and the wall-clock duration. Read-only.
+ * Only runs a runner actually picked up have Job timeline records, so a run with no entry here
+ * simply never ran on the fleet (rendered without these extras rather than with fabricated ones).
+ */
+export interface RunMeta {
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+  runners: string[];
+}
+
+/** Parse the hub's "YYYY-MM-DD HH:MM:SS.ffffff" (UTC) timestamps into epoch ms, or NaN. */
+function parseHubTime(s: string): number {
+  // Space→T and an explicit Z; JS truncates sub-millisecond digits, which is fine for a duration.
+  return Date.parse(`${s.replace(" ", "T")}Z`);
+}
+
+/**
+ * Execution metadata for every run that ran on the fleet, keyed by run id, read from the hub DB.
+ * Returns an empty map when the DB can't be read (not co-located / experimental sqlite absent).
+ */
+export async function readRunMeta(hubDb: string = hubDbPath()): Promise<Map<number, RunMeta>> {
+  const out = new Map<number, RunMeta>();
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(hubDb, { readOnly: true });
+    try {
+      const rows = db
+        .prepare(
+          `SELECT j.runid AS runid, t.WorkerName AS worker, t.StartTime AS started, t.FinishTime AS finished
+           FROM Jobs j JOIN TimeLineRecords t ON t.TimelineId = j.TimeLineId AND t.RecordType = 'Job'`,
+        )
+        .all() as unknown as { runid: number; worker: string | null; started: string | null; finished: string | null }[];
+      for (const r of rows) {
+        const m = out.get(r.runid) ?? { runners: [] as string[] };
+        if (r.worker && !m.runners.includes(r.worker)) m.runners.push(r.worker);
+        // Fixed-width UTC strings compare lexicographically, so min start / max finish are string min/max.
+        if (r.started && (!m.startedAt || r.started < m.startedAt)) m.startedAt = r.started;
+        if (r.finished && (!m.finishedAt || r.finished > m.finishedAt)) m.finishedAt = r.finished;
+        out.set(r.runid, m);
+      }
+      for (const m of out.values()) {
+        if (m.startedAt && m.finishedAt) {
+          const d = parseHubTime(m.finishedAt) - parseHubTime(m.startedAt);
+          if (Number.isFinite(d) && d >= 0) m.durationMs = d;
+        }
+      }
+    } finally {
+      db.close();
+    }
+  } catch {
+    /* DB unavailable → empty map (callers render runs without the extras) */
+  }
+  return out;
+}
+
+/** Exposed for tests. */
+export const __test = { parseHubTime };

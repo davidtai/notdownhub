@@ -5,7 +5,7 @@ import { createServer, type AddressInfo, type Server } from "node:net";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { prepareHub, resolveBasicAuth, __test as hub } from "../hub.js";
+import { prepareHub, resolveBasicAuth, localHubTarget, hubPidPath, __test as hub } from "../hub.js";
 import { uiDistDir } from "../front.js";
 import { __test as fl } from "../filelog.js";
 import { freshHome } from "./helpers.js";
@@ -219,6 +219,18 @@ test("hubUp: uses the real signal/exit wiring when those deps are omitted", asyn
     if (ls.length) process.removeListener(sig, ls[ls.length - 1] as never);
   }
   fl.reset();
+});
+
+test("localHubTarget: null with no pid file; hubPort + persisted token when a local hub is up (#68)", async () => {
+  const home = freshHome();
+  assert.equal(await localHubTarget(), null); // no hub running locally
+  mkdirSync(join(home, "hub"), { recursive: true });
+  writeFileSync(hubPidPath(), JSON.stringify({ frontPid: 1, childPid: 2, port: 6099, hubPort: 6100 }));
+  writeFileSync(join(home, "hub", "runner-token"), "hubtok\n");
+  assert.deepEqual(await localHubTarget(), { hubPort: 6100, runnerToken: "hubtok" });
+  // A hub started with --no-auth has no token file → runnerToken undefined.
+  rmSync(join(home, "hub", "runner-token"));
+  assert.deepEqual(await localHubTarget(), { hubPort: 6100, runnerToken: undefined });
 });
 
 test("hubUp exists via __test alongside prepareHub/detectLanIp", () => {

@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { statusCmd, projectLabel } from "../status.js";
+import { statusCmd, projectLabel, fmtDuration, fmtTime } from "../status.js";
+import type { Fleet } from "../fleet.js";
+import type { AgentInfo, RunMeta } from "../agents-info.js";
 import { startServer } from "./helpers.js";
 
 function capture(): { logs: string[]; restore: () => void } {
@@ -10,19 +12,30 @@ function capture(): { logs: string[]; restore: () => void } {
   return { logs, restore: () => (console.log = orig) };
 }
 
-type Routes = Record<string, unknown>;
-async function hubServing(routes: Routes) {
+/** A fake hub serving only the runs list (the runner fleet is injected via the `fleet` seam). */
+async function runsServing(runs: unknown) {
   return startServer((req, res) => {
-    const path = (req.url ?? "").replace(/\?.*$/, "").replace(/^\//, "");
-    if (!(path in routes)) {
-      res.writeHead(500);
-      res.end("no route");
+    if ((req.url ?? "").startsWith("/_apis/v1/Message/workflow/runs")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(runs));
       return;
     }
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(routes[path]));
+    res.writeHead(500);
+    res.end("no route");
   });
 }
+
+const agent = (name: string, labels: string[], state: AgentInfo["state"]): AgentInfo => ({
+  name,
+  labels,
+  online: state !== "offline",
+  busy: state === "active",
+  state,
+  ephemeral: false,
+});
+const richFleet = (agents: AgentInfo[]): ((s: string) => Promise<Fleet>) => async () => ({ rich: true, agents });
+const namesFleet = (agents: AgentInfo[]): ((s: string) => Promise<Fleet>) => async () => ({ rich: false, agents });
+const noMeta = async () => new Map<number, RunMeta>();
 
 test("projectLabel: joins owner/repo, tolerates a missing half, and falls back to local", () => {
   assert.equal(projectLabel({ owner: "acme", repo: "widget" }), "acme/widget");
@@ -31,113 +44,132 @@ test("projectLabel: joins owner/repo, tolerates a missing half, and falls back t
   assert.equal(projectLabel({}), "local");
 });
 
-test("statusCmd: prints runners (array shapes) and recent runs with all field fallbacks", async () => {
-  const srv = await hubServing({
-    "_apis/v1/AgentPools": [{ id: 1 }],
-    "_apis/v1/Agent/1": [
-      { name: "mac-runner", labels: [{ name: "self-hosted" }, { name: "macOS" }, {}] },
-      { name: "linux-runner", labels: [{ name: "self-hosted" }] },
-    ],
-    "_apis/v1/Message/workflow/runs": [
-      { id: 7, displayName: "CI", status: "completed", result: "success", eventName: "push", owner: "acme", repo: "widget" },
-      { id: 8, fileName: "release.yml", status: "in_progress" },
-      { id: 9 },
-    ],
-  });
+test("fmtDuration: ms / seconds / minutes", () => {
+  assert.equal(fmtDuration(820), "820ms");
+  assert.equal(fmtDuration(3200), "3.2s");
+  assert.equal(fmtDuration(64000), "1m04s");
+});
+
+test("fmtTime: trims the hub timestamp to whole seconds with a UTC marker", () => {
+  assert.equal(fmtTime("2026-08-07 06:42:34.833163"), "2026-08-07 06:42:34Z");
+  assert.equal(fmtTime("garbage"), "garbage");
+});
+
+test("statusCmd: rich fleet shows labels + online/busy/idle/offline state (#68)", async () => {
+  const srv = await runsServing([]);
   const cap = capture();
   try {
-    const code = await statusCmd(srv.url);
+    const code = await statusCmd(srv.url, {
+      fleet: richFleet([
+        agent("runner-a", ["self-hosted", "macOS", "ARM64", "gpu"], "idle"),
+        agent("runner-b", ["self-hosted", "linux", "X64", "cpu"], "offline"),
+        agent("runner-c", ["self-hosted"], "active"),
+      ]),
+      runMeta: noMeta,
+    });
     assert.equal(code, 0);
     const out = cap.logs.join("\n");
-    assert.match(out, /mac-runner {2}\[self-hosted,macOS\]/);
-    assert.match(out, /linux-runner {2}\[self-hosted\]/);
-    // Each recent-runs line now carries its project in [brackets].
-    assert.match(out, /#7 {2}CI {2}\[acme\/widget\] {2}completed\/success {2}\(push\)/);
-    assert.match(out, /#8 {2}release\.yml {2}\[local\] {2}in_progress {2}\(\?\)/);
-    assert.match(out, /#9 {2}\? {2}\[local\]\s+\(\?\)/); // no project recorded → local fallback
+    assert.match(out, /runner-a {2}\[self-hosted,macOS,ARM64,gpu\] {2}online, idle/);
+    assert.match(out, /runner-b {2}\[self-hosted,linux,X64,cpu\] {2}offline/);
+    assert.match(out, /runner-c {2}\[self-hosted\] {2}online, busy/);
   } finally {
     cap.restore();
     await srv.close();
   }
 });
 
-test("statusCmd: supports the {value:[...]} envelope and reports empties", async () => {
-  const srv = await hubServing({
-    "_apis/v1/AgentPools": { value: [{ id: 3 }] },
-    "_apis/v1/Agent/3": { value: [] },
-    "_apis/v1/Message/workflow/runs": [],
-  });
+test("statusCmd: names-only fallback (remote hub) shows labels but no live state", async () => {
+  const srv = await runsServing([]);
   const cap = capture();
   try {
-    await statusCmd(srv.url + "/"); // already trailing-slashed
+    await statusCmd(srv.url, { fleet: namesFleet([agent("r1", ["self-hosted", "macOS"], "offline")]), runMeta: noMeta });
     const out = cap.logs.join("\n");
-    assert.match(out, /\(none registered\)/);
-    assert.match(out, /\(no runs yet\)/);
+    assert.match(out, /r1 {2}\[self-hosted,macOS\]/);
+    assert.doesNotMatch(out, /online|offline/); // no state column in the fallback
   } finally {
     cap.restore();
     await srv.close();
   }
 });
 
-test("statusCmd: tolerates envelope objects that omit `value` entirely", async () => {
-  const srv = await hubServing({
-    "_apis/v1/AgentPools": { value: [{ id: 5 }] },
-    "_apis/v1/Agent/5": {}, // object without a `value` array -> treated as no agents
-    "_apis/v1/Message/workflow/runs": [],
-  });
+test("statusCmd: no runners → (none registered)", async () => {
+  const srv = await runsServing([]);
   const cap = capture();
   try {
-    await statusCmd(srv.url);
-    assert.match(cap.logs.join("\n"), /\(none registered\)/);
+    await statusCmd(srv.url, { fleet: richFleet([]), runMeta: noMeta });
+    assert.match(cap.logs.join("\n"), /runners:\n {2}\(none registered\)/);
   } finally {
     cap.restore();
     await srv.close();
   }
 });
 
-test("statusCmd: an AgentPools envelope without `value` yields no runners", async () => {
-  const srv = await hubServing({
-    "_apis/v1/AgentPools": {}, // no value -> empty pool list
-    "_apis/v1/Message/workflow/runs": [],
-  });
+test("statusCmd: recent runs carry project + timestamp/duration/runner when the run executed (#68)", async () => {
+  const srv = await runsServing([
+    { id: 7, displayName: "CI", status: "completed", result: "success", eventName: "push", owner: "acme", repo: "widget" },
+    { id: 8, fileName: "release.yml", status: "in_progress" },
+    { id: 9 }, // never ran on the fleet → no meta, plain line
+  ]);
+  const meta = new Map<number, RunMeta>([
+    [7, { startedAt: "2026-08-07 06:42:34.833163", finishedAt: "2026-08-07 06:42:38.933163", durationMs: 4100, runners: ["runner-a"] }],
+    [8, { runners: ["runner-b"] }], // running: a runner but no finish yet
+  ]);
   const cap = capture();
   try {
-    await statusCmd(srv.url);
-    assert.match(cap.logs.join("\n"), /\(none registered\)/);
+    await statusCmd(srv.url, { fleet: richFleet([]), runMeta: async () => meta });
+    const out = cap.logs.join("\n");
+    assert.match(out, /#7 {2}CI {2}\[acme\/widget\] {2}completed\/success {2}\(push\) {2}2026-08-07 06:42:34Z {2}4\.1s {2}on runner-a/);
+    assert.match(out, /#8 {2}release\.yml {2}\[local\] {2}in_progress {2}\(\?\) {2}on runner-b/);
+    assert.match(out, /#9 {2}\? {2}\[local\]\s+\(\?\)$/m); // no meta → plain line, no trailing extras
   } finally {
     cap.restore();
     await srv.close();
   }
 });
 
-test("statusCmd: a non-OK hub response throws (surfaced as a CLI failure)", async () => {
+test("statusCmd: no runs → (no runs yet)", async () => {
+  const srv = await runsServing([]);
+  const cap = capture();
+  try {
+    await statusCmd(srv.url, { fleet: richFleet([]), runMeta: noMeta });
+    assert.match(cap.logs.join("\n"), /\(no runs yet\)/);
+  } finally {
+    cap.restore();
+    await srv.close();
+  }
+});
+
+test("statusCmd: a non-connection error (e.g. a live hub's 5xx) still surfaces unchanged", async () => {
+  // fleet resolves ok; the runs fetch 500s → a non-connection error must propagate (reject).
   const srv = await startServer((_req, res) => {
     res.writeHead(503);
     res.end("down");
   });
   try {
-    await assert.rejects(() => statusCmd(srv.url), /AgentPools: 503/);
+    await assert.rejects(() => statusCmd(srv.url, { fleet: richFleet([]), runMeta: noMeta }), /workflow\/runs.*503|: 503/);
   } finally {
     await srv.close();
   }
 });
 
 test("statusCmd: an unreachable hub prints one [ndh] line + the underlying error, exits 1 (#69)", async () => {
-  // A server we start then immediately close gives us a definitely-dead port.
-  const srv = await startServer((_req, res) => res.end());
-  const url = srv.url;
-  await srv.close();
   const errs: string[] = [];
   const orig = console.error;
   console.error = (...a: unknown[]) => errs.push(a.join(" "));
   try {
-    const code = await statusCmd(url);
+    // The fallback fleet fetch fails with a connection error — the same surface as a down hub.
+    const connErr = new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:6099"), { code: "ECONNREFUSED" }) });
+    const code = await statusCmd("http://127.0.0.1:6099", {
+      fleet: async () => {
+        throw connErr;
+      },
+      runMeta: noMeta,
+    });
     assert.equal(code, 1);
     const out = errs.join("\n");
-    assert.match(out, new RegExp(`can't reach the hub at ${url.replace(/[.]/g, "\\.")}`));
+    assert.match(out, /can't reach the hub at http:\/\/127\.0\.0\.1:6099/);
     assert.match(out, /ndh hub up/);
-    assert.match(out, /ECONNREFUSED/); // underlying error kept for debugging
-    assert.doesNotMatch(out, /fetch failed$/m); // the cryptic bare message is gone
+    assert.match(out, /ECONNREFUSED/);
   } finally {
     console.error = orig;
   }

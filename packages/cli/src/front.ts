@@ -69,7 +69,7 @@ function denyUi(res: http.ServerResponse, opts: FrontOptions): void {
 }
 
 /** The hub's Agent* endpoints require a management JWT even for reads; mint one via the registration route. */
-function managementJwt(hubPort: number, runnerToken: string | undefined) {
+export function managementJwt(hubPort: number, runnerToken: string | undefined) {
   let cached: { token: string; at: number } | null = null;
   return async (): Promise<string | null> => {
     if (cached && Date.now() - cached.at < 45 * 60_000) return cached.token;

@@ -385,3 +385,127 @@ test("defaultName / defaultLabels reflect host, platform and arch", () => {
   assert.equal(withPlatform("win32", "x64", runner.defaultLabels), "self-hosted,Windows,X64");
   assert.equal(withPlatform("linux", "arm64", runner.defaultLabels), "self-hosted,Linux,ARM64");
 });
+
+// ── runner list (#68) ─────────────────────────────────────────────────────────
+function captureLog(): { logs: string[]; restore: () => void } {
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => logs.push(a.join(" "));
+  return { logs, restore: () => (console.log = orig) };
+}
+
+test("join_ records the labels so runner list can show them offline", async () => {
+  const home = freshHome();
+  const dir = join(home, "runners", "r1");
+  const code = await runner.join_(
+    "http://hub:4949",
+    { name: "r1", labels: "self-hosted,macOS,ARM64,gpu", token: "t" },
+    {
+      ensure: async () => 0,
+      copyVendor: async (d) => {
+        const exe = runner.listenerExe(d);
+        mkdirSync(join(exe, ".."), { recursive: true });
+        writeFileSync(exe, "x");
+      },
+      run: async () => 0,
+    },
+  );
+  assert.equal(code, 0);
+  assert.equal(await runner.readLabels(dir), "self-hosted,macOS,ARM64,gpu");
+});
+
+test("runner list (local): shows each instance's labels + running/stopped, under a labeled section", async () => {
+  const home = freshHome();
+  const aDir = seedRunner(home, "runner-a");
+  seedRunner(home, "runner-b");
+  writeFileSync(join(aDir, "labels"), "self-hosted,macOS,gpu\n");
+  // runner-b has no labels file (e.g. joined before #68) → empty labels.
+  const cap = captureLog();
+  try {
+    const code = await runner.list(
+      {},
+      { findListener: async (dir) => (dir === aDir ? [111] : []) }, // a running, b stopped
+    );
+    assert.equal(code, 0);
+    const out = cap.logs.join("\n");
+    assert.match(out, /local runner instances:/);
+    assert.match(out, /runner-a {2}\[self-hosted,macOS,gpu\] {2}running/);
+    assert.match(out, /runner-b {2}\[\] {2}stopped/);
+  } finally {
+    cap.restore();
+  }
+});
+
+test("runner list (local): none joined prints a helpful empty line", async () => {
+  freshHome();
+  const cap = captureLog();
+  try {
+    assert.equal(await runner.list({}, {}), 0);
+    assert.match(cap.logs.join("\n"), /local runner instances:\n {2}\(none joined/);
+  } finally {
+    cap.restore();
+  }
+});
+
+test("runner list --server: shows the hub fleet with labels + live state (rich)", async () => {
+  freshHome();
+  const cap = captureLog();
+  try {
+    const code = await runner.list(
+      { server: "http://127.0.0.1:6099" },
+      {
+        fleet: async () => ({
+          rich: true,
+          agents: [
+            { name: "runner-a", labels: ["self-hosted", "gpu"], online: true, busy: true, state: "active", ephemeral: false },
+            { name: "runner-b", labels: ["self-hosted"], online: false, busy: false, state: "offline", ephemeral: false },
+          ],
+        }),
+      },
+    );
+    assert.equal(code, 0);
+    const out = cap.logs.join("\n");
+    assert.match(out, /fleet @ http:\/\/127\.0\.0\.1:6099:/);
+    assert.match(out, /runner-a {2}\[self-hosted,gpu\] {2}online, busy/);
+    assert.match(out, /runner-b {2}\[self-hosted\] {2}offline/);
+  } finally {
+    cap.restore();
+  }
+});
+
+test("runner list --server: names-only fallback when the fleet is not rich", async () => {
+  freshHome();
+  const cap = captureLog();
+  try {
+    await runner.list(
+      { server: "http://hub.tailnet:4949" },
+      { fleet: async () => ({ rich: false, agents: [{ name: "r1", labels: ["self-hosted"], online: false, busy: false, state: "offline", ephemeral: false }] }) },
+    );
+    const out = cap.logs.join("\n");
+    assert.match(out, /r1 {2}\[self-hosted\]/);
+    assert.doesNotMatch(out, /online|offline/);
+  } finally {
+    cap.restore();
+  }
+});
+
+test("runner list --server: an unreachable hub prints the [ndh] line and exits 1 (#69 parity)", async () => {
+  freshHome();
+  const errs: string[] = [];
+  const orig = console.error;
+  console.error = (...a: unknown[]) => errs.push(a.join(" "));
+  try {
+    const code = await runner.list(
+      { server: "http://127.0.0.1:6099" },
+      {
+        fleet: async () => {
+          throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }) });
+        },
+      },
+    );
+    assert.equal(code, 1);
+    assert.match(errs.join("\n"), /can't reach the hub at http:\/\/127\.0\.0\.1:6099/);
+  } finally {
+    console.error = orig;
+  }
+});

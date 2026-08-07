@@ -104,6 +104,26 @@ export function hubPidPath(): string {
   return join(ndhHome(), "hub", "hub.pid");
 }
 
+/** The internal Runner.Server port + registration token of the hub running on THIS machine. */
+export interface LocalHubTarget {
+  hubPort: number;
+  runnerToken?: string;
+}
+
+/**
+ * Details of a hub running on this machine, from the pid file `ndh hub up` wrote (plus its
+ * persisted registration token), or null when no local hub is running. Lets a co-located CLI
+ * read the rich runner/run data the UI reads — via the same management-JWT + hub-DB path the
+ * front uses — without going through (or weakening) the loopback-gated local API.
+ */
+export async function localHubTarget(): Promise<LocalHubTarget | null> {
+  const rec = readPidFile(hubPidPath());
+  if (!rec) return null;
+  const tokenFile = join(ndhHome(), "hub", "runner-token");
+  const runnerToken = (await exists(tokenFile)) ? (await readFile(tokenFile, "utf8")).trim() : undefined;
+  return { hubPort: rec.hubPort, runnerToken: runnerToken || undefined };
+}
+
 /**
  * Resolve whether `port` is bindable right now. Binds an ephemeral listener on 0.0.0.0 (matching how
  * the front / Runner.Server bind all interfaces) and closes it immediately: resolves false if the
