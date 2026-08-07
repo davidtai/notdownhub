@@ -129,6 +129,46 @@ describe("Runners", () => {
     expect(screen.queryByTestId("infinite-sentinel")).toBeNull();
   });
 
+  // ── #89: the filter searches the whole fleet, not just the visible window ──
+  const bigFleet = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: i + 1,
+      poolId: 1,
+      name: i === 25 ? "zebra-special" : `fleet-${String(i).padStart(2, "0")}`,
+      labels: [],
+      online: true,
+      busy: false,
+      state: "idle" as const,
+    }));
+
+  it("surfaces a match far beyond the first window (#89)", async () => {
+    // The only "zebra" runner is the 26th of 30 — deep past the 12-row window.
+    mockFetch(routes({ "/api/local/agents": bigFleet(30) }));
+    renderRunners();
+    await waitFor(() => expect(screen.getByText("fleet-00")).toBeTruthy());
+    expect(screen.queryByText("zebra-special")).toBeNull();
+
+    type("zebra");
+    // Filtering runs over the full fleet before windowing, so the match appears.
+    await waitFor(() => expect(screen.getByText("zebra-special")).toBeTruthy());
+    expect(screen.queryByText("fleet-00")).toBeNull();
+  });
+
+  it("resets the window when the filter changes", async () => {
+    mockFetch(routes({ "/api/local/agents": bigFleet(30) }));
+    renderRunners();
+    await waitFor(() => expect(screen.getByText("fleet-00")).toBeTruthy());
+
+    // Grow the window to 24 rows, then change the filter.
+    MockIntersectionObserver.enter();
+    await waitFor(() => expect(screen.getByText("fleet-23")).toBeTruthy());
+    type("fleet");
+    // A fresh search starts from a fresh 12-row window.
+    await waitFor(() => expect(screen.queryByText("fleet-23")).toBeNull());
+    expect(screen.getByText("fleet-11")).toBeTruthy();
+    expect(screen.queryByText("fleet-12")).toBeNull();
+  });
+
   // ── #72 remove runner ───────────────────────────────────────────────────────
 
   it("opens a confirm dialog whose copy explains hub-unregister vs. machine cleanup", async () => {

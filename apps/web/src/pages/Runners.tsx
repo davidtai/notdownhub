@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Cpu, Layers, Trash2, TriangleAlert, X } from "lucide-react";
 import { getAgents, removeAgent, type RunnerInfo } from "../lib/api";
 import { usePersistentStrings, usePoll } from "../lib/hooks";
@@ -142,6 +142,9 @@ export function Runners() {
   const [pills, setPills] = usePersistentStrings(FILTER_KEY);
   const [draft, setDraft] = useState("");
   const terms = useMemo(() => [...pills, draft], [pills, draft]);
+  // The filter runs over the ENTIRE fleet before any windowing (#89): the agents
+  // endpoint returns everything in one shot, so a match beyond the current window
+  // is never lost — it lands in `filtered` and surfaces at the top of the slice.
   const filtered = useMemo(
     () => filterByTerms(listAll, terms, runnerHaystack),
     [listAll, terms],
@@ -152,6 +155,14 @@ export function Runners() {
   const shown = filtered.slice(0, visible);
   const hasMore = filtered.length > shown.length;
   const loadMore = useCallback(() => setVisible((v) => v + RUNNERS_PAGE), []);
+
+  // A new term set starts a fresh window, so earlier deep scrolling in one search
+  // does not bleed an oversized window into the next.
+  const termsKey = useMemo(
+    () => terms.map((t) => t.trim().toLowerCase()).filter(Boolean).join(" "),
+    [terms],
+  );
+  useEffect(() => setVisible(RUNNERS_PAGE), [termsKey]);
 
   return (
     <div className="min-h-full">
