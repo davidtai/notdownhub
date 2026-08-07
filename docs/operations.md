@@ -674,6 +674,11 @@ GitHub webhooks do not reach your hub. Start a run through one of three paths:
 The three paths are coherent: each one hands a workflow to the hub. The rest of
 this section covers the git-server path in detail.
 
+Before it dispatches, `ndh dispatch` probes the `--server` URL. A refused port or
+an unresolved host blocks the dispatch with one clear line. A transient reset or
+a slow first response only warns, then proceeds; the dispatch surfaces any real
+error itself. The probe waits 2 seconds. Set `NDH_PROBE_TIMEOUT_MS` to change it.
+
 ### Trigger CI from a git server
 
 A bare git server can trigger CI on a branch update. A `post-receive` hook

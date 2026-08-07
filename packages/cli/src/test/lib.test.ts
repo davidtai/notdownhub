@@ -18,6 +18,9 @@ import {
   connErrorCode,
   rootErrorMessage,
   hubUnreachableMessage,
+  hubProbeAmbiguousMessage,
+  isDefinitiveDown,
+  DEFAULT_PROBE_TIMEOUT_MS,
   probeServer,
 } from "../lib.js";
 import { initFileLog, __test as fl } from "../filelog.js";
@@ -192,6 +195,28 @@ test("hubUnreachableMessage names the URL and the two likely causes", () => {
   assert.match(m, /--server/);
 });
 
+test("isDefinitiveDown: only refused/dns/route codes prove the hub is down (#85)", () => {
+  for (const c of ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH"]) {
+    assert.equal(isDefinitiveDown(c), true, `${c} is definitive`);
+  }
+  // A live hub can transiently throw these, so they are NOT definitive.
+  for (const c of ["ECONNRESET", "ETIMEDOUT"]) {
+    assert.equal(isDefinitiveDown(c), false, `${c} is ambiguous`);
+  }
+  assert.equal(isDefinitiveDown(null), false);
+  assert.equal(isDefinitiveDown(undefined), false);
+});
+
+test("hubProbeAmbiguousMessage names the URL and says it is continuing", () => {
+  const m = hubProbeAmbiguousMessage("http://hub:4949");
+  assert.match(m, /http:\/\/hub:4949/);
+  assert.match(m, /continuing/);
+});
+
+test("DEFAULT_PROBE_TIMEOUT_MS is a short LAN-friendly default (2s)", () => {
+  assert.equal(DEFAULT_PROBE_TIMEOUT_MS, 2000);
+});
+
 test("probeServer: a listening host is reachable; a dead port is not (real sockets)", async () => {
   const srv = await startServer((_req, res) => {
     res.writeHead(200);
@@ -210,6 +235,24 @@ test("probeServer: a listening host is reachable; a dead port is not (real socke
 test("probeServer: a non-connection fetch failure is treated as reachable (let the real command speak)", async () => {
   // An unparseable URL rejects fetch without a connection code → probe stays optimistic.
   assert.deepEqual(await probeServer("http://[bad"), { ok: true });
+});
+
+test("probeServer: NDH_PROBE_TIMEOUT_MS overrides the default timeout", async () => {
+  const srv = await startServer((_req, res) => {
+    res.writeHead(200);
+    res.end("ok");
+  });
+  const prev = process.env.NDH_PROBE_TIMEOUT_MS;
+  process.env.NDH_PROBE_TIMEOUT_MS = "1500"; // valid override → honored, no explicit arg
+  try {
+    assert.deepEqual(await probeServer(srv.url), { ok: true });
+    process.env.NDH_PROBE_TIMEOUT_MS = "notanumber"; // invalid → falls back to the default
+    assert.deepEqual(await probeServer(srv.url), { ok: true });
+  } finally {
+    if (prev === undefined) delete process.env.NDH_PROBE_TIMEOUT_MS;
+    else process.env.NDH_PROBE_TIMEOUT_MS = prev;
+    await srv.close();
+  }
 });
 
 test("humanSize renders bytes through terabytes and rejects nonsense", () => {

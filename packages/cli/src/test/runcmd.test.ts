@@ -113,34 +113,75 @@ test("serverArg: reads --server <url> and --server=<url>, else null", () => {
   assert.equal(serverArg(["--server"]), null); // dangling flag, no value
 });
 
-test("dispatchCmd: an unreachable hub prints one [ndh] line + the underlying error, exits 1, never spawns", async () => {
-  const cap = capture(() => "acme/widget");
+/** Run dispatchCmd with console.error captured; returns exit code + joined stderr. */
+async function dispatchWithLogs(argv: string[], deps: Parameters<typeof dispatchCmd>[1]) {
   const logs: string[] = [];
   const orig = console.error;
   console.error = (...a: unknown[]) => logs.push(a.join(" "));
   try {
-    const code = await dispatchCmd(["--server", "http://127.0.0.1:6099", "-W", "."], {
-      ...cap.deps,
-      probe: async () => ({ ok: false, code: "ECONNREFUSED", detail: "connect ECONNREFUSED 127.0.0.1:6099" }),
-    });
-    assert.equal(code, 1);
-    assert.equal(cap.spawned(), false, "Runner.Client must not be spawned when the hub is unreachable");
-    const out = logs.join("\n");
-    assert.match(out, /can't reach the hub at http:\/\/127\.0\.0\.1:6099/);
-    assert.match(out, /ndh hub up/);
-    assert.match(out, /connect ECONNREFUSED 127\.0\.0\.1:6099/); // underlying error on its own line
-    assert.doesNotMatch(out, /Exception:/); // the leaked vendored error is gone
+    const code = await dispatchCmd(argv, deps);
+    return { code, out: logs.join("\n") };
   } finally {
     console.error = orig;
   }
+}
+
+test("dispatchCmd: a DEFINITIVE-down hub prints one [ndh] line + the underlying error, exits 1, never spawns", async () => {
+  const cap = capture(() => "acme/widget");
+  const { code, out } = await dispatchWithLogs(["--server", "http://127.0.0.1:6099", "-W", "."], {
+    ...cap.deps,
+    probe: async () => ({ ok: false, code: "ECONNREFUSED", detail: "connect ECONNREFUSED 127.0.0.1:6099" }),
+  });
+  assert.equal(code, 1);
+  assert.equal(cap.spawned(), false, "Runner.Client must not be spawned when the hub is definitively down");
+  assert.match(out, /can't reach the hub at http:\/\/127\.0\.0\.1:6099/);
+  assert.match(out, /ndh hub up/);
+  assert.match(out, /connect ECONNREFUSED 127\.0\.0\.1:6099/); // underlying error on its own line
+  assert.doesNotMatch(out, /Exception:/); // the leaked vendored error is gone
 });
 
-test("dispatchCmd: a reachable hub proceeds to spawn Runner.Client (probe ok)", async () => {
+test("dispatchCmd: every DEFINITIVE-down code hard-blocks (refused/dns/route)", async () => {
+  for (const c of ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH"]) {
+    const cap = capture(() => "acme/widget");
+    const { code } = await dispatchWithLogs(["--server", "http://hub:4949", "-W", "."], {
+      ...cap.deps,
+      probe: async () => ({ ok: false, code: c, detail: `${c} detail` }),
+    });
+    assert.equal(code, 1, `${c} must hard-block`);
+    assert.equal(cap.spawned(), false, `${c} must not spawn`);
+  }
+});
+
+test("dispatchCmd: an AMBIGUOUS probe (reset) warns but PROCEEDS to spawn Runner.Client (#85)", async () => {
   const cap = capture(() => "acme/widget");
-  const code = await dispatchCmd(["--server", "http://hub:4949", "--event", "push"], {
+  const { code, out } = await dispatchWithLogs(["--server", "http://hub:4949", "--event", "push"], {
+    ...cap.deps,
+    probe: async () => ({ ok: false, code: "ECONNRESET", detail: "read ECONNRESET" }),
+  });
+  assert.equal(code, 0);
+  assert.ok(cap.spawned(), "a reset probe must not block a hub that may be up");
+  assert.match(out, /slow\/reset to reach; continuing/);
+  assert.doesNotMatch(out, /can't reach the hub/); // NOT the hard-block message
+});
+
+test("dispatchCmd: an AMBIGUOUS probe (timeout) warns but PROCEEDS to spawn Runner.Client (#85)", async () => {
+  const cap = capture(() => "acme/widget");
+  const { code, out } = await dispatchWithLogs(["--server", "http://hub:4949", "--event", "push"], {
+    ...cap.deps,
+    probe: async () => ({ ok: false, code: "ETIMEDOUT", detail: "timed out" }),
+  });
+  assert.equal(code, 0);
+  assert.ok(cap.spawned(), "a timeout probe must not block a hub that may be up");
+  assert.match(out, /slow\/reset to reach; continuing/);
+});
+
+test("dispatchCmd: a reachable hub proceeds to spawn Runner.Client, silently (probe ok)", async () => {
+  const cap = capture(() => "acme/widget");
+  const { code, out } = await dispatchWithLogs(["--server", "http://hub:4949", "--event", "push"], {
     ...cap.deps,
     probe: async () => ({ ok: true }),
   });
   assert.equal(code, 0);
   assert.ok(cap.spawned(), "reachable hub -> Runner.Client is invoked");
+  assert.equal(out, "", "a reachable hub logs nothing at the pre-flight");
 });

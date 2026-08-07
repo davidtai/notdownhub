@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { basename, join } from "node:path";
 import { ensureVendor } from "./vendor.js";
-import { hubUnreachableMessage, log, ndhHome, probeServer, run, vendorExe, type Reachability } from "./lib.js";
+import { hubProbeAmbiguousMessage, hubUnreachableMessage, isDefinitiveDown, log, ndhHome, probeServer, run, vendorExe, type Reachability } from "./lib.js";
 import { initFileLog } from "./filelog.js";
 import { currentRepoSlug, withRunnerSecrets } from "./secrets.js";
 import { withRunnerVars } from "./vars.js";
@@ -89,14 +89,22 @@ export async function dispatchCmd(argv: string[], deps: RunDeps = {}): Promise<n
     console.error("usage: ndh dispatch --server http://hub:4949 [Runner.Client args...]");
     return 2;
   }
-  // Pre-flight: an unreachable hub (down / wrong port / wrong --server) is the single most common
-  // dispatch failure (#69). Catch it here and print one actionable [ndh] line instead of leaking
-  // Runner.Client's raw "Exception: Connection refused". The underlying error follows for debugging.
+  // Pre-flight: a definitively-down hub (down / wrong port / wrong --server) is the single most
+  // common dispatch failure (#69). Catch it here and print one actionable [ndh] line instead of
+  // leaking Runner.Client's raw "Exception: Connection refused". The underlying error follows.
+  //
+  // But a live hub can transiently reset or answer slowly (#85), so only DEFINITIVE-down codes
+  // hard-block. An AMBIGUOUS probe result (reset/timeout) warns and proceeds to the real dispatch,
+  // which either works or surfaces its own precise error — no false-block on a hub that is up.
   const reach = await (deps.probe ?? probeServer)(server);
   if (!reach.ok) {
-    log(hubUnreachableMessage(server));
+    if (isDefinitiveDown(reach.code)) {
+      log(hubUnreachableMessage(server));
+      if (reach.detail) log(`  ${reach.detail}`);
+      return 1;
+    }
+    log(hubProbeAmbiguousMessage(server));
     if (reach.detail) log(`  ${reach.detail}`);
-    return 1;
   }
   const slug = (deps.repoSlug ?? currentRepoSlug)();
   const repo = repositoryArgs(argv, projectSlug(slug));
