@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -77,13 +78,51 @@ test("secrets: bare `secrets` shows help; empty get fails", async () => {
   assert.match(miss.stderr, /no secret 'NOPE'/);
 });
 
-test("secrets set: value from piped stdin (trailing newline stripped)", async () => {
+test("secrets set: piped stdin is stored byte-exact, trailing newline included (#135)", async () => {
   const home = newHome();
   const env = fileEnv(home);
   const set = await runCli(["secrets", "set", "PIPED"], { env, cwd: nonGit, input: "from-stdin\n" });
   assert.equal(set.status, 0);
   const got = await runCli(["secrets", "get", "PIPED"], { env, cwd: nonGit });
-  assert.equal(got.stdout.trim(), "from-stdin");
+  // `get` prints exactly `${value}\n` — the stored value keeps its piped trailing newline.
+  assert.equal(got.stdout, "from-stdin\n\n");
+});
+
+test("secrets set: a piped PEM with trailing newline round-trips hash-identical (#135)", async () => {
+  const home = newHome();
+  const env = fileEnv(home);
+  const pem =
+    "-----BEGIN PRIVATE KEY-----\n" +
+    "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ==\n" +
+    "-----END PRIVATE KEY-----\n";
+  const set = await runCli(["secrets", "set", "DEPLOY_KEY"], { env, cwd: nonGit, input: pem });
+  assert.equal(set.status, 0);
+  const got = await runCli(["secrets", "get", "DEPLOY_KEY"], { env, cwd: nonGit });
+  const stored = got.stdout.slice(0, -1); // strip only the single "\n" that `get` appends
+  assert.equal(stored, pem, "stored value is the exact piped bytes");
+  assert.equal(
+    createHash("sha256").update(stored, "utf8").digest("hex"),
+    createHash("sha256").update(pem, "utf8").digest("hex"),
+    "sha256 of the stored secret equals sha256 of the piped file bytes",
+  );
+});
+
+test("secrets set: piped CRLF and newline-only inputs are preserved exactly (#135)", async () => {
+  const home = newHome();
+  const env = fileEnv(home);
+  const crlf = "line1\r\nline2\r\n";
+  assert.equal((await runCli(["secrets", "set", "CRLF"], { env, cwd: nonGit, input: crlf })).status, 0);
+  assert.equal((await runCli(["secrets", "get", "CRLF"], { env, cwd: nonGit })).stdout, `${crlf}\n`);
+
+  // A lone newline is one byte of secret, not an empty value.
+  assert.equal((await runCli(["secrets", "set", "NL"], { env, cwd: nonGit, input: "\n" })).status, 0);
+  assert.equal((await runCli(["secrets", "get", "NL"], { env, cwd: nonGit })).stdout, "\n\n");
+});
+
+test("secrets set: empty piped stdin is still rejected (exit 1)", async () => {
+  const r = await runCli(["secrets", "set", "EMPTYPIPE"], { env: fileEnv(newHome()), cwd: nonGit, input: "" });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /empty secret value/);
 });
 
 test("secrets set: empty value is rejected (exit 1)", async () => {
