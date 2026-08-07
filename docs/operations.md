@@ -371,6 +371,36 @@ corepack do not hang (see troubleshooting).
 
 ---
 
+## TLS with a self-signed certificate
+
+The hub can serve HTTPS with a certificate that it creates for you.
+
+Start the hub with TLS:
+
+```bash
+ndh hub up --tls
+```
+
+Facts about `--tls`:
+
+- The public port becomes 443. Use `--port <n>` to select a different port.
+- The first start creates a self-signed certificate for the `--host` value. The files are `~/.notdownhub/hub/tls/key.pem` and `cert.pem`.
+- The hub log prints the certificate path and the SHA-256 fingerprint.
+- You can use your own certificate: `ndh hub up --tls --tls-cert <pem> --tls-key <pem>`.
+
+**Caution:** each runner must trust the self-signed certificate before it can join.
+
+1. Copy `cert.pem` from the hub machine to the runner machine.
+2. Join with the certificate: `ndh runner join https://<hub-host> --token <token> --ca <path-to-cert.pem>`.
+3. The runner stores the certificate and trusts it for `configure` and `run`.
+
+More facts:
+
+- On macOS, the hub can bind port 443 without root.
+- On Linux, port 443 requires root or `setcap cap_net_bind_service=+ep`. You can also use `--port 8443`.
+- A hub on TLS port 443 can accept an unmodified official `actions/runner`. The official runner drops non-standard ports at registration, so `--tls` on port 443 is the one configuration that supports it.
+- For `ndh dispatch` and `ndh status` against a TLS hub, set `NODE_EXTRA_CA_CERTS=<path-to-cert.pem>` and `SSL_CERT_FILE=<path-to-cert.pem>` in your shell.
+
 ## Run the hub on a VM
 
 You can run the hub on a small cloud VM. One vCPU and 1 GB of memory are enough

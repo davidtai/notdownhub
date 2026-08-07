@@ -129,6 +129,7 @@ test("hubUp: spawns Runner.Server, tees its output, wires signals + exit, starts
     runnerToken: (await prepareHub(opts({ host: "h" }))).token,
     host: "h",
     basicAuth: undefined,
+    tls: undefined,
   });
 
   // child output is teed to the hub log file

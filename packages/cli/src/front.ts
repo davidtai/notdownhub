@@ -1,4 +1,5 @@
 import http from "node:http";
+import https from "node:https";
 import { timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, stat, readFile } from "node:fs/promises";
@@ -30,6 +31,8 @@ export interface FrontOptions {
   host?: string;
   /** "user:pass" — when set, non-loopback clients may access the UI/join-info with Basic auth. */
   basicAuth?: string;
+  /** TLS material; when set the front serves HTTPS. */
+  tls?: { key: Buffer; cert: Buffer };
 }
 
 /** The UI (and its join-info endpoint) is local-only: the operator at the hub machine. */
@@ -164,7 +167,8 @@ async function handleRequest(
 
 export function startFront(opts: FrontOptions): http.Server {
   const mint = managementJwt(opts.hubPort, opts.runnerToken);
-  const server = http.createServer((req, res) => handleRequest(req, res, opts, mint));
+  const handler = (req: http.IncomingMessage, res: http.ServerResponse) => handleRequest(req, res, opts, mint);
+  const server = opts.tls ? https.createServer({ key: opts.tls.key, cert: opts.tls.cert }, handler) : http.createServer(handler);
   // Runner protocol long-polls (~50s holds); never kill slow requests.
   server.requestTimeout = 0;
   server.headersTimeout = 120_000;
