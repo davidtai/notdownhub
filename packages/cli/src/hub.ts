@@ -168,8 +168,7 @@ async function hubUp(opts: HubUpOptions, deps: HubDeps = {}): Promise<number> {
   if (opts.tls) {
     if (opts.tlsCert || opts.tlsKey) {
       if (!opts.tlsCert || !opts.tlsKey) fail("--tls-cert and --tls-key must be set together");
-      const { readFile: rf } = await import("node:fs/promises");
-      tls = { key: await rf(opts.tlsKey), cert: await rf(opts.tlsCert) };
+      tls = { key: await readFile(opts.tlsKey), cert: await readFile(opts.tlsCert) };
       log(`using TLS certificate ${opts.tlsCert}`);
     } else {
       const material = await ensureSelfSignedCert(hubHome, host);

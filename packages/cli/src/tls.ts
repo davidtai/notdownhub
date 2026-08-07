@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdir, readFile } from "node:fs/promises";
+import { chmod, mkdir, readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { join } from "node:path";
 import { exists, fail, log } from "./lib.js";
@@ -38,7 +38,7 @@ export async function ensureSelfSignedCert(hubHome: string, host: string): Promi
     if (r.status !== 0) {
       fail(`openssl certificate generation failed: ${r.stderr?.toString().trim() || r.status}`);
     }
-    spawnSync("chmod", ["600", keyPath], { stdio: "ignore" });
+    await chmod(keyPath, 0o600).catch(() => {});
     log(`generated self-signed TLS certificate for ${host} at ${certPath}`);
   }
   return { keyPath, certPath, key: await readFile(keyPath), cert: await readFile(certPath) };
