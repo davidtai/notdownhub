@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { TriangleAlert, ExternalLink, Trash2, GitBranch } from "lucide-react";
 import {
-  getRuns,
+  getAllRuns,
+  getProjects,
   getWorkflowDefinition,
   getRunLastActivity,
   deleteProjectRuns,
@@ -35,13 +36,16 @@ export interface EnrichedProject extends Project {
 }
 
 /**
- * Load the derived Projects surface: group runs into projects (pure), then for
- * each project fetch the latest definition per workflow (for branches/events +
- * the YAML preview) and the project's last-run time (from its job timelines).
+ * Load the derived Projects surface from the FULL run history (issue #90):
+ * prefer the hub-side aggregate (/api/local/projects — one page can never hide
+ * a project), falling back to deriving the same list client-side from the
+ * unpaged runs list on an older hub. Then, for each project, fetch the latest
+ * definition per workflow (for branches/events + the YAML preview) and the
+ * project's last-run time (from its job timelines).
  */
 export async function loadProjects(): Promise<EnrichedProject[]> {
-  const runs = await getRuns(0);
-  const projects = deriveProjects(runs);
+  const fromHub = await getProjects();
+  const projects = fromHub ?? deriveProjects(await getAllRuns());
   return Promise.all(
     projects.map(async (p) => {
       const workflows = await Promise.all(
@@ -101,8 +105,8 @@ export function Projects() {
         <div className="mb-5">
           <h1 className="text-lg font-semibold text-fg">Projects</h1>
           <p className="mt-0.5 text-[13px] text-fg-muted">
-            Every project this hub has run, derived from its run history — with the workflows,
-            branches, and events each one is watching.
+            Every project this hub has run, derived from its full run history — with the
+            workflows, branches, and events each one is watching.
           </p>
         </div>
 
@@ -113,16 +117,7 @@ export function Projects() {
         ) : list.length === 0 ? (
           <EmptyState />
         ) : (
-          <div className="flex flex-col gap-4">
-            {list.map((p) => (
-              <ProjectCard
-                key={p.name}
-                project={p}
-                canRemove={canRemove}
-                onRemove={() => setPending(p)}
-              />
-            ))}
-          </div>
+          <ProjectSections list={list} canRemove={canRemove} onRemove={setPending} />
         )}
       </main>
 
@@ -139,6 +134,58 @@ export function Projects() {
   );
 }
 
+/**
+ * Repo-attributed projects render as the main list. `local/<dir>` slugs and
+ * unattributed (`Unknown/Unknown`) runs are real recorded labels but not
+ * verified repositories, so they live under their own clearly-labeled section
+ * — each recorded label stays its own row, never merged into one fake project.
+ */
+function ProjectSections({
+  list,
+  canRemove,
+  onRemove,
+}: {
+  list: EnrichedProject[];
+  canRemove: boolean;
+  onRemove: (p: EnrichedProject) => void;
+}) {
+  const repos = list.filter((p) => p.kind === "repo");
+  const other = list.filter((p) => p.kind !== "repo");
+  return (
+    <>
+      {repos.length > 0 && (
+        <div className="flex flex-col gap-4">
+          {repos.map((p) => (
+            <ProjectCard key={p.name} project={p} canRemove={canRemove} onRemove={() => onRemove(p)} />
+          ))}
+        </div>
+      )}
+      {other.length > 0 && (
+        <section className={repos.length > 0 ? "mt-8" : undefined} aria-label="Local and unattributed runs">
+          <h2 className="text-sm font-semibold text-fg">Local &amp; unattributed</h2>
+          <p className="mb-3 mt-0.5 text-[12px] text-fg-muted">
+            Runs without a verified repository. Local checkouts are grouped by their recorded
+            directory slug; unattributed runs carry no project at all.
+          </p>
+          <div className="flex flex-col gap-4">
+            {other.map((p) => (
+              <ProjectCard key={p.name} project={p} canRemove={canRemove} onRemove={() => onRemove(p)} />
+            ))}
+          </div>
+        </section>
+      )}
+    </>
+  );
+}
+
+/** The honesty note shown on a non-repo card — says exactly how the grouping was made. */
+const KIND_NOTE: Record<string, string | undefined> = {
+  local:
+    "Dispatched from a checkout without a git remote. Grouped by the recorded directory name — unrelated checkouts with the same name share this row.",
+  unattributed:
+    "These runs were recorded without project attribution and may come from unrelated checkouts.",
+};
+
 function ProjectCard({
   project,
   canRemove,
@@ -150,12 +197,15 @@ function ProjectCard({
 }) {
   const state = toState(project.lastRun.status, project.lastRun.result);
   const when = relativeTime(project.lastActivity);
+  const note = KIND_NOTE[project.kind];
 
   return (
     <Card className="overflow-hidden">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-3">
         <StatusIcon state={state} size={18} />
         <h2 className="truncate font-mono text-sm font-semibold text-fg">{project.name}</h2>
+        {project.kind === "local" && <Badge variant="outline">local checkout</Badge>}
+        {project.kind === "unattributed" && <Badge variant="outline">unattributed</Badge>}
         <StatePill state={state} />
         <span className="text-[12px] text-fg-muted">
           {project.runCount} {project.runCount === 1 ? "run" : "runs"}
@@ -184,6 +234,8 @@ function ProjectCard({
           )}
         </div>
       </div>
+
+      {note && <p className="border-b border-line-muted px-4 py-2 text-[12px] text-fg-subtle">{note}</p>}
 
       <ul className="divide-y divide-line-muted">
         {project.workflows.map((w) => (

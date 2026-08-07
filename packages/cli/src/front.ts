@@ -11,6 +11,7 @@ import { serveJobLogs, isRunDeleted, joblogsDbPath } from "./joblogs.js";
 import { getConfigInfo } from "./config-info.js";
 import { listArtifacts, parseArtifactApiPath, parseArtifactPrettyUrl, serveArtifactDownload } from "./artifacts.js";
 import { serveRunCancel, serveRunDelete, serveFilteredRuns, serveProjectDelete } from "./runctl.js";
+import { serveProjects } from "./projects.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -144,6 +145,14 @@ async function handleRequest(
       const config = await getConfigInfo().catch(() => ({ backend: "unknown", secrets: [], vars: [] }));
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(config));
+    } else if (url.pathname === "/api/local/projects") {
+      // Distinct projects across the FULL run history (issue #90), aggregated hub-side so the
+      // Projects page never derives its list from one runs page. Same gate as the other reads.
+      if (!uiAccessAllowed(req, opts)) {
+        denyUi(res, opts);
+        return;
+      }
+      await serveProjects(opts.hubPort, res);
     } else if (url.pathname === "/api/local/joblogs" || url.pathname.startsWith("/api/local/joblogs/")) {
       // Persisted console output for a completed run's job (survives hub restarts).
       if (!uiAccessAllowed(req, opts)) {

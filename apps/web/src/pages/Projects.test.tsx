@@ -244,4 +244,79 @@ describe("Projects", () => {
     renderProjects();
     await waitFor(() => expect(screen.getByText(/Couldn't reach the hub/)).toBeTruthy());
   });
+
+  // ── full-history derivation (#90) ──────────────────────────────────────────
+  const wf = (latestRunId: number, fileName: string, runCount: number) => ({
+    key: `.github/workflows/${fileName}`,
+    fileName,
+    label: fileName,
+    runCount,
+    latestRun: { id: latestRunId, fileName: `.github/workflows/${fileName}` },
+    latestRunId,
+  });
+  const summary = (name: string, kind: string, runCount: number, lastRunId: number) => ({
+    name,
+    kind,
+    runCount,
+    lastRun: { id: lastRunId, status: "completed", result: "succeeded" },
+    lastRunId,
+    workflows: [wf(lastRunId, "ci.yml", runCount)],
+  });
+
+  it("renders the hub-side FULL-history aggregate — projects absent from the loaded runs page still appear", async () => {
+    // /api/local/projects knows 40 acme runs and a whole project (old/legacy)
+    // whose runs are nowhere in the 3-run RUNS page fixture.
+    mockFetch((url) => {
+      if (url.includes("/api/local/projects"))
+        return { body: [summary("acme/alpha", "repo", 40, 3), summary("old/legacy", "repo", 37, 99)] };
+      return hubRouter()(url);
+    });
+    renderProjects();
+    await waitFor(() => expect(screen.getByText("old/legacy")).toBeTruthy());
+    expect(screen.getByText("acme/alpha")).toBeTruthy();
+    const legacy = screen.getByText("old/legacy").closest("div")!.parentElement!;
+    expect(within(legacy).getAllByText("37 runs").length).toBeGreaterThan(0);
+    const alpha = screen.getByText("acme/alpha").closest("div")!.parentElement!;
+    expect(within(alpha).getAllByText("40 runs").length).toBeGreaterThan(0);
+  });
+
+  it("sections local/unattributed rows under an honest heading with badges — never merged into one project", async () => {
+    mockFetch((url) => {
+      if (url.includes("/api/local/projects"))
+        return {
+          body: [
+            summary("acme/alpha", "repo", 2, 3),
+            summary("local/app", "local", 2, 7),
+            summary("local/lib", "local", 1, 8),
+            summary("Unknown/Unknown", "unattributed", 5, 9),
+          ],
+        };
+      return hubRouter()(url);
+    });
+    renderProjects();
+    await waitFor(() => expect(screen.getByText("Local & unattributed")).toBeTruthy());
+    // Each recorded label stays its own row.
+    expect(screen.getByText("local/app")).toBeTruthy();
+    expect(screen.getByText("local/lib")).toBeTruthy();
+    expect(screen.getByText("Unknown/Unknown")).toBeTruthy();
+    expect(screen.getAllByText("local checkout")).toHaveLength(2);
+    expect(screen.getByText("unattributed")).toBeTruthy();
+    // The honest notes about how these rows were grouped.
+    expect(screen.getAllByText(/Grouped by the recorded directory name/).length).toBe(2);
+    expect(screen.getByText(/recorded without project attribution/)).toBeTruthy();
+    // The repo card carries neither badge nor note.
+    const alpha = screen.getByText("acme/alpha").closest("div")!.parentElement!;
+    expect(within(alpha).queryByText("local checkout")).toBeNull();
+  });
+
+  it("falls back to deriving from the UNPAGED runs list when /api/local/projects is absent (older hub)", async () => {
+    // hubRouter has no /api/local/projects route → 404 → client-side derivation.
+    const fn = mockFetch(hubRouter());
+    renderProjects();
+    await waitFor(() => expect(screen.getByText("acme/alpha")).toBeTruthy());
+    const runsCalls = fn.mock.calls.map((c) => String(c[0])).filter((u) => u.includes("/workflow/runs"));
+    expect(runsCalls.length).toBeGreaterThan(0);
+    // Full history: the fallback must never ask for a single page.
+    expect(runsCalls.every((u) => !u.includes("page="))).toBe(true);
+  });
 });

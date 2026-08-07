@@ -16,6 +16,8 @@ import {
   deleteProjectRuns,
   probeDeleteProjectSupport,
   rerunWorkflow,
+  getAllRuns,
+  getProjects,
 } from "./api";
 import { mockFetch, routes } from "../test/helpers";
 
@@ -41,6 +43,37 @@ describe("plain JSON getters", () => {
   it("throws with a helpful message on a non-OK response", async () => {
     mockFetch(() => ({ status: 500 }));
     await expect(getRuns()).rejects.toThrow(/500/);
+  });
+});
+
+describe("getAllRuns", () => {
+  it("requests the runs list WITHOUT a page parameter (the full history) and unwraps envelopes", async () => {
+    const seen: string[] = [];
+    mockFetch((url) => {
+      seen.push(url);
+      if (url.includes("/workflow/runs")) return { body: { value: [{ id: 1 }, { id: 2 }] } };
+      return undefined;
+    });
+    expect(await getAllRuns()).toEqual([{ id: 1 }, { id: 2 }]);
+    expect(seen).toEqual(["/_apis/v1/Message/workflow/runs"]);
+  });
+});
+
+describe("getProjects", () => {
+  it("returns the hub-side full-history aggregate when the endpoint exists", async () => {
+    const summary = [{ name: "acme/alpha", kind: "repo", runCount: 40, lastRun: { id: 51 }, lastRunId: 51, workflows: [] }];
+    mockFetch(routes({ "/api/local/projects": summary }));
+    expect(await getProjects()).toEqual(summary);
+  });
+  it("returns null on 404 (older hub) so the caller can derive client-side", async () => {
+    mockFetch(routes({ "/api/local/projects": { status: 404, body: null } }));
+    expect(await getProjects()).toBeNull();
+  });
+  it("returns null on a network error or a non-array body", async () => {
+    mockFetch(routes({ "/api/local/projects": { throw: true } }));
+    expect(await getProjects()).toBeNull();
+    mockFetch(routes({ "/api/local/projects": { body: { nope: true } } }));
+    expect(await getProjects()).toBeNull();
   });
 });
 

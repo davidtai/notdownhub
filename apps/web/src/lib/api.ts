@@ -8,6 +8,7 @@
   { value: [...] } wrapper — `unwrap` handles both.
 */
 import { timelineSpan } from "./format";
+import type { Project } from "./projects";
 
 export interface WorkflowRun {
   id: number;
@@ -206,6 +207,35 @@ export function artifactDownloadUrl(runId: number, name: string): string {
 }
 
 // ── Projects (derived from run history) ──────────────────────────────────────
+
+/**
+ * The complete run history, via the engine's unpaged runs list (omitting `page`
+ * returns every run, not one 30-run page). Fallback source for the Projects
+ * page when /api/local/projects is absent (older hub) — deriving projects from
+ * a single page silently drops projects whose runs sit on later pages (#90).
+ */
+export async function getAllRuns(): Promise<WorkflowRun[]> {
+  const data = await getJson<WorkflowRun[] | { value?: WorkflowRun[] }>(`/_apis/v1/Message/workflow/runs`);
+  return unwrap(data);
+}
+
+/**
+ * The distinct-projects list across the FULL run history, aggregated hub-side
+ * (GET /api/local/projects, issue #90) — counts, last run, and the per-workflow
+ * breakdown, with deleted runs already excluded. Returns null when the endpoint
+ * is unavailable (older hub, or any failure) so the caller can fall back to
+ * deriving the same list client-side from the unpaged runs list.
+ */
+export async function getProjects(): Promise<Project[] | null> {
+  try {
+    const res = await fetch(`/api/local/projects`, { headers: { accept: "application/json" } });
+    if (!res.ok) return null;
+    const data = (await res.json()) as Project[];
+    return Array.isArray(data) ? data : null;
+  } catch {
+    return null;
+  }
+}
 
 /** The workflow definition recorded with a run: its YAML plus the attempt's timeline id. */
 export interface WorkflowDefinition {
