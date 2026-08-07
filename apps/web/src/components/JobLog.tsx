@@ -50,6 +50,7 @@ export function JobLog({
   const [pinned, setPinned] = useState(true);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(pinned);
   pinnedRef.current = pinned;
   const stepsRef = useRef(steps);
@@ -130,12 +131,26 @@ export function JobLog({
     }
   }, [steps]);
 
-  // Keep the view pinned to the newest output while streaming.
-  useLayoutEffect(() => {
-    if (pinnedRef.current && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [liveByStep, expanded]);
+  const stickToBottom = () => {
+    const el = scrollRef.current;
+    if (pinnedRef.current && el) el.scrollTop = el.scrollHeight;
+  };
+
+  // Immediate stick on the common content updates (new lines, a step folding).
+  useLayoutEffect(stickToBottom, [liveByStep, expanded]);
+
+  // Robust auto-scroll: a ResizeObserver re-sticks on ANY content-height change — not only the
+  // few state updates a dependency array can name. Previously a growth the deps didn't cover
+  // (step rows re-rendering, the job finishing, the retained log loading) left the view stranded
+  // mid-log while the control still read "Pinned". Observing the content element catches them all.
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => stickToBottom());
+    ro.observe(content);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -177,11 +192,12 @@ export function JobLog({
             </span>
             <button
               onClick={() => {
-                setPinned(true);
-                if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+                const next = !pinned;
+                setPinned(next);
+                if (next && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
               }}
               aria-pressed={pinned}
-              title="Pin to bottom"
+              title={pinned ? "Following new output — click to unpin" : "Pin to bottom and follow output"}
               className={cn(
                 "inline-flex min-h-9 items-center gap-1 rounded-md px-2 text-[12px] transition-colors",
                 pinned ? "bg-raised text-accent" : "text-fg-muted hover:text-fg",
@@ -199,6 +215,7 @@ export function JobLog({
         onScroll={onScroll}
         className="min-h-0 flex-1 overflow-auto [-webkit-overflow-scrolling:touch]"
       >
+        <div ref={contentRef}>
         {loading && !records && !hasLive ? (
           <StepSkeleton />
         ) : !job ? (
@@ -294,6 +311,7 @@ export function JobLog({
               ) : null)}
           </>
         )}
+        </div>
       </div>
     </div>
   );
