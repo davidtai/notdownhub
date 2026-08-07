@@ -7,7 +7,7 @@
 
 # notdownhub
 
-**GitHub can go down but your CI shouldn't have to**
+**GitHub can go down. Your CI does not have to.**
 
 [![ci](https://github.com/davidtai/notdownhub/actions/workflows/ci.yml/badge.svg)](https://github.com/davidtai/notdownhub/actions/workflows/ci.yml)
 ![npm](https://img.shields.io/badge/npm-coming%20soon-lightgrey)
@@ -157,6 +157,12 @@ Useful `hub up` flags:
   **loopback-only** by default; this admits a non-local operator over HTTP
   Basic (env `NDH_BASIC_AUTH`). The API/runner protocol/mirror are open
   regardless — see the security model in [docs/operations.md](docs/operations.md).
+- `--tls` — serve HTTPS with a self-signed certificate; the default port
+  becomes 443. Runners pin it with `ndh runner join https://… --ca cert.pem`.
+  Bring your own certificate with `--tls-cert <pem> --tls-key <pem>`. TLS on
+  port 443 is also the one configuration an unmodified official
+  `actions/runner` can register against. Details:
+  [docs/operations.md](docs/operations.md#tls-with-a-self-signed-certificate).
 - `--github-token <pat>` — give the server a PAT.
 - `--no-auth` — disable registration-token auth (open registration).
 - `--no-mirror-rewrite` — do not route `uses:` through the mirror.
@@ -421,6 +427,30 @@ Facts that apply to a migration:
 - Webhooks do not reach your hub; it exposes no webhook endpoint. To start CI, use `ndh dispatch`, a `post-receive` hook on your git server (`ndh hook install`), or an `on: schedule` trigger. The [operations guide](docs/operations.md) describes each trigger.
 - The hub stores artifacts and cache data from `actions/upload-artifact` and `actions/cache`.
 - Secrets and variables are stored on the machine you dispatch from, and inject into each run. See [operations.md → Secrets & variables](docs/operations.md#secrets--variables) for scopes, multiline secrets, and how values reach a run.
+
+---
+
+## GitHub Marketplace actions
+
+Your workflows can use Marketplace actions with the standard `uses:` syntax.
+The hub downloads each action from GitHub one time, through its caching
+mirror. Every later run reads the action from the cache. The actions then
+execute on the official runner codebase, so they behave as they do on GitHub.
+`actions/checkout` is the one substitution: for a dispatched local repo, the
+hub serves its own checkout action with the same `checkout@v4` inputs.
+
+Verified on this fleet: `actions/checkout`, `actions/setup-node`,
+`pnpm/action-setup`, `actions/cache`, and `actions/upload-artifact`.
+
+Three limits apply:
+
+1. The first fetch of each action needs a connection to GitHub. After that
+   fetch, the mirror serves the action offline.
+2. Actions that call the GitHub API at run time need a connection and a
+   `GITHUB_TOKEN` secret. Examples: `actions/github-script` and release
+   publishers. The mirror cannot answer API calls.
+3. Docker container actions (`uses: docker://…` and Dockerfile actions) need
+   Docker on the runner. We have not yet verified them on this fleet.
 
 ---
 
