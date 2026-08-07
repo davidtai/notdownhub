@@ -92,6 +92,23 @@ port:
                (+ inject a management JWT for anonymous agent-status GETs)
 ```
 
+### Request flow: hosted `runs-on` labels
+
+The engine has no server-side platform map (verified against `runner.server`
+v3.14.0 and main). The engine only accepts `platform` query parameters on
+`schedule2`, and it does not persist them with the run. Its native re-run
+endpoints therefore re-queue with no map, which broke every re-run of a
+`runs-on: ubuntu-latest` workflow (#92).
+
+The front (`rerunmap.ts`) supplies the map on both routes. A proxied dispatch
+(`schedule2`) with no `platform` query gets the default map appended. A re-run
+replays through `schedule2?runid=<id>` — the engine's own new-attempt path —
+with the stored workflow, event, ref, and sha, plus the same map. The map sends
+`ubuntu-*`, `macos-latest`, and `windows-latest` to runners with the
+`self-hosted` label. An explicit `-P/--platform` on dispatch always wins. A
+workflow with native labels, such as `runs-on: self-hosted`, passes through
+unchanged.
+
 ### Request flow: registration and the host header
 
 When a runner registers, `Runner.Server` mints **tenant URLs** for that runner

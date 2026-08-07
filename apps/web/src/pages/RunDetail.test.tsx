@@ -299,6 +299,82 @@ describe("RunDetail", () => {
     expect((call?.[1] as { method?: string })?.method).toBe("POST");
   });
 
+  it("auto-advances to the new attempt when a re-run adds one", async () => {
+    let rerun = false;
+    mockFetch((url) => {
+      if (url.includes("/rerunworkflow/5")) {
+        rerun = true;
+        return { status: 200, body: {} };
+      }
+      if (url.includes("/workflow/runs"))
+        return { body: [{ id: 5, displayName: "Deploy", status: "completed", result: "succeeded" }] };
+      if (url.includes("/run/5/attempts"))
+        return {
+          body: rerun
+            ? [
+                { id: 1, attempt: 1, timeLineId: "at1" },
+                { id: 2, attempt: 2, timeLineId: "at2" },
+              ]
+            : [{ id: 1, attempt: 1, timeLineId: "at1" }],
+        };
+      if (url.includes("/attempt/1/jobs"))
+        return { body: [{ jobId: "j1", timeLineId: "tl1", name: "old-job", matrix: null, workflowIdentifier: "b", status: "completed", result: "succeeded", requestId: 1, runid: 5, attempt: 1 }] };
+      if (url.includes("/attempt/2/jobs"))
+        return { body: [{ jobId: "j2", timeLineId: "tl2", name: "new-job", matrix: null, workflowIdentifier: "b", status: "inProgress", result: null, requestId: 2, runid: 5, attempt: 2 }] };
+      if (url.includes("/Timeline/")) return { body: [] };
+      if (url.includes("/api/local/joblogs/")) return { body: { retained: false, lines: [] } };
+      return { status: 404 };
+    });
+
+    renderDetail();
+    await waitFor(() => expect(screen.getAllByText("old-job").length).toBeGreaterThan(0));
+    expect(screen.queryByText("Attempt")).toBeNull(); // single attempt: no selector yet
+
+    // Re-run → onDone refreshes attempts → the view follows the new attempt without a reload.
+    fireEvent.click(await screen.findByLabelText("Re-run run 5"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "2" })).toBeTruthy());
+    expect(screen.getByRole("button", { name: "2" }).className).toContain("bg-accent");
+    await waitFor(() => expect(screen.getAllByText("new-job").length).toBeGreaterThan(0));
+  });
+
+  it("keeps a manually pinned older attempt when a new attempt appears", async () => {
+    let rerun = false;
+    mockFetch((url) => {
+      if (url.includes("/rerunworkflow/5")) {
+        rerun = true;
+        return { status: 200, body: {} };
+      }
+      if (url.includes("/workflow/runs"))
+        return { body: [{ id: 5, displayName: "Deploy", status: "completed", result: "succeeded" }] };
+      if (url.includes("/run/5/attempts"))
+        return {
+          body: [
+            { id: 1, attempt: 1, timeLineId: "at1" },
+            { id: 2, attempt: 2, timeLineId: "at2" },
+            ...(rerun ? [{ id: 3, attempt: 3, timeLineId: "at3" }] : []),
+          ],
+        };
+      if (url.includes("/jobs")) return { body: [] };
+      if (url.includes("/Timeline/")) return { body: [] };
+      return { status: 404 };
+    });
+
+    renderDetail();
+    await waitFor(() => expect(screen.getByRole("button", { name: "2" }).className).toContain("bg-accent"));
+    fireEvent.click(screen.getByRole("button", { name: "1" })); // pin attempt 1
+    await waitFor(() => expect(screen.getByRole("button", { name: "1" }).className).toContain("bg-accent"));
+
+    fireEvent.click(await screen.findByLabelText("Re-run run 5"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "3" })).toBeTruthy());
+    // Still pinned to 1 — the user's explicit choice outranks the auto-advance.
+    expect(screen.getByRole("button", { name: "1" }).className).toContain("bg-accent");
+    expect(screen.getByRole("button", { name: "3" }).className).not.toContain("bg-accent");
+
+    // Clicking the newest attempt returns to following mode.
+    fireEvent.click(screen.getByRole("button", { name: "3" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "3" }).className).toContain("bg-accent"));
+  });
+
   it("hides the Re-run while a run is still in progress", async () => {
     mockFetch((url) => {
       if (url.includes("/workflow/runs"))

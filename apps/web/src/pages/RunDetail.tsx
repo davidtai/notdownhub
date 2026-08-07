@@ -31,11 +31,13 @@ export function RunDetail() {
   const notFound = !runsList.initial && !summary && !attempts.initial && attempts.error !== null;
 
   const attemptList = attempts.data ?? [];
-  const [attemptNo, setAttemptNo] = useState<number | null>(null);
-  useEffect(() => {
-    if (attemptNo === null && attemptList.length > 0) setAttemptNo(Math.max(...attemptList.map((a) => a.attempt)));
-  }, [attemptList, attemptNo]);
-  const attempt = attemptList.find((a) => a.attempt === attemptNo) ?? attemptList[0];
+  // null = follow the newest attempt. A re-run adds an attempt on the next poll; following means
+  // the view advances to it with no reload. Clicking an OLDER attempt pins the view to it;
+  // clicking the newest returns to following (so the next re-run advances again).
+  const [pinnedAttempt, setPinnedAttempt] = useState<number | null>(null);
+  useEffect(() => setPinnedAttempt(null), [runId]);
+  const maxAttempt = attemptList.length > 0 ? Math.max(...attemptList.map((a) => a.attempt)) : null;
+  const attempt = attemptList.find((a) => a.attempt === (pinnedAttempt ?? maxAttempt)) ?? attemptList[0];
   const activeAttempt = attempt?.attempt ?? 1;
 
   const jobs = usePoll(() => getJobs(runId, activeAttempt), 3000, [runId, activeAttempt]);
@@ -199,7 +201,7 @@ export function RunDetail() {
                   .map((a) => (
                     <button
                       key={a.attempt}
-                      onClick={() => setAttemptNo(a.attempt)}
+                      onClick={() => setPinnedAttempt(a.attempt === maxAttempt ? null : a.attempt)}
                       className={cn(
                         "h-11 w-11 rounded-md font-mono text-xs sm:h-8 sm:w-8",
                         a.attempt === activeAttempt

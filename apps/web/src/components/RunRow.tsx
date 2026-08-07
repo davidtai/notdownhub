@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { GitBranch, GitCommitHorizontal } from "lucide-react";
 import type { WorkflowRun } from "../lib/api";
 import { toState, shortRef, shortSha, relativeTime, projectLabel, isFinished } from "../lib/format";
@@ -25,6 +25,7 @@ export function RunRow({
   onRerun?: () => void;
   warnings?: number;
 }) {
+  const navigate = useNavigate();
   const state = toState(run.status, run.result);
   const ref = shortRef(run.ref);
   const sha = shortSha(run.sha);
@@ -79,7 +80,17 @@ export function RunRow({
 
       {/* Trailing actions: re-run a finished run, alongside cancel/delete (each state-gated). */}
       <div className="flex shrink-0 items-center gap-1">
-        {isFinished(state) && <RerunButton runId={run.id} onDone={onRerun} />}
+        {isFinished(state) && (
+          <RerunButton
+            runId={run.id}
+            onDone={() => {
+              onRerun?.();
+              // Land on the run so the user watches the new attempt live (the
+              // detail view follows the newest attempt) instead of staying in the list.
+              navigate(`/runs/${run.id}`);
+            }}
+          />
+        )}
         <RunActions run={run} onDone={onMutated} compact />
       </div>
     </div>

@@ -1,10 +1,26 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { RunRow } from "./RunRow";
 import type { WorkflowRun } from "../lib/api";
-import { renderWithRouter } from "../test/helpers";
+import { renderWithRouter, mockFetch } from "../test/helpers";
 
 afterEach(() => vi.useRealTimers());
+
+/** RunRow on a list page plus a detail route, to observe navigate-on-rerun. */
+function renderRowWithDetailRoute(onRerun?: () => void) {
+  return render(
+    <MemoryRouter initialEntries={["/"]}>
+      <Routes>
+        <Route
+          path="/"
+          element={<RunRow run={{ id: 42, status: "completed", result: "succeeded" }} onRerun={onRerun} />}
+        />
+        <Route path="/runs/:id" element={<div>Run detail page</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
 
 describe("RunRow re-run affordance", () => {
   it("offers a Re-run on a finished run", () => {
@@ -15,6 +31,26 @@ describe("RunRow re-run affordance", () => {
   it("hides the Re-run while a run is still in progress", () => {
     renderWithRouter(<RunRow run={{ id: 42, status: "inProgress", result: null }} />);
     expect(screen.queryByLabelText("Re-run run 42")).toBeNull();
+  });
+
+  it("navigates to the run's detail after a successful list-row re-run", async () => {
+    mockFetch((url) => (url.includes("/rerunworkflow/42") ? { status: 200, body: {} } : { status: 404 }));
+    const onRerun = vi.fn();
+    renderRowWithDetailRoute(onRerun);
+    fireEvent.click(screen.getByLabelText("Re-run run 42"));
+    // The user lands on the run, where the detail view follows the new attempt live.
+    await waitFor(() => expect(screen.getByText("Run detail page")).toBeTruthy());
+    expect(onRerun).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays on the list when the re-run POST fails", async () => {
+    mockFetch((url) => (url.includes("/rerunworkflow/42") ? { status: 502 } : { status: 404 }));
+    renderRowWithDetailRoute();
+    fireEvent.click(screen.getByLabelText("Re-run run 42"));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Re-run run 42").className).toContain("text-fail"),
+    );
+    expect(screen.queryByText("Run detail page")).toBeNull();
   });
 });
 
