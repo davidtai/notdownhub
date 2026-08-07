@@ -18,6 +18,10 @@ import {
   rerunWorkflow,
   HubRefusalError,
   getAllRuns,
+  getJobAliases,
+  setJobAlias,
+  clearJobAlias,
+  aliasFor,
   getProjects,
   getRunsMeta,
 } from "./api";
@@ -376,5 +380,50 @@ describe("getRunsMeta", () => {
   it("returns null on a network error", async () => {
     mockFetch(routes({ "/api/local/runs-meta": { throw: true } }));
     expect(await getRunsMeta([1])).toBeNull();
+  });
+});
+
+// ── #114 job display aliases ────────────────────────────────────────────────
+describe("job aliases (#114)", () => {
+  it("getJobAliases returns the stored rows, or [] on failure/non-array", async () => {
+    mockFetch(routes({ "/api/local/job-aliases": [{ project: "a/b", jobKey: "build", alias: "Compile" }] }));
+    expect(await getJobAliases()).toEqual([{ project: "a/b", jobKey: "build", alias: "Compile" }]);
+    mockFetch(routes({ "/api/local/job-aliases": { status: 403 } }));
+    expect(await getJobAliases()).toEqual([]);
+    mockFetch(routes({ "/api/local/job-aliases": { throw: true } }));
+    expect(await getJobAliases()).toEqual([]);
+    mockFetch(routes({ "/api/local/job-aliases": { body: { nope: 1 } } }));
+    expect(await getJobAliases()).toEqual([]);
+  });
+
+  it("setJobAlias POSTs the triple and reports acceptance", async () => {
+    const fn = mockFetch(routes({ "/api/local/job-aliases": { status: 200 } }));
+    expect(await setJobAlias("a/b", "build", "Compile")).toBe(true);
+    const call = fn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[1].method).toBe("POST");
+    expect(JSON.parse(call[1].body as string)).toEqual({ project: "a/b", jobKey: "build", alias: "Compile" });
+    mockFetch(routes({ "/api/local/job-aliases": { status: 400 } }));
+    expect(await setJobAlias("a/b", "build", "")).toBe(false);
+    mockFetch(routes({ "/api/local/job-aliases": { throw: true } }));
+    expect(await setJobAlias("a/b", "build", "X")).toBe(false);
+  });
+
+  it("clearJobAlias DELETEs with encoded query params", async () => {
+    const fn = mockFetch(routes({ "/api/local/job-aliases": { status: 200 } }));
+    expect(await clearJobAlias("a/b", "the build")).toBe(true);
+    const call = fn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[1].method).toBe("DELETE");
+    expect(call[0]).toContain("project=a%2Fb");
+    expect(call[0]).toContain("jobKey=the%20build");
+    mockFetch(routes({ "/api/local/job-aliases": { throw: true } }));
+    expect(await clearJobAlias("a/b", "x")).toBe(false);
+  });
+
+  it("aliasFor scopes by project and returns null without a match or project", () => {
+    const rows = [{ project: "a/b", jobKey: "build", alias: "Compile" }];
+    expect(aliasFor(rows, "a/b", "build")).toBe("Compile");
+    expect(aliasFor(rows, "other/x", "build")).toBeNull();
+    expect(aliasFor(rows, "a/b", "test")).toBeNull();
+    expect(aliasFor(rows, null, "build")).toBeNull();
   });
 });

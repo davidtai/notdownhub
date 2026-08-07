@@ -27,11 +27,14 @@ export function JobLog({
   job,
   records,
   loading,
+  displayName,
 }: {
   runId: number;
   job: Job | undefined;
   records: TimelineRecord[] | null;
   loading: boolean;
+  /** #114 alias for the selected job, when one is set — the original stays in the title tooltip. */
+  displayName?: string | null;
 }) {
   const steps = useMemo(
     () =>
@@ -180,8 +183,11 @@ export function JobLog({
       <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-2">
         <span className="flex min-w-0 items-center gap-2">
           {job && <StatusIcon state={jobState} size={14} withTooltip={false} />}
-          <span className="truncate text-[13px] font-medium text-fg">
-            {job?.name ?? "Select a job"}
+          <span
+            className="truncate text-[13px] font-medium text-fg"
+            title={displayName && job ? `Original: ${job.name}` : undefined}
+          >
+            {displayName ?? job?.name ?? "Select a job"}
           </span>
         </span>
         {liveMode && (

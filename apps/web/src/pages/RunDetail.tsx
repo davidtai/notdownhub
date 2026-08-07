@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, GitBranch, GitCommitHorizontal } from "lucide-react";
-import { getRuns, getAttempts, getJobs, getTimeline, getArtifacts, getRunsMeta, type Job, type TimelineRecord, type WorkflowRun } from "../lib/api";
+import { getRuns, getAttempts, getJobs, getTimeline, getArtifacts, getRunsMeta, getJobAliases, aliasFor, type Job, type TimelineRecord, type WorkflowRun } from "../lib/api";
 import { toState, shortRef, shortSha, elapsedMs, timelineSpan, projectLabel, isFinished, relativeTime, absoluteTime, humanDuration } from "../lib/format";
 import { countAnnotations } from "../lib/warnings";
 import { usePoll } from "../lib/hooks";
 import { AppBar } from "../components/AppBar";
 import { Artifacts } from "../components/Artifacts";
-import { JobList } from "../components/JobList";
+import { JobList, jobAliasKey, type JobRenameRequest } from "../components/JobList";
 import { JobLog } from "../components/JobLog";
+import { RenameJobDialog, type RenameTarget } from "../components/RenameJobDialog";
 import { RunActions } from "../components/RunActions";
 import { RerunButton } from "../components/RerunButton";
 import { StatusIcon, StatePill } from "../components/StatusIcon";
@@ -91,6 +92,12 @@ export function RunDetail() {
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selectedJob: Job | undefined = jobList.find((j) => j.jobId === selectedId);
+
+  // #114 display aliases: the front-owned display layer. The engine's job records
+  // are untouched; renames apply here and clear back to the original.
+  const aliasesPoll = usePoll(getJobAliases, 5000);
+  const aliasList = useMemo(() => aliasesPoll.data ?? [], [aliasesPoll.data]);
+  const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
   useEffect(() => {
     if (jobList.length === 0) return;
     if (!selectedId || !jobList.some((j) => j.jobId === selectedId)) {
@@ -104,6 +111,21 @@ export function RunDetail() {
     : attempt
       ? toState(attempt.status, attempt.result)
       : "unknown";
+
+  // The project scope for alias lookups: the run summary's label, else the jobs' own repo field.
+  const aliasProject = summary ? projectLabel(summary) : (jobList.find((j) => j.repo)?.repo ?? null);
+  const jobAliases = useMemo(() => {
+    const out: Record<string, string> = {};
+    if (!aliasProject) return out;
+    for (const a of aliasList) if (a.project === aliasProject) out[a.jobKey] = a.alias;
+    return out;
+  }, [aliasList, aliasProject]);
+  const selectedAlias = selectedJob ? (aliasFor(aliasList, aliasProject, jobAliasKey(selectedJob)) ?? null) : null;
+
+  function openRename(req: JobRenameRequest) {
+    if (!aliasProject) return;
+    setRenameTarget({ project: aliasProject, jobKey: req.jobKey, original: req.original, alias: req.alias });
+  }
 
   const ref = shortRef(summary?.ref ?? attempt?.ref);
   const sha = shortSha(summary?.sha ?? attempt?.sha);
@@ -256,7 +278,15 @@ export function RunDetail() {
             ) : jobList.length === 0 ? (
               <p className="px-3 py-10 text-center text-[12px] text-fg-muted">No jobs for this attempt yet.</p>
             ) : (
-              <JobList jobs={jobList} durations={durations} warnings={warningsByJob} selectedJobId={selectedId} onSelect={(j) => setSelectedId(j.jobId)} />
+              <JobList
+                jobs={jobList}
+                durations={durations}
+                warnings={warningsByJob}
+                aliases={jobAliases}
+                selectedJobId={selectedId}
+                onSelect={(j) => setSelectedId(j.jobId)}
+                onRename={aliasProject ? openRename : undefined}
+              />
             )}
           </Card>
 
@@ -266,12 +296,21 @@ export function RunDetail() {
               job={selectedJob}
               records={selectedJob ? (byTimeline[selectedJob.timeLineId] ?? null) : null}
               loading={timelines.initial}
+              displayName={selectedAlias}
             />
           </Card>
         </div>
 
         <Artifacts runId={runId} artifacts={artifactList} />
       </main>
+
+      {renameTarget && (
+        <RenameJobDialog
+          target={renameTarget}
+          onClose={() => setRenameTarget(null)}
+          onChanged={aliasesPoll.refresh}
+        />
+      )}
     </div>
   );
 }

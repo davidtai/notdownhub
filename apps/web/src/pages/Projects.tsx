@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { TriangleAlert, ExternalLink, Trash2, GitBranch, Plus, CalendarClock } from "lucide-react";
+import { TriangleAlert, ExternalLink, Trash2, GitBranch, Plus, CalendarClock, Pencil } from "lucide-react";
 import {
   getAllRuns,
   getProjects,
@@ -9,13 +9,17 @@ import {
   deleteProjectRuns,
   deleteProjectPlaceholder,
   probeDeleteProjectSupport,
+  getJobAliases,
+  aliasFor,
+  type JobAlias,
 } from "../lib/api";
 import { usePoll } from "../lib/hooks";
 import { deriveProjects, type Project, type ProjectWorkflow } from "../lib/projects";
-import { parseWorkflowTriggers, eventSummary, type WorkflowTriggers } from "../lib/workflow";
+import { parseWorkflowTriggers, eventSummary, workflowJobs, type WorkflowTriggers } from "../lib/workflow";
 import { toState, relativeTime } from "../lib/format";
 import { AppBar } from "../components/AppBar";
 import { AddProject } from "../components/AddProject";
+import { RenameJobDialog, type RenameTarget } from "../components/RenameJobDialog";
 import { RerunButton } from "../components/RerunButton";
 import { Card } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -81,6 +85,11 @@ export function Projects() {
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
 
+  // #114 job display aliases (front-owned display layer) + the rename dialog they feed.
+  const aliasesPoll = usePoll(getJobAliases, 5000);
+  const aliases = aliasesPoll.data ?? [];
+  const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
+
   async function confirmRemove() {
     if (!pending) return;
     setBusy(true);
@@ -130,7 +139,14 @@ export function Projects() {
         ) : list.length === 0 ? (
           <EmptyState />
         ) : (
-          <ProjectSections list={list} canRemove={canRemove} onRemove={setPending} onRefresh={projects.refresh} />
+          <ProjectSections
+            list={list}
+            canRemove={canRemove}
+            onRemove={setPending}
+            onRefresh={projects.refresh}
+            aliases={aliases}
+            onRename={setRenameTarget}
+          />
         )}
       </main>
 
@@ -145,6 +161,14 @@ export function Projects() {
       )}
 
       {wizardOpen && <AddProject onClose={() => setWizardOpen(false)} onCreated={projects.refresh} />}
+
+      {renameTarget && (
+        <RenameJobDialog
+          target={renameTarget}
+          onClose={() => setRenameTarget(null)}
+          onChanged={aliasesPoll.refresh}
+        />
+      )}
     </div>
   );
 }
@@ -160,11 +184,15 @@ function ProjectSections({
   canRemove,
   onRemove,
   onRefresh,
+  aliases,
+  onRename,
 }: {
   list: EnrichedProject[];
   canRemove: boolean;
   onRemove: (p: EnrichedProject) => void;
   onRefresh: () => void;
+  aliases: JobAlias[];
+  onRename: (t: RenameTarget) => void;
 }) {
   // Planned placeholders (#113) live in the main list — they are intended repos.
   const repos = list.filter((p) => p.kind === "repo" || p.kind === "planned");
@@ -177,7 +205,7 @@ function ProjectSections({
             p.kind === "planned" ? (
               <PlannedCard key={p.name} project={p} onRemoved={onRefresh} />
             ) : (
-              <ProjectCard key={p.name} project={p} canRemove={canRemove} onRemove={() => onRemove(p)} />
+              <ProjectCard key={p.name} project={p} canRemove={canRemove} onRemove={() => onRemove(p)} aliases={aliases} onRename={onRename} />
             ),
           )}
         </div>
@@ -191,7 +219,7 @@ function ProjectSections({
           </p>
           <div className="flex flex-col gap-4">
             {other.map((p) => (
-              <ProjectCard key={p.name} project={p} canRemove={canRemove} onRemove={() => onRemove(p)} />
+              <ProjectCard key={p.name} project={p} canRemove={canRemove} onRemove={() => onRemove(p)} aliases={aliases} onRename={onRename} />
             ))}
           </div>
         </section>
@@ -212,10 +240,14 @@ function ProjectCard({
   project,
   canRemove,
   onRemove,
+  aliases,
+  onRename,
 }: {
   project: EnrichedProject;
   canRemove: boolean;
   onRemove: () => void;
+  aliases: JobAlias[];
+  onRename: (t: RenameTarget) => void;
 }) {
   const state = toState(project.lastRun?.status, project.lastRun?.result);
   const when = relativeTime(project.lastActivity);
@@ -262,7 +294,7 @@ function ProjectCard({
       <ul className="divide-y divide-line-muted">
         {project.workflows.map((w) => (
           <li key={w.key} className="px-4 py-3">
-            <WorkflowRow workflow={w} />
+            <WorkflowRow workflow={w} project={project.name} aliases={aliases} onRename={onRename} />
           </li>
         ))}
       </ul>
@@ -270,9 +302,21 @@ function ProjectCard({
   );
 }
 
-function WorkflowRow({ workflow }: { workflow: EnrichedWorkflow }) {
+function WorkflowRow({
+  workflow,
+  project,
+  aliases,
+  onRename,
+}: {
+  workflow: EnrichedWorkflow;
+  project: string;
+  aliases: JobAlias[];
+  onRename: (t: RenameTarget) => void;
+}) {
   const { triggers } = workflow;
   const navigate = useNavigate();
+  // #114: the workflow's jobs (from the retained YAML) are the rename surface here.
+  const jobs = workflow.yaml ? workflowJobs(workflow.yaml) : [];
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
@@ -302,6 +346,31 @@ function WorkflowRow({ workflow }: { workflow: EnrichedWorkflow }) {
           onDone={() => navigate(`/runs/${workflow.latestRunId}`)}
         />
       </div>
+
+      {jobs.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 text-[12px] text-fg-muted">
+          <span className="eyebrow mr-0.5">Jobs</span>
+          {jobs.map((j) => {
+            const alias = aliasFor(aliases, project, j.key);
+            return (
+              <span
+                key={j.key}
+                className="inline-flex items-center gap-0.5 rounded-md border border-line px-1.5 py-0.5"
+                title={alias ? `Original: ${j.name} (${j.key})` : `jobs.${j.key}`}
+              >
+                <span className="font-mono text-[11px] text-fg">{alias ?? j.name}</span>
+                <button
+                  onClick={() => onRename({ project, jobKey: j.key, original: j.name, alias })}
+                  aria-label={`Rename job ${j.name} in ${project}`}
+                  className="inline-flex h-5 w-5 items-center justify-center rounded text-fg-subtle transition-colors hover:bg-raised hover:text-fg"
+                >
+                  <Pencil size={10} aria-hidden />
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      )}
 
       {workflow.yaml === null ? (
         <p className="text-[12px] text-fg-subtle">Workflow definition not retained for the latest run.</p>
