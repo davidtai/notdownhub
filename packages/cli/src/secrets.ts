@@ -135,7 +135,15 @@ function keychainSet(scope: string, name: string, value: string): void {
     ["add-generic-password", "-U", "-s", keychainService(scope), "-a", name, "-w", encoded],
     { stdio: ["ignore", "ignore", "pipe"] },
   );
-  if (r.status !== 0) throw new Error(`keychain write failed: ${r.stderr?.toString().trim() || r.status}`);
+  if (r.status !== 0) {
+    const detail = r.stderr?.toString().trim() || r.status;
+    // "Unable to obtain authorization" is the classic headless/SSH symptom: no unlocked login
+    // Keychain / no GUI session. Name the working fallback inline so the user is not stuck (#42).
+    throw new Error(
+      `keychain write failed: ${detail}\n` +
+        "headless/SSH sessions often cannot unlock the login Keychain — run 'ndh secrets backend file' to use the encrypted-file backend",
+    );
+  }
 }
 
 function keychainGet(scope: string, name: string): string | null {

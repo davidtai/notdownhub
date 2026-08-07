@@ -172,7 +172,7 @@ Follow these steps to move a runner machine:
 3. Join the machine to the hub: `ndh runner join http://<hub-host>:4949 --token <token>`.
 4. Set the same labels that your workflows request in `runs-on`. Use `--labels` when you join.
 5. Start the runner: `ndh runner start`.
-6. Store each repository secret with `ndh secrets set <NAME>`. The hub does not read secrets from GitHub.
+6. Store each repository secret with `ndh secrets set <NAME>`. The hub does not read secrets from GitHub. On a headless or SSH-only macOS account, run `ndh secrets backend file` first.
 7. Run your CI from a repository checkout: `ndh dispatch --server http://<hub-host>:4949`.
 
 Facts that apply to a migration:
