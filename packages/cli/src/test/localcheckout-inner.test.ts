@@ -2,7 +2,7 @@ import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -125,16 +125,20 @@ function dotnetParam(key: string, value: string): string {
 
 function dotnetMultipart(
   boundary: string,
-  parts: { name: string; filename?: string; data: Buffer }[],
+  parts: { name: string; filename?: string; data: Buffer; rawDisposition?: string }[],
 ): Buffer {
   const chunks: Buffer[] = [];
   for (const p of parts) {
     chunks.push(Buffer.from(`--${boundary}\r\n`));
-    const filename =
-      p.filename !== undefined
-        ? `; ${dotnetParam("filename", p.filename)}; filename*=utf-8''${encodeURIComponent(p.filename)}`
-        : "";
-    chunks.push(Buffer.from(`Content-Disposition: form-data; ${dotnetParam("name", p.name)}${filename}\r\n\r\n`));
+    const disposition =
+      p.rawDisposition !== undefined
+        ? p.rawDisposition
+        : `form-data; ${dotnetParam("name", p.name)}${
+            p.filename !== undefined
+              ? `; ${dotnetParam("filename", p.filename)}; filename*=utf-8''${encodeURIComponent(p.filename)}`
+              : ""
+          }`;
+    chunks.push(Buffer.from(`Content-Disposition: ${disposition}\r\n\r\n`));
     chunks.push(p.data, Buffer.from("\r\n"));
   }
   chunks.push(Buffer.from(`--${boundary}--\r\n`));
@@ -291,6 +295,172 @@ test("inner action e2e: entries escaping the destination are refused with a warn
   assert.equal(readFileSync(join(run.ws, "ok.txt"), "utf8"), "ok");
   assert.ok(!existsSync(join(run.ws, "..", "escape.txt")), "no write outside the workspace");
   assert.ok(run.stdout.includes("::warning::Refusing entry outside the destination"));
+});
+
+// ---- #111: the live silent-empty regression and its loud-fail invariants ---------------------
+
+test("inner action e2e (#111 live shape): a >16KB part whose boundary shares the chunk must not strand the stream", async () => {
+  // Run #15's exact mechanism: ws.write() returns false on a part bigger than the writer's
+  // highWaterMark, the old code paused the source and armed resume on 'drain' alone — but Node
+  // never emits 'drain' after end(), a paused socket drops out of the event loop, and node
+  // exited 0 having written only the files before the big part. Deliver the WHOLE body in one
+  // write so the closing boundary is guaranteed to be in the buffer during the failed write.
+  const big = Buffer.alloc(80_000);
+  for (let i = 0; i < big.length; i++) big[i] = i % 251;
+  const after: { name: string; filename: string; data: Buffer }[] = [];
+  for (let i = 0; i < 40; i++) {
+    after.push({ name: `644:later/f${i}.txt`, filename: `later/f${i}.txt`, data: Buffer.from(`later ${i}`) });
+  }
+  const body = dotnetMultipart(BOUNDARY, [
+    { name: "644:README.md", filename: "README.md", data: Buffer.from("first") },
+    { name: "644:.git/index", filename: ".git/index", data: big },
+    ...after,
+  ]);
+  const run = await runInner((_req, res) => {
+    res.writeHead(200, { "content-type": `multipart/form-data; boundary="${BOUNDARY}"` });
+    res.end(body);
+  }, { checkoutref: "v2", repository: "local/repo" });
+  assert.equal(run.code, 0, run.stdout + run.stderr);
+  assert.deepEqual(readFileSync(join(run.ws, ".git/index")), big, "the big part is byte-exact");
+  for (let i = 0; i < 40; i++) {
+    assert.equal(readFileSync(join(run.ws, `later/f${i}.txt`), "utf8"), `later ${i}`, "every file AFTER the big part lands");
+  }
+  assert.ok(run.stdout.includes("Materialized 42 entries (0 symlinks)"), "the success summary reports full parity");
+  assert.ok(!run.stdout.includes("::warning"), "no warnings on the clean path");
+});
+
+test("inner action e2e (#111 scale): thousands of files, deep dirs, symlinks, folder entries, non-ASCII, split chunks", async () => {
+  const parts: { name: string; filename?: string; data: Buffer; rawDisposition?: string }[] = [];
+  let expectedFiles = 0;
+  // Thousands of small files across deep directories, including dotfiles and .github dirs.
+  for (let d = 0; d < 40; d++) {
+    for (let f = 0; f < 50; f++) {
+      const p = `pkg${d % 7}/src/deep/${d}/nested/dir/${f}/file-${d}-${f}.ts`;
+      parts.push({ name: `644:${p}`, filename: p, data: Buffer.from(`content ${d}/${f}`) });
+      expectedFiles++;
+    }
+  }
+  for (const p of [".github/workflows/ci.yml", ".gitignore", ".env.sample", ".git/HEAD", ".git/objects/ab/cdef"]) {
+    parts.push({ name: `644:${p}`, filename: p, data: Buffer.from(`# ${p}\n`) });
+    expectedFiles++;
+  }
+  // Unquoted root-level token filename (the #109 .NET shape) next to quoted ones.
+  parts.push({ name: "644:pnpm-lock.yaml", filename: "pnpm-lock.yaml", data: Buffer.from("lockfileVersion: 9\n") });
+  expectedFiles++;
+  // Executable, a large binary part, and a part exactly at the 16KB highWaterMark edge.
+  parts.push({ name: "755:tools/run.sh", filename: "tools/run.sh", data: Buffer.from("#!/bin/sh\nexit 0\n") });
+  const big = Buffer.alloc(700_000);
+  for (let i = 0; i < big.length; i++) big[i] = (i * 7) % 256;
+  parts.push({ name: "644:assets/blob.bin", filename: "assets/blob.bin", data: big });
+  parts.push({ name: "644:assets/edge.bin", filename: "assets/edge.bin", data: Buffer.alloc(16_384, 7) });
+  expectedFiles += 3;
+  // Non-ASCII names ride as RFC 2047 words, which real .NET always wraps in quotes.
+  const uniPath = "docs/üñî/città-テスト.md";
+  const uniWord = `=?utf-8?B?${Buffer.from(`644:${uniPath}`, "utf8").toString("base64")}?=`;
+  parts.push({ name: uniWord, filename: "citta.md", data: Buffer.from("unicode") });
+  expectedFiles++;
+  // A filename*-only disposition still counts as a file part, not a field.
+  parts.push({
+    name: "644:star.txt",
+    rawDisposition: `form-data; name="644:star.txt"; filename*=utf-8''star.txt`,
+    data: Buffer.from("star"),
+  });
+  expectedFiles++;
+  // Folder entries materialize the directory itself.
+  parts.push({ name: "755:emptydir/", filename: "emptydir/", data: Buffer.alloc(0) });
+  // Symlinks: resolvable, chained, and dead.
+  parts.push({ name: "lnk:link-to-lock.yaml", data: Buffer.from("pnpm-lock.yaml") });
+  parts.push({ name: "lnk:docs/link-up.md", data: Buffer.from("../pnpm-lock.yaml") });
+  parts.push({ name: "lnk:dead-link", data: Buffer.from("no-such-target") });
+
+  const body = dotnetMultipart(BOUNDARY, parts);
+  const run = await runInner((_req, res) => {
+    res.writeHead(200, { "content-type": `multipart/form-data; boundary="${BOUNDARY}"` });
+    // 1009-byte chunks: every boundary, header block, and big part straddles chunk edges.
+    let i = 0;
+    const step = () => {
+      if (i >= body.length) return res.end();
+      res.write(body.subarray(i, i + 1009));
+      i += 1009;
+      setImmediate(step);
+    };
+    step();
+  }, { checkoutref: "v2", repository: "local/repo" });
+
+  assert.equal(run.code, 0, run.stdout + run.stderr);
+  const files = readdirSync(run.ws, { recursive: true, withFileTypes: true }).filter((e) => e.isFile());
+  assert.equal(files.length, expectedFiles, "file-count parity with the fixture");
+  assert.deepEqual(readFileSync(join(run.ws, "assets/blob.bin")), big, "700KB binary is byte-exact");
+  assert.equal(readFileSync(join(run.ws, uniPath), "utf8"), "unicode", "RFC 2047 quoted names decode");
+  assert.equal(readFileSync(join(run.ws, "star.txt"), "utf8"), "star", "filename*-only parts are files");
+  assert.ok(statSync(join(run.ws, "emptydir")).isDirectory(), "folder entries materialize");
+  if (process.platform !== "win32") {
+    assert.ok(statSync(join(run.ws, "tools/run.sh")).mode & 0o100, "755 keeps the exec bit at scale");
+  }
+  assert.equal(readlinkSync(join(run.ws, "link-to-lock.yaml")), "pnpm-lock.yaml");
+  assert.equal(readlinkSync(join(run.ws, "docs/link-up.md")), "../pnpm-lock.yaml");
+  assert.equal(readlinkSync(join(run.ws, "dead-link")), "no-such-target", "dead symlinks are still restored");
+  assert.ok(!run.stdout.includes("::warning"), "zero warnings at scale");
+  assert.ok(!run.stdout.includes("::error"));
+});
+
+test("inner action e2e (#111 guard): a stream with zero files FAILS the step, never a silent success", async () => {
+  const body = dotnetMultipart(BOUNDARY, []);
+  const run = await runInner((_req, res) => {
+    res.writeHead(200, { "content-type": `multipart/form-data; boundary="${BOUNDARY}"` });
+    res.end(body);
+  }, { checkoutref: "v2" });
+  assert.equal(run.code, 1, "an empty checkout must fail loudly");
+  assert.ok(run.stdout.includes("::error::The repository stream contained no files"));
+  // skip=true was already emitted (the hub answered 200), but the failed step stops the composite.
+  assert.match(readFileSync(run.outputFile, "utf8"), /skip<<ghadelimiter_[0-9a-f-]+\ntrue\n/);
+});
+
+test("inner action e2e (#111 guard): .git entries in the stream but no materialized .git fails the step", async () => {
+  const body = dotnetMultipart(BOUNDARY, [
+    // Traversal-guarded .git entry: the stream clearly carried .git, nothing lands on disk.
+    { name: "644:.git/../../evil", filename: ".git/../../evil", data: Buffer.from("x") },
+    { name: "644:ok.txt", filename: "ok.txt", data: Buffer.from("ok") },
+  ]);
+  const run = await runInner((_req, res) => {
+    res.writeHead(200, { "content-type": `multipart/form-data; boundary="${BOUNDARY}"` });
+    res.end(body);
+  }, { checkoutref: "v2" });
+  assert.equal(run.code, 1);
+  assert.ok(run.stdout.includes("::warning::Refusing entry outside the destination"));
+  assert.ok(run.stdout.includes("::error::The stream carried 1 .git entries but no .git directory was materialized"));
+});
+
+test("inner action e2e (#111 guard): an unparseable disposition fails the step instead of skipping files", async () => {
+  const body = dotnetMultipart(BOUNDARY, [
+    { name: "644:good.txt", filename: "good.txt", data: Buffer.from("g") },
+    { name: "ignored", rawDisposition: 'form-data; oops="644:lost.txt"', data: Buffer.from("lost") },
+  ]);
+  const run = await runInner((_req, res) => {
+    res.writeHead(200, { "content-type": `multipart/form-data; boundary="${BOUNDARY}"` });
+    res.end(body);
+  }, { checkoutref: "v2" });
+  assert.equal(run.code, 1);
+  assert.ok(run.stdout.includes("::warning::Unparseable multipart disposition"));
+  assert.ok(run.stdout.includes("::error::1 multipart entries had unparseable dispositions"));
+});
+
+test("inner action e2e (#111 guard): a failed write fails the step instead of passing an incomplete tree", async () => {
+  const body = dotnetMultipart(BOUNDARY, [
+    { name: "644:blocked/file.txt", filename: "blocked/file.txt", data: Buffer.from("x") },
+    { name: "644:fine.txt", filename: "fine.txt", data: Buffer.from("y") },
+  ]);
+  const run = await runInner(
+    (_req, res) => {
+      res.writeHead(200, { "content-type": `multipart/form-data; boundary="${BOUNDARY}"` });
+      res.end(body);
+    },
+    { checkoutref: "v2", clean: "false" },
+    // 'blocked' pre-exists as a FILE, so mkdir of the part's parent directory must fail.
+    (ws) => writeFileSync(join(ws, "blocked"), "i am a file"),
+  );
+  assert.equal(run.code, 1);
+  assert.ok(run.stdout.includes("::error::1 entries failed to write"));
 });
 
 test("inner action e2e: a truncated stream fails the step instead of passing half a tree", async () => {
