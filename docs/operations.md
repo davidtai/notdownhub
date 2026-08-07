@@ -727,6 +727,10 @@ A bare git server can trigger CI on a branch update. A `post-receive` hook
 checks out each pushed branch to a temporary work-tree. It then runs
 `ndh dispatch` against your hub for that tree.
 
+This section covers the hook mechanics. For the full team topology — roles,
+secrets placement, and how teammates see results — see
+[collaboration.md](collaboration.md).
+
 Install the hook with one command:
 
 ```bash

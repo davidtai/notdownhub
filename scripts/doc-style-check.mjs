@@ -30,6 +30,7 @@ const DEFAULT_FILES = [
   ".github/pull_request_template.md",
   "docs/install.md",
   "docs/operations.md",
+  "docs/collaboration.md",
   "docs/architecture.md",
   "docs/files.md",
   "examples/demo/README.md",
