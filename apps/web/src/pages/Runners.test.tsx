@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { Runners } from "./Runners";
 import { ThemeProvider } from "../lib/theme";
-import { mockFetch, routes } from "../test/helpers";
+import { mockFetch, routes, MockIntersectionObserver } from "../test/helpers";
 
 function renderRunners() {
   return render(
@@ -32,6 +32,8 @@ const RUNNERS = [
   { id: 2, poolId: 1, name: "runner-b", labels: [], online: false, busy: false, state: "offline" },
   { id: 3, poolId: 1, name: "runner-c", os: "Linux 6.1", maxParallelism: 0, labels: ["gpu"], online: true, busy: false, state: "idle" },
 ];
+
+const type = (value: string) => fireEvent.change(screen.getByRole("textbox"), { target: { value } });
 
 describe("Runners", () => {
   it("shows a skeleton, then the fleet with state, metadata and an online count", async () => {
@@ -73,6 +75,61 @@ describe("Runners", () => {
     renderRunners();
     await waitFor(() => expect(screen.getByText(/Couldn't load runners/)).toBeTruthy());
   });
+
+  // ── #58 pill filter + infinite scroll ──────────────────────────────────────
+
+  it("filters runners by name, label and state with combinable pills", async () => {
+    mockFetch(routes({ "/api/local/agents": RUNNERS }));
+    renderRunners();
+    await waitFor(() => expect(screen.getByText("runner-a")).toBeTruthy());
+
+    // Live draft filter by label.
+    type("gpu");
+    await waitFor(() => expect(screen.getByText("runner-c")).toBeTruthy());
+    expect(screen.queryByText("runner-a")).toBeNull();
+    expect(screen.queryByText("runner-b")).toBeNull();
+
+    // A term that matches nothing → no-match message.
+    type("nonesuch");
+    await waitFor(() => expect(screen.getByText("No runners match these filters.")).toBeTruthy());
+  });
+
+  it("restores saved runner pills from localStorage", async () => {
+    window.localStorage.setItem("ndh.filters.runners", JSON.stringify(["offline"]));
+    mockFetch(routes({ "/api/local/agents": RUNNERS }));
+    renderRunners();
+    // Only the offline runner survives the saved "offline" pill.
+    await waitFor(() => expect(screen.getByText("runner-b")).toBeTruthy());
+    expect(screen.queryByText("runner-a")).toBeNull();
+    expect(screen.getByText("offline")).toBeTruthy(); // the pill
+  });
+
+  it("windows the fleet client-side and reveals more as the sentinel enters view", async () => {
+    const many = Array.from({ length: 15 }, (_, i) => ({
+      id: i + 1,
+      poolId: 1,
+      name: `runner-${String(i).padStart(2, "0")}`,
+      labels: [],
+      online: true,
+      busy: false,
+      state: "idle" as const,
+    }));
+    mockFetch(routes({ "/api/local/agents": many }));
+    renderRunners();
+
+    // First window: 12 of 15 runners.
+    await waitFor(() => expect(screen.getByText("runner-00")).toBeTruthy());
+    expect(screen.getByText("runner-11")).toBeTruthy();
+    expect(screen.queryByText("runner-12")).toBeNull();
+    expect(screen.getByTestId("infinite-sentinel")).toBeTruthy();
+
+    // Sentinel enters view → reveal the rest.
+    MockIntersectionObserver.enter();
+    await waitFor(() => expect(screen.getByText("runner-14")).toBeTruthy());
+    expect(screen.queryByTestId("infinite-sentinel")).toBeNull();
+  });
+
+  // ── #72 remove runner ───────────────────────────────────────────────────────
 
   it("opens a confirm dialog whose copy explains hub-unregister vs. machine cleanup", async () => {
     mockFetch(routes({ "/api/local/agents": RUNNERS }));

@@ -129,6 +129,47 @@ export class MockResizeObserver {
   }
 }
 
+// ── IntersectionObserver ───────────────────────────────────────────────────────
+// jsdom ships no IntersectionObserver; the infinite-scroll sentinel uses one to
+// detect when the end of a list scrolls into view. A controllable stand-in lets a
+// test fire an "intersecting" entry on demand (no layout engine, no scrolling).
+export class MockIntersectionObserver {
+  static instances: MockIntersectionObserver[] = [];
+  cb: IntersectionObserverCallback;
+  elements = new Set<Element>();
+  root: Element | Document | null = null;
+  rootMargin = "";
+  thresholds: ReadonlyArray<number> = [];
+  constructor(cb: IntersectionObserverCallback) {
+    this.cb = cb;
+    MockIntersectionObserver.instances.push(this);
+  }
+  observe(el: Element) {
+    this.elements.add(el);
+  }
+  unobserve(el: Element) {
+    this.elements.delete(el);
+  }
+  disconnect() {
+    this.elements.clear();
+  }
+  takeRecords(): IntersectionObserverEntry[] {
+    return [];
+  }
+  static reset() {
+    MockIntersectionObserver.instances = [];
+  }
+  /** Fire every live observer as if each observed element entered the viewport. */
+  static enter() {
+    for (const o of MockIntersectionObserver.instances) {
+      const entries = [...o.elements].map(
+        (target) => ({ isIntersecting: true, target }) as IntersectionObserverEntry,
+      );
+      if (entries.length) o.cb(entries, o as unknown as IntersectionObserver);
+    }
+  }
+}
+
 // ── fetch ────────────────────────────────────────────────────────────────────
 export interface RouteResult {
   status?: number;

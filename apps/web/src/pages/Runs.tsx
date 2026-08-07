@@ -1,61 +1,47 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { TriangleAlert } from "lucide-react";
 import { getRuns, type WorkflowRun } from "../lib/api";
-import { usePoll } from "../lib/hooks";
+import { useInfiniteList, usePersistentStrings } from "../lib/hooks";
+import { filterByTerms, runHaystack } from "../lib/filter";
 import { AppBar } from "../components/AppBar";
 import { RunRow } from "../components/RunRow";
+import { FilterInput } from "../components/FilterInput";
+import { InfiniteSentinel } from "../components/InfiniteSentinel";
 import { Card } from "../components/ui/card";
-import { projectLabel } from "../lib/format";
-import { cn } from "../lib/utils";
 
 const RUNS_INTERVAL = 2500;
-const ALL = "__all__";
-
-/** Group key for a workflow — its file, the stable identity across runs. */
-function workflowKey(run: WorkflowRun): string {
-  return run.fileName || run.displayName || `run-${run.id}`;
-}
-function workflowLabel(run: WorkflowRun): string {
-  return run.displayName || run.fileName || `Run ${run.id}`;
-}
+const FILTER_KEY = "ndh.filters.runs";
 
 export function Runs() {
-  const runs = usePoll(() => getRuns(0), RUNS_INTERVAL);
-  const [filter, setFilter] = useState<string>(ALL);
-  const [project, setProject] = useState<string>(ALL);
+  // Saved filter pills persist per surface; the draft is the live, in-progress term.
+  const [pills, setPills] = usePersistentStrings(FILTER_KEY);
+  const [draft, setDraft] = useState("");
 
-  const all = useMemo(() => runs.data ?? [], [runs.data]);
-
-  // Runs left after applying the project filter — the set the workflow filter and
-  // its counts are derived from, so the two filters compose.
-  const byProject = useMemo(
-    () => (project === ALL ? all : all.filter((r) => projectLabel(r) === project)),
-    [all, project],
-  );
-
-  const workflows = useMemo(() => {
-    const map = new Map<string, { key: string; label: string; count: number }>();
-    for (const r of byProject) {
-      const key = workflowKey(r);
-      const cur = map.get(key);
-      if (cur) cur.count += 1;
-      else map.set(key, { key, label: workflowLabel(r), count: 1 });
+  // The Projects page deep-links here as /?project=<owner/repo> (its "View runs"
+  // click-through). We fold that into the pill model: the project becomes a normal,
+  // removable pill that composes with the rest — not a separate filter path — then
+  // the query param is consumed so removing the pill sticks.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const pillsRef = useRef(pills);
+  pillsRef.current = pills;
+  useEffect(() => {
+    const project = searchParams.get("project");
+    if (!project) return;
+    if (!pillsRef.current.some((p) => p.toLowerCase() === project.toLowerCase())) {
+      setPills([...pillsRef.current, project]);
     }
-    return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
-  }, [byProject]);
+    const next = new URLSearchParams(searchParams);
+    next.delete("project");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setPills, setSearchParams]);
 
-  const projects = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const r of all) map.set(projectLabel(r), (map.get(projectLabel(r)) ?? 0) + 1);
-    return [...map.entries()].map(([key, count]) => ({ key, count })).sort((a, b) => a.key.localeCompare(b.key));
-  }, [all]);
+  // Runs load a page at a time (hub API: ?page=N) and accumulate as you scroll.
+  const runs = useInfiniteList<WorkflowRun>(getRuns, (r) => r.id, RUNS_INTERVAL);
+  const all = runs.items;
 
-  const shown = useMemo(
-    () => (filter === ALL ? byProject : byProject.filter((r) => workflowKey(r) === filter)),
-    [byProject, filter],
-  );
-
-  const options = [{ key: ALL, label: "All workflows", count: byProject.length }, ...workflows];
+  const terms = useMemo(() => [...pills, draft], [pills, draft]);
+  const shown = useMemo(() => filterByTerms(all, terms, runHaystack), [all, terms]);
 
   return (
     <div className="min-h-full">
@@ -69,109 +55,45 @@ export function Runs() {
           </p>
         </div>
 
-        {/* Mobile: workflow filter as a select. */}
-        {workflows.length > 0 && (
-          <div className="mb-4 lg:hidden">
-            <label className="sr-only" htmlFor="wf-filter">
-              Filter by workflow
-            </label>
-            <select
-              id="wf-filter"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              className="h-11 w-full rounded-md border border-line bg-surface px-3 text-sm text-fg"
-            >
-              {options.map((o) => (
-                <option key={o.key} value={o.key}>
-                  {o.label} ({o.count})
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[220px_1fr]">
-          {/* Desktop sidebar */}
-          <aside className="hidden lg:block">
-            <p className="eyebrow mb-2 px-2">Workflows</p>
-            <nav className="flex flex-col gap-0.5">
-              {options.map((o) => {
-                const active = filter === o.key;
-                return (
-                  <button
-                    key={o.key}
-                    onClick={() => setFilter(o.key)}
-                    aria-current={active}
-                    className={cn(
-                      "flex items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors",
-                      active
-                        ? "bg-raised font-medium text-fg"
-                        : "text-fg-muted hover:bg-raised hover:text-fg",
-                    )}
-                  >
-                    <span className="truncate">{o.label}</span>
-                    <span className="tnum shrink-0 font-mono text-[11px] text-fg-subtle">
-                      {o.count}
-                    </span>
-                  </button>
-                );
-              })}
-            </nav>
-          </aside>
-
-          {/* Run list */}
-          <div className="min-w-0">
-            {/* Project filter — every run belongs to a project; filter across them. */}
-            {projects.length > 1 && (
-              <div className="mb-3 flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by project">
-                <span className="eyebrow mr-1">Project</span>
-                {[{ key: ALL, count: all.length }, ...projects].map((p) => {
-                  const active = project === p.key;
-                  return (
-                    <button
-                      key={p.key}
-                      onClick={() => setProject(p.key)}
-                      aria-pressed={active}
-                      className={cn(
-                        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[11px] transition-colors",
-                        active
-                          ? "border-accent bg-accent text-white"
-                          : "border-line text-fg-muted hover:bg-raised hover:text-fg",
-                      )}
-                    >
-                      <span className="truncate">{p.key === ALL ? "All projects" : p.key}</span>
-                      <span className="tnum shrink-0 opacity-70">{p.count}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-
-            <Card className="overflow-hidden">
-            {runs.initial ? (
-              <SkeletonRows />
-            ) : runs.error && !runs.data ? (
-              <ErrorState />
-            ) : shown.length === 0 ? (
-              all.length === 0 ? (
-                <EmptyState />
-              ) : (
-                <div className="px-4 py-12 text-center text-sm text-fg-muted">
-                  No runs for this workflow.
-                </div>
-              )
-            ) : (
-              <ul className="divide-y divide-line-muted">
-                {shown.map((r) => (
-                  <li key={r.id}>
-                    <RunRow run={r} />
-                  </li>
-                ))}
-              </ul>
-            )}
-            </Card>
-          </div>
+        <div className="mb-4">
+          <FilterInput
+            pills={pills}
+            onPillsChange={setPills}
+            draft={draft}
+            onDraftChange={setDraft}
+            label="Filter runs"
+            placeholder="Filter by project, workflow, branch, event, result… (Enter to save)"
+          />
         </div>
+
+        <Card className="overflow-hidden">
+          {runs.initial ? (
+            <SkeletonRows />
+          ) : runs.error && all.length === 0 ? (
+            <ErrorState />
+          ) : shown.length === 0 ? (
+            all.length === 0 ? (
+              <EmptyState />
+            ) : (
+              <div className="px-4 py-12 text-center text-sm text-fg-muted">
+                No runs match these filters.
+              </div>
+            )
+          ) : (
+            <ul className="divide-y divide-line-muted">
+              {shown.map((r) => (
+                <li key={r.id}>
+                  <RunRow run={r} />
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+
+        <InfiniteSentinel onVisible={runs.loadMore} disabled={runs.initial || !runs.hasMore} />
+        {runs.loadingMore && (
+          <p className="py-3 text-center text-[12px] text-fg-subtle">Loading more…</p>
+        )}
       </main>
     </div>
   );
