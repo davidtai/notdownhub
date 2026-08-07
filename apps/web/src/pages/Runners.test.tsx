@@ -208,7 +208,9 @@ describe("Runners", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
 
     // The DELETE hits /_apis/v1/Agent/{poolId}/{agentId} with the DELETE method.
-    await waitFor(() => expect(fn).toHaveBeenCalledWith("/_apis/v1/Agent/1/1", { method: "DELETE" }));
+    await waitFor(() =>
+      expect(fn).toHaveBeenCalledWith("/_apis/v1/Agent/1/1", expect.objectContaining({ method: "DELETE" })),
+    );
     // Dialog closes and the row is gone after the immediate refresh.
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await waitFor(() => expect(screen.queryByText("runner-a")).toBeNull());

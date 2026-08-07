@@ -14,6 +14,7 @@ import {
   getWorkflowDefinition,
   getRunLastActivity,
   deleteProjectRuns,
+  cancelRun,
   probeDeleteProjectSupport,
   rerunWorkflow,
   HubRefusalError,
@@ -114,12 +115,34 @@ describe("removeAgent", () => {
   it("issues a DELETE to /_apis/v1/Agent/{poolId}/{agentId}", async () => {
     const fn = mockFetch(routes({ "/_apis/v1/Agent/1/7": { status: 204 } }));
     await removeAgent(1, 7);
-    expect(fn).toHaveBeenCalledWith("/_apis/v1/Agent/1/7", { method: "DELETE" });
+    expect(fn).toHaveBeenCalledWith(
+      "/_apis/v1/Agent/1/7",
+      expect.objectContaining({ method: "DELETE" }),
+    );
   });
 
   it("throws with the status on a non-OK response", async () => {
     mockFetch(routes({ "/_apis/v1/Agent/1/7": { status: 403 } }));
     await expect(removeAgent(1, 7)).rejects.toThrow(/403/);
+  });
+});
+
+describe("CSRF header", () => {
+  it("stamps X-Requested-By: ndh on a state-changing call (the front's guard)", async () => {
+    const fn = mockFetch(routes({ "/api/local/runs/9/cancel": { status: 200 } }));
+    await cancelRun(9);
+    const call = fn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[1].method).toBe("POST");
+    expect((call[1].headers as Record<string, string>)["X-Requested-By"]).toBe("ndh");
+  });
+
+  it("stamps the guard header on GETs too, without dropping the caller's own headers", async () => {
+    const fn = mockFetch(routes({ "/_apis/v1/Message/workflow/runs?page=": [] }));
+    await getRuns();
+    const call = fn.mock.calls[0] as unknown as [string, RequestInit];
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers["X-Requested-By"]).toBe("ndh");
+    expect(headers.accept).toBe("application/json");
   });
 });
 

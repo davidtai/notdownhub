@@ -21,7 +21,7 @@ describe("RunActions", () => {
     expect(screen.getByText("Cancel")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Cancel run 42" }));
     await waitFor(() => expect(onDone).toHaveBeenCalled());
-    expect(fn).toHaveBeenCalledWith("/api/local/runs/42/cancel", { method: "POST" });
+    expect(fn).toHaveBeenCalledWith("/api/local/runs/42/cancel", expect.objectContaining({ method: "POST" }));
   });
 
   it("prefers onCancelled over onDone when both are given", async () => {
@@ -57,7 +57,7 @@ describe("RunActions", () => {
 
     await waitFor(() => expect(onDeleted).toHaveBeenCalled());
     expect(onDone).not.toHaveBeenCalled();
-    expect(fn).toHaveBeenCalledWith("/api/local/runs/7", { method: "DELETE" });
+    expect(fn).toHaveBeenCalledWith("/api/local/runs/7", expect.objectContaining({ method: "DELETE" }));
   });
 
   it("delete falls back to onDone when onDeleted is absent", async () => {

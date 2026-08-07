@@ -110,8 +110,26 @@ export interface JobLogs {
   lines: string[];
 }
 
+/**
+ * The CSRF guard header the front requires on every state-changing /api/local
+ * request. A cross-site <form>/<img>/simple request cannot set a custom header,
+ * so its presence proves the call came from this app, not a forged navigation.
+ * We send it on EVERY request (GETs included) — harmless, and the single choke
+ * point below means no call can ever forget it.
+ */
+const CSRF_HEADER = "X-Requested-By";
+const CSRF_VALUE = "ndh";
+
+/**
+ * The one fetch every hub request goes through. Merges the caller's headers and
+ * always stamps the CSRF header on top, so the guard travels with every call.
+ */
+function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(path, { ...init, headers: { ...init.headers, [CSRF_HEADER]: CSRF_VALUE } });
+}
+
 async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(path, { headers: { accept: "application/json" } });
+  const res = await apiFetch(path, { headers: { accept: "application/json" } });
   if (!res.ok) throw new Error(`${path} → ${res.status} ${res.statusText}`);
   return (await res.json()) as T;
 }
@@ -152,7 +170,7 @@ export async function getAgents(): Promise<RunnerInfo[]> {
  * is cleaned separately with `ndh runner remove`.
  */
 export async function removeAgent(poolId: number | string, agentId: number | string): Promise<void> {
-  const res = await fetch(`/_apis/v1/Agent/${poolId}/${agentId}`, { method: "DELETE" });
+  const res = await apiFetch(`/_apis/v1/Agent/${poolId}/${agentId}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`DELETE /_apis/v1/Agent/${poolId}/${agentId} → ${res.status} ${res.statusText}`);
 }
 
@@ -163,7 +181,7 @@ export async function removeAgent(poolId: number | string, agentId: number | str
  */
 export async function getJobLogs(runId: number, timelineId: string): Promise<JobLogs> {
   try {
-    const res = await fetch(`/api/local/joblogs/${runId}/${timelineId}`, {
+    const res = await apiFetch(`/api/local/joblogs/${runId}/${timelineId}`, {
       headers: { accept: "application/json" },
     });
     if (!res.ok) return { retained: false, lines: [] };
@@ -212,7 +230,7 @@ export interface RunningJobRef {
 export async function getRunsMeta(ids: number[]): Promise<Record<number, RunTimeMeta> | null> {
   if (ids.length === 0) return {};
   try {
-    const res = await fetch(`/api/local/runs-meta?ids=${ids.join(",")}`, {
+    const res = await apiFetch(`/api/local/runs-meta?ids=${ids.join(",")}`, {
       headers: { accept: "application/json" },
     });
     if (!res.ok) return null;
@@ -274,7 +292,7 @@ export async function getAllRuns(): Promise<WorkflowRun[]> {
  */
 export async function getProjects(): Promise<Project[] | null> {
   try {
-    const res = await fetch(`/api/local/projects`, { headers: { accept: "application/json" } });
+    const res = await apiFetch(`/api/local/projects`, { headers: { accept: "application/json" } });
     if (!res.ok) return null;
     const data = (await res.json()) as Project[];
     return Array.isArray(data) ? data : null;
@@ -307,7 +325,7 @@ export interface PlaceholderResult {
  */
 export async function createProjectPlaceholder(input: PlaceholderInput): Promise<PlaceholderResult> {
   try {
-    const res = await fetch(`/api/local/projects/placeholder`, {
+    const res = await apiFetch(`/api/local/projects/placeholder`, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify(input),
@@ -321,7 +339,7 @@ export async function createProjectPlaceholder(input: PlaceholderInput): Promise
 /** Remove a planned-project placeholder (the "Remove" action on a planned card). */
 export async function deleteProjectPlaceholder(slug: string): Promise<PlaceholderResult> {
   try {
-    const res = await fetch(`/api/local/projects/placeholder?slug=${encodeURIComponent(slug)}`, {
+    const res = await apiFetch(`/api/local/projects/placeholder?slug=${encodeURIComponent(slug)}`, {
       method: "DELETE",
       headers: { accept: "application/json" },
     });
@@ -348,7 +366,7 @@ export interface JobAlias {
 /** All stored aliases (GET /api/local/job-aliases). Tolerant: [] on any failure. */
 export async function getJobAliases(): Promise<JobAlias[]> {
   try {
-    const res = await fetch(`/api/local/job-aliases`, { headers: { accept: "application/json" } });
+    const res = await apiFetch(`/api/local/job-aliases`, { headers: { accept: "application/json" } });
     if (!res.ok) return [];
     const rows = (await res.json()) as JobAlias[];
     return Array.isArray(rows) ? rows : [];
@@ -360,7 +378,7 @@ export async function getJobAliases(): Promise<JobAlias[]> {
 /** Set (or replace) a job display alias. Returns whether the hub accepted it. */
 export async function setJobAlias(project: string, jobKey: string, alias: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/local/job-aliases`, {
+    const res = await apiFetch(`/api/local/job-aliases`, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify({ project, jobKey, alias }),
@@ -374,7 +392,7 @@ export async function setJobAlias(project: string, jobKey: string, alias: string
 /** Clear a job display alias — the original name shows again everywhere. */
 export async function clearJobAlias(project: string, jobKey: string): Promise<boolean> {
   try {
-    const res = await fetch(
+    const res = await apiFetch(
       `/api/local/job-aliases?project=${encodeURIComponent(project)}&jobKey=${encodeURIComponent(jobKey)}`,
       { method: "DELETE", headers: { accept: "application/json" } },
     );
@@ -455,7 +473,7 @@ export interface DeleteResult {
  */
 export async function probeDeleteProjectSupport(): Promise<boolean> {
   try {
-    const res = await fetch("/api/local/runs", {
+    const res = await apiFetch("/api/local/runs", {
       method: "OPTIONS",
       headers: { accept: "application/json" },
     });
@@ -477,7 +495,7 @@ export async function probeDeleteProjectSupport(): Promise<boolean> {
  */
 export async function deleteProjectRuns(project: string): Promise<DeleteResult> {
   try {
-    const res = await fetch(`/api/local/runs?project=${encodeURIComponent(project)}`, {
+    const res = await apiFetch(`/api/local/runs?project=${encodeURIComponent(project)}`, {
       method: "DELETE",
       headers: { accept: "application/json" },
     });
@@ -494,7 +512,7 @@ export async function deleteProjectRuns(project: string): Promise<DeleteResult> 
  * left stuck "running" with the runner busy). Throws on a non-OK response.
  */
 export async function cancelRun(id: number): Promise<void> {
-  const res = await fetch(`/api/local/runs/${id}/cancel`, { method: "POST" });
+  const res = await apiFetch(`/api/local/runs/${id}/cancel`, { method: "POST" });
   if (!res.ok) throw new Error(`cancel run ${id} → ${res.status} ${res.statusText}`);
 }
 
@@ -503,7 +521,7 @@ export async function cancelRun(id: number): Promise<void> {
  * the list, 404s on detail, and stays gone across restarts. Throws on a non-OK response.
  */
 export async function deleteRun(id: number): Promise<void> {
-  const res = await fetch(`/api/local/runs/${id}`, { method: "DELETE" });
+  const res = await apiFetch(`/api/local/runs/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`delete run ${id} → ${res.status} ${res.statusText}`);
 }
 
@@ -527,7 +545,7 @@ export async function deleteRun(id: number): Promise<void> {
 export async function rerunWorkflow(runId: number, opts: { failed?: boolean } = {}): Promise<void> {
   const verb = opts.failed ? "rerunFailed" : "rerunworkflow";
   const path = `/_apis/v1/Message/${verb}/${runId}`;
-  const res = await fetch(path, { method: "POST" });
+  const res = await apiFetch(path, { method: "POST" });
   if (!res.ok) {
     let reason: string | null = null;
     try {
@@ -573,7 +591,7 @@ export interface WriteResult {
 
 async function writeLocal(path: string, init: RequestInit): Promise<WriteResult> {
   try {
-    const res = await fetch(path, { ...init, headers: { ...init.headers, accept: "application/json" } });
+    const res = await apiFetch(path, { ...init, headers: { ...init.headers, accept: "application/json" } });
     if (res.ok) return { ok: true, status: res.status, error: null };
     let error: string | null = null;
     try {
@@ -645,7 +663,7 @@ export type JoinInfoResult =
  */
 export async function getJoinInfo(): Promise<JoinInfoResult> {
   try {
-    const res = await fetch("/api/local/join-info", { headers: { accept: "application/json" } });
+    const res = await apiFetch("/api/local/join-info", { headers: { accept: "application/json" } });
     if (!res.ok) return { ok: false, status: res.status };
     return { ok: true, info: (await res.json()) as JoinInfo };
   } catch {
