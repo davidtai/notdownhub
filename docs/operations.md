@@ -585,11 +585,24 @@ this section covers the git-server path in detail.
 
 ### Trigger CI from a git server
 
-A bare git server can trigger CI on a branch update. Add a `post-receive` hook.
-The hook checks out each pushed branch to a temporary work-tree. It then runs
+A bare git server can trigger CI on a branch update. A `post-receive` hook
+checks out each pushed branch to a temporary work-tree. It then runs
 `ndh dispatch` against your hub for that tree.
 
-This recipe was verified live against a bare repo and a running hub:
+Install the hook with one command:
+
+```bash
+ndh hook install /srv/git/app.git --server http://hub.tailnet:4949
+```
+
+Add `-W .github/workflows/ci.yml` to dispatch one workflow. The default
+dispatches all workflows. Use `--force` to overwrite a hook ndh did not write.
+The command validates the path, confirms a bare repo, and writes an executable
+`post-receive` hook.
+
+The manual recipe below explains what the generated hook does. Use it on a
+server without `ndh hook install`. This recipe was verified live against a bare
+repo and a running hub:
 
 ```bash
 #!/usr/bin/env bash
@@ -617,8 +630,7 @@ hook. The dispatch reads secrets from the server that runs the hook, not from
 the git remote.
 
 A full forge can replace this hook. Gitea and Forgejo can point a webhook at the
-hub instead. Issue #23 tracks a future `ndh hook install` that will automate the
-hook.
+hub instead.
 
 ### Branch tracking
 
