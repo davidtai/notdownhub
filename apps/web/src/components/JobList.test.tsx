@@ -152,3 +152,15 @@ describe("JobList aliases (#114)", () => {
     expect(screen.queryByRole("button", { name: /Rename job/ })).toBeNull();
   });
 });
+
+describe("JobList degenerate matrix legs (#114)", () => {
+  it("a replayed plain job (engine matrix '[null]') shows the alias, not the leaked original", () => {
+    const replayed = [job({ jobId: "r1", workflowIdentifier: "build", name: "build", matrix: "[\n  null\n]" })];
+    render(
+      <JobList jobs={replayed} durations={{}} aliases={{ build: "Compile" }} selectedJobId={null} onSelect={vi.fn()} />,
+    );
+    // Group header + leg both read as the alias; the original is only in tooltips.
+    expect(screen.getAllByText("Compile").length).toBe(2);
+    expect(screen.queryByText("build")).toBeNull();
+  });
+});

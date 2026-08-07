@@ -277,6 +277,21 @@ The project then shows as **planned**, with the exact dispatch command.
 The first run with the same slug absorbs the placeholder. Without
 `--repository`, the slug comes from the checkout's origin remote.
 
+### Rename a job's display name
+
+You can give a job a friendlier display name. This is an alias, never an
+override: the workflow YAML and the engine's records stay untouched. Use the
+pencil on a job row (run detail or Projects breakdown), or the CLI:
+
+```bash
+ndh project alias owner/repo build "Compile & Ship"
+ndh project alias owner/repo build --clear
+```
+
+The alias shows everywhere the UI names the job. The original name stays
+on hover, and `ndh logs` prints `alias (original)`. Clearing the alias
+restores the original name everywhere.
+
 The same label scopes secrets and variables. A server-side value stored with
 `--repo owner/name` injects into that repo's hook runs. Re-run `ndh hook
 install` on a repo with an older generated hook to pick this up.
