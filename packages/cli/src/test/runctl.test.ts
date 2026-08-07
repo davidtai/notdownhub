@@ -347,21 +347,6 @@ test("readRunResultRollup: a foreign-schema hub.db (no Result column) yields no 
   assert.equal(rollup.latestAttemptId.size, 0);
 });
 
-test("applyCancelCorrection: runs the correction, and swallows any failure (best-effort)", async () => {
-  const p = seedRollupDb();
-  let seen: string | undefined;
-  await __test.applyCancelCorrection(p, (rollup) => {
-    seen = rollup.byAttemptId.get(1000);
-  });
-  assert.equal(seen, "canceled"); // the correction callback actually ran against the roll-up
-  // A throwing callback must never reject — the read endpoint serves the engine's data unchanged.
-  await assert.doesNotReject(
-    __test.applyCancelCorrection(p, () => {
-      throw new Error("boom");
-    }),
-  );
-});
-
 test("serveRunAttempts: a foreign-schema hub.db passes the engine's attempts through (no 4xx/5xx)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ndh-foreign2-"));
   mkdirSync(join(dir, "hub"), { recursive: true });

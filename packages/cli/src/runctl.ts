@@ -1,7 +1,8 @@
 import type { ServerResponse } from "node:http";
 import { deleteRun, joblogsDbPath, readDeletedRunIds } from "./joblogs.js";
 import { dropTree } from "./treecache.js";
-import { hubDbPath, unwrap } from "./lib.js";
+import { existsSync } from "node:fs";
+import { hubDbPath, log, unwrap } from "./lib.js";
 import { projectLabel } from "./status.js";
 
 /**
@@ -92,6 +93,9 @@ export interface RunResultRollup {
 export async function readRunResultRollup(hubDb: string = hubDbPath()): Promise<RunResultRollup> {
   const byAttemptId = new Map<number, "canceled">();
   const latestAttemptId = new Map<number, number>();
+  // No hub.db is a normal, expected state: `ndh run` in local mode (and any moment before the
+  // hub's first run) has no hub DB, so there is simply nothing to correct. Return quietly.
+  if (!existsSync(hubDb)) return { byAttemptId, latestAttemptId };
   try {
     const { DatabaseSync } = await import("node:sqlite");
     const db = new DatabaseSync(hubDb, { readOnly: true });
@@ -122,8 +126,11 @@ export async function readRunResultRollup(hubDb: string = hubDbPath()): Promise<
     } finally {
       db.close();
     }
-  } catch {
-    /* no readable hub.db → no corrections (runs render with the engine's own results) */
+  } catch (err) {
+    // The hub.db exists but we could not read or roll it up (locked, unexpected schema, corrupt).
+    // That is NOT expected — degrade to the engine's own results so the read still works, but say
+    // so loudly rather than hiding it, so a genuinely broken hub DB is diagnosable.
+    log(`warning: could not read canceled-run corrections from ${hubDb}: ${err instanceof Error ? err.message : String(err)}`);
   }
   return { byAttemptId, latestAttemptId };
 }
@@ -206,26 +213,12 @@ export async function serveFilteredRuns(
   const deleted = await readDeletedRunIds(dbPath);
   const { runs, wrapped } = splitEnvelope(data);
   const kept = runs.filter((r) => r.id === undefined || !deleted.has(r.id));
-  // #156: a canceled run the engine mislabeled `failed` reads `canceled` again. STRICTLY
-  // best-effort — any failure reading/rolling up hub.db leaves the engine's results untouched
-  // rather than breaking the runs list for anyone whose hub.db doesn't match expectations.
-  await applyCancelCorrection(hubDb, (rollup) => {
-    for (const r of kept) if (isMislabeledCancel(r.result, r.id, rollup)) r.result = "canceled";
-  });
+  // #156: a canceled run the engine mislabeled `failed` reads `canceled` again. readRunResultRollup
+  // returns an empty roll-up (no corrections) when there is no hub.db or it cannot be read, so this
+  // never changes the endpoint's status — but a real read failure is logged, not silently ignored.
+  const rollup = await readRunResultRollup(hubDb);
+  for (const r of kept) if (isMislabeledCancel(r.result, r.id, rollup)) r.result = "canceled";
   json(res, 200, wrapped ? { count: kept.length, value: kept } : kept);
-}
-
-/**
- * Read the #156 roll-up and hand it to `apply`, swallowing ANY failure (absent /
- * unreadable / wrong-schema hub.db, or a throwing correction). The correction is
- * a display nicety; it must never change a read endpoint's status or payload shape.
- */
-async function applyCancelCorrection(hubDb: string, apply: (rollup: RunResultRollup) => void): Promise<void> {
-  try {
-    apply(await readRunResultRollup(hubDb));
-  } catch {
-    /* best-effort: serve the engine's results unchanged */
-  }
 }
 
 /**
@@ -253,15 +246,14 @@ export async function serveRunAttempts(
   }
   const data = await up.json().catch(() => []);
   const { runs: attempts, wrapped } = splitEnvelope(data);
-  // #156 correction, strictly best-effort: a hub.db problem must never turn a run-detail
-  // attempts request into a 4xx/5xx — the engine's attempts pass through unchanged instead.
-  await applyCancelCorrection(hubDb, (rollup) => {
-    for (const a of attempts as { id?: number; result?: string }[]) {
-      if (a.result && FAILED_RESULTS.has(a.result.toLowerCase()) && a.id !== undefined && rollup.byAttemptId.get(a.id) === "canceled") {
-        a.result = "canceled";
-      }
+  // #156 correction: an empty roll-up (no/unreadable hub.db) leaves the engine's attempts
+  // unchanged, so a hub.db problem never turns a run-detail request into a 4xx/5xx.
+  const rollup = await readRunResultRollup(hubDb);
+  for (const a of attempts as { id?: number; result?: string }[]) {
+    if (a.result && FAILED_RESULTS.has(a.result.toLowerCase()) && a.id !== undefined && rollup.byAttemptId.get(a.id) === "canceled") {
+      a.result = "canceled";
     }
-  });
+  }
   json(res, 200, wrapped ? { count: attempts.length, value: attempts } : attempts);
 }
 
@@ -321,4 +313,4 @@ async function fetchProjectRuns(
 }
 
 /** Exposed for tests. */
-export const __test = { splitEnvelope, fetchProjectRuns, jobResultString, isMislabeledCancel, applyCancelCorrection };
+export const __test = { splitEnvelope, fetchProjectRuns, jobResultString, isMislabeledCancel };

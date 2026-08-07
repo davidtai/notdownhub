@@ -5,7 +5,7 @@ import { createReadStream } from "node:fs";
 import { mkdir, stat, readFile } from "node:fs/promises";
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
-import { download, exists, log, ndhHome } from "./lib.js";
+import { download, exists, hubDbPath, log, ndhHome } from "./lib.js";
 import { getAgentsInfo } from "./agents-info.js";
 import { serveJobLogs, isRunDeleted, joblogsDbPath } from "./joblogs.js";
 import { getConfigInfo } from "./config-info.js";
@@ -43,6 +43,12 @@ export interface FrontOptions {
   basicAuth?: string;
   /** TLS material; when set the front serves HTTPS. */
   tls?: { key: Buffer; cert: Buffer };
+  /**
+   * Absolute path to the hub DB used for the #156 canceled-run correction. Bound once at
+   * `startFront` so the correction reads a fixed location, not the mutable NDH_HOME global at
+   * request time. Defaults to `hubDbPath()` (the live ~/.notdownhub/hub/hub.db).
+   */
+  hubDb?: string;
   /** GitHub token for authenticated mirror fetches (from `--github-token`). */
   githubToken?: string;
 }
@@ -323,7 +329,7 @@ async function handleRequest(
     } else if (req.method === "GET" && url.pathname === "/_apis/v1/Message/workflow/runs") {
       // Runs list, proxied with tombstoned runs filtered out (for every reader). Not gated: the
       // list is a read, same as proxying it straight through — deletion is just enforced here.
-      await serveFilteredRuns(opts.hubPort, url.search, res);
+      await serveFilteredRuns(opts.hubPort, url.search, res, undefined, opts.hubDb);
     } else if (
       req.method === "GET" &&
       (m = url.pathname.match(/^\/_apis\/v1\/Message\/workflow\/run\/(\d+)(?:\/.*)?$/)) &&
@@ -338,7 +344,7 @@ async function handleRequest(
     ) {
       // Attempts, proxied with the #156 canceled correction so a deep-linked run's detail header
       // reads "Canceled" (not "Failed") even when its summary isn't on the runs list's first page.
-      await serveRunAttempts(opts.hubPort, Number(m[1]), res);
+      await serveRunAttempts(opts.hubPort, Number(m[1]), res, opts.hubDb);
     } else if (opts.uiDir && !uiAccessAllowed(req, opts) && isUiPath(url.pathname)) {
       denyUi(res, opts);
     } else if (opts.uiDir && (await serveUi(opts.uiDir, url.pathname, res))) {
@@ -368,6 +374,9 @@ async function handleRequest(
 }
 
 export function startFront(opts: FrontOptions): http.Server {
+  // Bind the hub DB path once, at startup — the correction must not depend on the ambient
+  // NDH_HOME global being unchanged between now and each later request.
+  opts.hubDb ??= hubDbPath();
   const mint = managementJwt(opts.hubPort, opts.runnerToken);
   const handler = (req: http.IncomingMessage, res: http.ServerResponse) => handleRequest(req, res, opts, mint);
   const server = opts.tls ? https.createServer({ key: opts.tls.key, cert: opts.tls.cert }, handler) : http.createServer(handler);

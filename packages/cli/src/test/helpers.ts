@@ -8,20 +8,28 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AddressInfo } from "node:net";
 
+/** Every temp home handed out by freshHome(), so cleanupHomes() can delete them all at suite end. */
+const createdHomes = new Set<string>();
+
 /**
  * Fresh, isolated NDH_HOME (+ deterministic file secrets backend). Returns the temp home.
  *
- * `mkdtempSync` already hands back a brand-new empty directory, but we also delete its `hub`
- * subtree defensively: this is the single guarantee every caller relies on — that no earlier
- * test's hub.db / joblogs.db can be visible under the home this call returns, whatever the
- * suite ordering or shared process state. A test that seeds its own hub.db does so afterward.
+ * `mkdtempSync` hands back a brand-new empty directory; each home is also registered so its
+ * databases (hub.db / joblogs.db / secrets) are removed by cleanupHomes() when the suite ends,
+ * rather than accumulating under the OS temp dir across runs.
  */
 export function freshHome(): string {
   const home = mkdtempSync(join(tmpdir(), "ndh-cov-"));
-  rmSync(join(home, "hub"), { recursive: true, force: true });
+  createdHomes.add(home);
   process.env.NDH_HOME = home;
   process.env.NDH_SECRETS_BACKEND = "file";
   return home;
+}
+
+/** Delete every temp home freshHome() created (and their DBs). Registered as a suite-end hook. */
+export function cleanupHomes(): void {
+  for (const home of createdHomes) rmSync(home, { recursive: true, force: true });
+  createdHomes.clear();
 }
 
 export interface Fixture {
