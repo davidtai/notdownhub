@@ -119,17 +119,25 @@ pnpm -r build
 ```
 
 `pnpm -r build` compiles the CLI to `packages/cli/dist/`. The entry point
-`packages/cli/dist/index.js` **is** `ndh` — alias it so the docs work verbatim:
+`packages/cli/dist/index.js` **is** `ndh`. Put it on your `PATH` with a
+user-level symlink — no admin rights required:
 
 ```bash
-alias ndh="node $PWD/packages/cli/dist/index.js"
+mkdir -p ~/bin
+ln -s "$PWD/packages/cli/dist/index.js" ~/bin/ndh
+export PATH="$HOME/bin:$PATH"     # add this line to ~/.zshrc or ~/.bashrc
 ndh --version
 # 0.0.1
 ```
 
-(Or symlink it onto your `PATH`:
-`ln -s "$PWD/packages/cli/dist/index.js" /usr/local/bin/ndh` — the file already
-has a `#!/usr/bin/env node` shebang and is marked executable by the build.)
+The file has a `#!/usr/bin/env node` shebang, and the build marks it
+executable. With admin rights, `/usr/local/bin` works too:
+`ln -s "$PWD/packages/cli/dist/index.js" /usr/local/bin/ndh`.
+
+A shell alias (`alias ndh="node $PWD/packages/cli/dist/index.js"`) works for
+interactive commands. Git hooks do not read aliases, so keep the `PATH` entry.
+`ndh hook install` writes the absolute path of its own install into each hook,
+so generated hooks run without PATH help.
 
 ---
 

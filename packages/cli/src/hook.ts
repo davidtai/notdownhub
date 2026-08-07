@@ -42,6 +42,46 @@ export const ALL_SKIPPED_MARKER = "All Workflows skipped";
 export const HOOK_TYPES = ["post-receive", "pre-receive", "pre-push", "post-commit"] as const;
 export type HookType = (typeof HOOK_TYPES)[number];
 
+/**
+ * The absolute way to run THIS ndh install, resolved at `hook install` time and embedded in
+ * every generated hook (#133). Hooks used to invoke a bare `ndh`, which required ndh on the
+ * hook environment's PATH — git hooks read no shell profile and no aliases, so the documented
+ * from-source alias install lost every CI dispatch silently. Embedding `<node> <entry>` makes
+ * the hook independent of PATH entirely.
+ */
+export interface NdhInvocation {
+  /** Absolute node binary running the CLI (process.execPath). */
+  node: string;
+  /** Absolute, realpath'd ndh CLI entry script (dist/index.js). */
+  entry: string;
+}
+
+/**
+ * Resolve the invocation to embed. Default: `process.execPath` + realpath of `process.argv[1]`.
+ * All supported install shapes land on the real entry script:
+ *   - npm/pnpm global bin shim: a symlink (or exec wrapper) onto dist/index.js — argv[1] is the
+ *     shim path (realpath follows it) or already the real entry (pnpm's sh shim execs node on it);
+ *   - from-source symlink (`ln -s .../dist/index.js ~/bin/ndh`): realpath follows it;
+ *   - direct `node packages/cli/dist/index.js`: realpath makes it absolute.
+ * `override` is the documented `--ndh <path>` escape hatch for exotic layouts; it must point at
+ * a JS entry runnable by `node` and is realpath'd the same way.
+ */
+export function resolveNdhInvocation(override?: string): NdhInvocation {
+  const raw = override ?? process.argv[1];
+  if (!raw) throw new Error("cannot resolve the running ndh entry script — pass --ndh <path>");
+  let entry: string;
+  try {
+    entry = realpathSync(resolve(raw));
+  } catch {
+    throw new Error(
+      override
+        ? `--ndh path does not exist: ${raw}`
+        : `cannot resolve the running ndh entry script (${raw}) — pass --ndh <path>`,
+    );
+  }
+  return { node: process.execPath, entry };
+}
+
 /** Server-side types install into a bare repo; the other two into a working checkout. */
 export function isServerHookType(type: HookType): boolean {
   return type === "post-receive" || type === "pre-receive";
@@ -94,11 +134,18 @@ export interface HookConfig {
   repository: string;
   /** Optional workflow file; when set the hook adds `-W <workflow>`. Default: dispatch all. */
   workflow?: string;
+  /** Absolute node binary the hook invokes; see NdhInvocation (#133). */
+  ndhNode: string;
+  /** Absolute ndh CLI entry script the hook invokes; see NdhInvocation (#133). */
+  ndhEntry: string;
 }
 
-/** The `HUB=`/`REPO=`/`WORKFLOW=` variable block, every value single-quote-escaped. */
+/** The `NDH_*`/`HUB=`/`REPO=`/`WORKFLOW=` variable block, every value single-quote-escaped. */
 function hookVars(config: HookConfig): string {
-  const lines: string[] = [];
+  const lines: string[] = [
+    `NDH_NODE=${shSingleQuote(config.ndhNode)}`,
+    `NDH_ENTRY=${shSingleQuote(config.ndhEntry)}`,
+  ];
   if (config.server) lines.push(`HUB=${shSingleQuote(config.server)}`);
   lines.push(`REPO=${shSingleQuote(config.repository)}`);
   if (config.workflow) lines.push(`WORKFLOW=${shSingleQuote(config.workflow)}`);
@@ -106,14 +153,51 @@ function hookVars(config: HookConfig): string {
 }
 
 /**
- * The `ndh` invocation for a client or gated hook: dispatch when a server is configured,
- * a local one-shot `ndh run` otherwise. `refArgs` is the shell fragment naming the ref
- * (already quoted), e.g. `--ref "$ref"`, or `"$@"` for post-commit's precomputed args.
+ * The ndh invocation for a hook: dispatch when a server is configured, a local one-shot
+ * `ndh run` otherwise. Always `"$NDH_NODE" "$NDH_ENTRY" …` — the absolute install resolved
+ * at generation time — never a bare `ndh`, which PATH-less hook environments cannot find
+ * (#133). `refArgs` is the shell fragment naming the ref (already quoted), e.g.
+ * `--ref "$ref"`, or `"$@"` for post-commit's precomputed args.
  */
 function ndhCiInvocation(config: HookConfig, refArgs: string): string {
   const wf = config.workflow ? ` -W "$WORKFLOW"` : "";
-  const base = config.server ? `ndh dispatch --server "$HUB" --repository "$REPO"` : `ndh run --repository "$REPO"`;
-  return `${base} --event push ${refArgs}${wf}`;
+  const sub = config.server ? `dispatch --server "$HUB" --repository "$REPO"` : `run --repository "$REPO"`;
+  return `"$NDH_NODE" "$NDH_ENTRY" ${sub} --event push ${refArgs}${wf}`;
+}
+
+/**
+ * Exit code a gate hook uses when the embedded ndh install is gone: distinct from the CI-failure
+ * exit (1) and the infra sentinel (90) so an operator can tell the cases apart at a glance.
+ */
+export const NDH_MISSING_EXIT = 97;
+
+/** Per-type consequence line for the missing-install guard (embedded verbatim in the hook). */
+const GUARD_CONSEQUENCE: Record<HookType, string> = {
+  "post-receive": "CI was NOT dispatched for this push. The push itself already landed.",
+  "pre-receive": "The gate cannot run CI, so this push is REJECTED (fail closed).",
+  "pre-push": "The gate cannot run CI, so this push is BLOCKED (fail closed).",
+  "post-commit": "Advisory CI did not run for this commit.",
+};
+
+/**
+ * The up-front guard every generated hook starts with (#133): if the embedded install moved or
+ * was deleted, print an unmissable multi-line `[ndh] ERROR` (git relays it as `remote:` lines)
+ * naming the fix — re-run `ndh hook install`. Gate types (pre-receive/pre-push) exit
+ * NDH_MISSING_EXIT so the push fails closed; advisory types (post-receive/post-commit) cannot
+ * retroactively fail their event, so they exit 0 after shouting.
+ */
+function ndhGuardFragment(type: HookType): string {
+  const gate = type === "pre-receive" || type === "pre-push";
+  return `if ! [ -x "$NDH_NODE" ] || ! [ -f "$NDH_ENTRY" ]; then
+  echo "[ndh] ============================================================" >&2
+  echo "[ndh] ERROR: the ndh install this ${type} hook points to is gone:" >&2
+  echo "[ndh]   node:  $NDH_NODE" >&2
+  echo "[ndh]   entry: $NDH_ENTRY" >&2
+  echo "[ndh] ${GUARD_CONSEQUENCE[type]}" >&2
+  echo "[ndh] Fix: re-run 'ndh hook install' to regenerate this hook." >&2
+  echo "[ndh] ============================================================" >&2
+  exit ${gate ? NDH_MISSING_EXIT : 0}
+fi`;
 }
 
 /**
@@ -165,10 +249,6 @@ function gatedRunFragment(invocation: string, failMsg: string, allowMsg: string)
  */
 export function generateHook(config: HookConfig): string {
   if (!config.server) throw new Error("post-receive hooks dispatch to a hub — a server url is required");
-  const server = shSingleQuote(config.server);
-  const repository = shSingleQuote(config.repository);
-  const workflowArg = config.workflow ? ` -W "$WORKFLOW"` : "";
-  const workflowVar = config.workflow ? `WORKFLOW=${shSingleQuote(config.workflow)}\n` : "";
   return `#!/bin/sh
 ${HOOK_MARKER}
 # On push, dispatch CI on the hub for each updated branch. The workflow's
@@ -176,9 +256,10 @@ ${HOOK_MARKER}
 # deletions dispatch nothing.
 set -eu
 
-HUB=${server}
-REPO=${repository}
-${workflowVar}
+${hookVars(config)}
+
+${ndhGuardFragment("post-receive")}
+
 while read -r _old new ref; do
   case "$ref" in
     refs/heads/*) ;;
@@ -191,7 +272,7 @@ while read -r _old new ref; do
   branch=\${ref#refs/heads/}
   work=$(mktemp -d)
   git --work-tree="$work" checkout -f "$new"
-  ( cd "$work" && ndh dispatch --server "$HUB" --repository "$REPO" --event push --ref "$ref"${workflowArg} )
+  ( cd "$work" && ${ndhCiInvocation(config, '--ref "$ref"')} )
   rm -rf "$work"
   echo "[ndh] dispatched $branch ($ref)"
 done
@@ -225,6 +306,8 @@ ${HOOK_MARKER}
 set -eu
 
 ${hookVars(config)}
+
+${ndhGuardFragment("pre-receive")}
 
 while read -r _old new ref; do
   case "$ref" in
@@ -263,6 +346,8 @@ set -eu
 
 ${hookVars(config)}
 
+${ndhGuardFragment("pre-push")}
+
 while read -r _lref lsha rref _rsha; do
   case "$rref" in
     refs/heads/*) ;;
@@ -299,6 +384,8 @@ ${HOOK_MARKER}
 set -u
 
 ${hookVars(config)}
+
+${ndhGuardFragment("post-commit")}
 
 sha=$(git rev-parse --short HEAD)
 if ref=$(git symbolic-ref -q HEAD); then
@@ -408,12 +495,14 @@ export interface InstallOptions {
   repository?: string;
   workflow?: string;
   force?: boolean;
+  /** `--ndh <path>`: override the embedded CLI entry script (default: the running install). */
+  ndh?: string;
 }
 
 /** One post-install hint line per type, printed after the config summary. */
 const TYPE_HINTS: Record<HookType, string> = {
-  "post-receive": "push a branch to this repo to trigger CI (needs `ndh` on the server's PATH)",
-  "pre-receive": "pushes now wait for CI; a failing workflow rejects the push (needs `ndh` on the server's PATH)",
+  "post-receive": "push a branch to this repo to trigger CI (the hook runs this ndh install by absolute path)",
+  "pre-receive": "pushes now wait for CI; a failing workflow rejects the push",
   "pre-push": "`git push` from this checkout now runs CI first; a failing workflow blocks the push",
   "post-commit": "every commit now gets an advisory CI run; the commit itself is never blocked",
 };
@@ -434,6 +523,7 @@ export async function installHook(repoPath: string, opts: InstallOptions, deps: 
   if (serverSide && !opts.server) {
     throw new Error(`--type ${type} dispatches to a hub — pass --server <url>`);
   }
+  const invocation = resolveNdhInvocation(opts.ndh);
 
   if (!(await exists(repoPath))) throw new Error(`no such path: ${repoPath}`);
   if (!(await stat(repoPath)).isDirectory()) throw new Error(`not a directory: ${repoPath}`);
@@ -477,7 +567,13 @@ export async function installHook(repoPath: string, opts: InstallOptions, deps: 
   }
 
   await mkdir(hooksDir, { recursive: true });
-  const script = generateHookOfType(type, { server: opts.server, repository, workflow: opts.workflow });
+  const script = generateHookOfType(type, {
+    server: opts.server,
+    repository,
+    workflow: opts.workflow,
+    ndhNode: invocation.node,
+    ndhEntry: invocation.entry,
+  });
   await writeFile(hookPath, script, { mode: 0o755 });
   await chmod(hookPath, 0o755);
 
@@ -485,6 +581,7 @@ export async function installHook(repoPath: string, opts: InstallOptions, deps: 
   log(`  server:     ${opts.server ?? "(none — CI runs locally via `ndh run`; pass --server to dispatch)"}`);
   log(`  repository: ${repository}${derivation}`);
   log(`  workflow:   ${opts.workflow ?? "(all workflows)"}`);
+  log(`  ndh:        ${invocation.node} ${invocation.entry}${opts.ndh ? " (--ndh override)" : ""}`);
   log(TYPE_HINTS[type]);
 }
 
@@ -511,10 +608,14 @@ export function registerHook(program: Command): void {
     )
     .option("-W, --workflow <path>", "dispatch a specific workflow file (default: all workflows)")
     .option("--force", "overwrite an existing hook of the same type that ndh did not write")
+    .option(
+      "--ndh <path>",
+      "ndh CLI entry script to embed in the hook (default: the running install, resolved to an absolute path)",
+    )
     .action(
       async (
         repo: string,
-        opts: { type: string; server?: string; repository?: string; workflow?: string; force?: boolean },
+        opts: { type: string; server?: string; repository?: string; workflow?: string; force?: boolean; ndh?: string },
       ) => {
         await installHook(repo, {
           type: opts.type,
@@ -522,6 +623,7 @@ export function registerHook(program: Command): void {
           repository: opts.repository,
           workflow: opts.workflow,
           force: opts.force,
+          ndh: opts.ndh,
         });
         process.exitCode = 0;
       },

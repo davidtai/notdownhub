@@ -560,10 +560,16 @@ pnpm install && pnpm -r build
 node packages/cli/dist/index.js --version
 ```
 
-`node packages/cli/dist/index.js` *is* `ndh`; alias it
-(`alias ndh="node $PWD/packages/cli/dist/index.js"`) and every `ndh …` command
-in these docs works verbatim. Full per-OS build prerequisites are in
-[docs/install.md](docs/install.md#from-source).
+`node packages/cli/dist/index.js` *is* `ndh`. Put it on your `PATH`:
+
+```bash
+mkdir -p ~/bin && ln -s "$PWD/packages/cli/dist/index.js" ~/bin/ndh
+export PATH="$HOME/bin:$PATH"     # add this line to your shell profile
+```
+
+Every `ndh …` command in these docs then works verbatim. A shell alias works
+for interactive commands only — git hooks do not read aliases. Full per-OS
+build prerequisites are in [docs/install.md](docs/install.md#from-source).
 
 This repo runs its own CI on `ndh`: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
 runs the same on GitHub and locally with `ndh`. Without Docker, `ndh run` maps
