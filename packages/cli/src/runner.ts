@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { cp, copyFile, mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { cp, copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { spawn, type SpawnOptions } from "node:child_process";
@@ -45,6 +45,7 @@ interface JoinOptions {
   labels: string;
   token: string;
   ca?: string;
+  reJoin?: boolean;
 }
 
 /**
@@ -79,7 +80,7 @@ export function registerRunner(program: Command): void {
     .action(() => {
       // `ndh runner` with no subcommand — matches the original usage error + exit code.
       console.error(
-        "usage: ndh runner join <hub-url> [--name n] [--labels a,b] [--token t]\n       ndh runner start [name]\n       ndh runner list\n       ndh runner remove <name> [--token t] [--force]",
+        "usage: ndh runner join <hub-url> [--name n] [--labels a,b] [--token t] [--re-join]\n       ndh runner start [name]\n       ndh runner list\n       ndh runner remove <name> [--token t] [--force]",
       );
       process.exitCode = 2;
     });
@@ -92,6 +93,7 @@ export function registerRunner(program: Command): void {
     .option("--labels <labels>", "comma-separated runner labels", defaultLabels())
     .option("--token <token>", "hub registration token", DEFAULT_TOKEN)
     .option("--ca <pem>", "trust this certificate for a --tls hub (stored with the runner)")
+    .option("--re-join", "refresh an existing runner: unregister it, re-copy the bundle, then configure fresh")
     .action(async (hubUrl: string, opts: JoinOptions) => {
       process.exitCode = await join_(hubUrl, opts);
     });
@@ -133,10 +135,39 @@ async function join_(hubUrl: string, opts: JoinOptions, deps: RunnerDeps = {}): 
 
   // Each runner needs its own directory: the listener stores .runner/.credentials beside its binary.
   const dir = runnerDir(opts.name);
-  if (!(await exists(listenerExe(dir)))) {
-    log(`preparing runner instance at ${dir} ...`);
-    await (deps.copyVendor ?? defaultCopyVendor)(dir);
+  const alreadyJoined = await exists(listenerExe(dir));
+
+  // Re-joining an existing name is destructive (it unregisters the old identity and overwrites the
+  // bundle), so it must be explicit. Without --re-join, refuse cleanly instead of letting the
+  // vendored `configure` bail out with its raw "already configured … run config.sh remove" error.
+  if (alreadyJoined && !opts.reJoin) {
+    log(`runner '${opts.name}' is already joined (instance at ${dir})`);
+    log(
+      `to refresh it (re-register + re-copy the runner binaries) re-run with --re-join, ` +
+        `or 'ndh runner remove ${opts.name}' first`,
+    );
+    return 1;
   }
+
+  // --re-join: tear the old instance down first so `configure` starts from a clean slate. The
+  // vendored `configure` refuses while a local `.runner` exists, and it never refreshes the binaries
+  // on its own — so we unregister (best-effort; tolerate an unreachable hub), delete the stale
+  // instance, and rebuild it below. The hub certificate is preserved across the teardown.
+  if (alreadyJoined) {
+    log(`re-joining '${opts.name}' — unregistering, refreshing binaries, re-registering with ${hubUrl}`);
+    const savedCa = !opts.ca && (await exists(caPath(dir))) ? await readFile(caPath(dir)) : null;
+    await tearDown(opts.name, dir, { token: opts.token }, deps);
+    if (savedCa) {
+      await mkdir(dir, { recursive: true });
+      await writeFile(caPath(dir), savedCa);
+    }
+  }
+
+  // (Re-)copy the current bundle into bin/. On a fresh join the dir is absent; on a re-join tearDown
+  // just deleted it — either way this is what makes `join` actually refresh the runner binaries.
+  log(`preparing runner instance at ${dir} ...`);
+  await (deps.copyVendor ?? defaultCopyVendor)(dir);
+
   if (opts.ca) {
     await copyFile(opts.ca, caPath(dir));
     log(`stored hub certificate at ${caPath(dir)}`);
@@ -156,7 +187,13 @@ async function join_(hubUrl: string, opts: JoinOptions, deps: RunnerDeps = {}): 
     ],
     { cwd: dir, env },
   );
-  if (code !== 0) return code;
+  if (code !== 0) {
+    // Never leave a half-configured instance that would "pretend to be joined" (listed by
+    // `runner list`, tried by `runner start`). Remove the dir so the failure is unambiguous.
+    await rm(dir, { recursive: true, force: true });
+    log(`configure failed (exit ${code}) — cleaned up ${dir}; '${opts.name}' is not joined`);
+    return code;
+  }
   log(`runner '${opts.name}' joined ${hubUrl}`);
   log(`start it: ndh runner start ${opts.name}`);
   return 0;
@@ -276,14 +313,12 @@ async function stopListener(name: string, dir: string, deps: RunnerDeps): Promis
   return true;
 }
 
-async function remove_(name: string, opts: RemoveOptions, deps: RunnerDeps = {}): Promise<number> {
-  // Unknown name (and the idempotent second-remove) share one path: refuse with the known names.
-  const names = await listNames();
-  if (!names.includes(name)) {
-    fail(`no such runner '${name}' — known: ${names.join(", ") || "(none joined)"}`);
-  }
-  const dir = runnerDir(name);
-
+/**
+ * Stop the listener, best-effort unregister from the hub, and delete the instance dir. Shared by
+ * `remove` and `join --re-join`: an unreachable hub is tolerated (warn) so re-joining after a hub
+ * reset — where the old registration is unreachable by design — still clears the local state.
+ */
+async function tearDown(name: string, dir: string, opts: RemoveOptions, deps: RunnerDeps): Promise<void> {
   await stopListener(name, dir, deps);
 
   if (opts.force) {
@@ -296,6 +331,15 @@ async function remove_(name: string, opts: RemoveOptions, deps: RunnerDeps = {})
   }
 
   await rm(dir, { recursive: true, force: true });
+}
+
+async function remove_(name: string, opts: RemoveOptions, deps: RunnerDeps = {}): Promise<number> {
+  // Unknown name (and the idempotent second-remove) share one path: refuse with the known names.
+  const names = await listNames();
+  if (!names.includes(name)) {
+    fail(`no such runner '${name}' — known: ${names.join(", ") || "(none joined)"}`);
+  }
+  await tearDown(name, runnerDir(name), opts, deps);
   log(`removed runner '${name}'`);
   return 0;
 }

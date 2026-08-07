@@ -244,7 +244,9 @@ ndh runner join http://hub-host:4949 --token <token> \
 - **Defaults:** `--name` defaults to `<hostname>-ndh`; `--labels` defaults to
   `self-hosted,<OS>,<arch>` derived from the host.
 - `join` copies the bundle into `runners/<name>/bin/` and configures with
-  `--replace`, so re-joining an existing name cleanly overwrites it.
+  `--replace`. Joining a name that already exists is refused, because it would
+  clobber a live registration. Pass `--re-join` to refresh one: it unregisters
+  the old instance, re-copies the current bundle, and configures fresh in place.
 
 ### Starting (and starting at boot)
 
@@ -315,15 +317,17 @@ ndh runner start box-b   # in another
 
 The hub's `hub.db` can be wiped, or you can migrate to a new hub. Existing
 runner processes then keep retrying against a registration the server no longer
-knows. Re-join to refresh the identity:
+knows. Re-join with `--re-join` to refresh the identity:
 
 ```bash
-ndh runner join http://hub:4949 --token <new-token> --name build-box-1 --labels …
+ndh runner join http://hub:4949 --token <new-token> --name build-box-1 --labels … --re-join
 ndh runner start build-box-1
 ```
 
-`--replace` (always passed) reclaims the name on the server. To *rename*, join
-under the new name — the old `runners/<old>/` instance can then be removed.
+`--re-join` unregisters the old instance first (tolerating an unreachable old
+hub), then `--replace` (always passed) reclaims the name on the server. To
+*rename*, join under the new name — the old `runners/<old>/` instance can then
+be removed.
 
 ### Removing a runner
 
@@ -714,7 +718,7 @@ ndh dispatch --server http://hub.tailnet:4949 -W .github/workflows/ci.yml \
 | `No runner is registered for the requested runs-on labels` | No *started* runner has labels matching the job's `runs-on`, or you dispatched during the post-restart reconnect window. | `ndh status` to see who's connected; start a runner whose `--labels` include every `runs-on` label; after a hub restart wait ~30s for reconnect. Remember labels are AND-matched. |
 | Mirror error `Connection refused` to `127.0.0.1` on a **remote** runner | Hub baked `127.0.0.1` into mirror URLs — an old pre-`--host` build, or `--host` set to a loopback/unreachable address. | Restart the hub on a current build with `--host <lan-ip-or-dns>` reachable from the runner; confirm the URL the runner is dialing. |
 | Job hangs at a corepack "download pnpm?" prompt | corepack prompts interactively the first time it provisions a package manager. | Set `COREPACK_ENABLE_DOWNLOAD_PROMPT=0` in the workflow `env:` or the runner's service environment (the repo's `remote-ci.yml` does this). |
-| `runner join` / start says the runner is `already configured` | A stale `.runner` from a previous registration in the instance dir. | `join` already passes `--replace`; if it persists, `rm -rf ~/.notdownhub/runners/<name>` and re-join. For Docker, recreate the container (fresh, or with a clean state volume). |
+| `runner join` / start says the runner is `already configured` | An older `ndh` did not clear the local `.runner` before re-configuring. | Re-join with `ndh runner join … --re-join` (it unregisters and rebuilds the instance for you), or `ndh runner remove <name>` and join again. For Docker, recreate the container (fresh, or with a clean state volume). |
 | New hub will not start, or `ndh hub up` prints `a hub is already running on :4949` | A hub (or a stray `Runner.Server`) still holds the port; the pre-flight check now refuses instead of crashing with `EADDRINUSE`. | `ndh hub down` to stop the previous hub and free both ports, then `ndh hub up`. If `hub down` reports the pid file is stale but a port is still held, an unrelated process owns it — find it with `lsof -iTCP:4949 -sTCP:LISTEN` and stop it. Prefer a supervised service. |
 | `ndh status` shows a runner with empty `[]` labels | v0.1 cosmetic: `status` lists the agent name but does not render its labels. | Not fatal — the labels are still registered and matched for dispatch; confirm them from the `--labels` you joined with. |
 | Web UI / `GET /api/local/join-info` returns `403` (`the notdownhub UI is local-only…`) or `401` from another machine | By design: the UI + pairing endpoint are loopback-only; `403` when no `--basic-auth`, `401` when it is set and creds are missing/wrong. | Open the UI on the hub itself (`http://localhost:4949`) or over an SSH tunnel; to admit a remote operator, start the hub with `--basic-auth user:pass` (or `NDH_BASIC_AUTH`) and send those credentials. The API/runner protocol/mirror are unaffected. |
@@ -738,6 +742,7 @@ change:
 These survive an upgrade, because they are keyed on `NDH_HOME`, not the version:
 `hub/hub.db`, `hub/runner-token`, and the `mirror/` cache. Host runner instances
 under `runners/<name>/` need a refresh. Each one still holds a copy of the *old*
-bundle from when it joined. Re-run `ndh runner join <hub> --token … --name <name>`
-to re-copy the new binaries, or delete `runners/<name>/bin` and re-join. Restart
-the hub after step 3 to load the new server binary.
+bundle from when it joined. Re-run `ndh runner join <hub> --token … --name <name> --re-join`
+to re-copy the new binaries (this refreshes the bundle in place), or
+`ndh runner remove <name>` and join again. Restart the hub after step 3 to load
+the new server binary.
