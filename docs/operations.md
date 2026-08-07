@@ -488,6 +488,90 @@ a GitHub outage or fully offline.
 
 ---
 
+## Secrets & variables
+
+`ndh secrets` and `ndh vars` hold values on the machine you dispatch from. They
+inject into every `ndh run` and `ndh dispatch`. Secrets feed the
+`${{ secrets.NAME }}` context; variables feed `${{ vars.NAME }}`.
+
+### Variables
+
+Set a plain variable, then read it in a workflow as `${{ vars.NAME }}`:
+
+```bash
+ndh vars set DEPLOY_TARGET staging
+# [ndh] stored var DEPLOY_TARGET (scope: global)
+```
+
+Reference it from any step:
+
+```yaml
+env:
+  TARGET: ${{ vars.DEPLOY_TARGET }}
+```
+
+`ndh vars set NAME` with no value reads the value from stdin. `ndh vars list`
+prints every variable with its value, because variables are not secret.
+
+### Secrets
+
+Store a secret by hidden prompt, piped stdin, or `--value`:
+
+```bash
+ndh secrets set NPM_TOKEN                       # hidden prompt (no echo)
+echo -n "$TOKEN" | ndh secrets set NPM_TOKEN    # piped stdin (scripting)
+ndh secrets set NPM_TOKEN --value "$TOKEN"      # inline (avoid on shared shells)
+```
+
+Piped stdin keeps newlines, so a multiline secret round-trips faithfully:
+
+```bash
+# a PEM file, TLS key, or any multiline value:
+ndh secrets set DEPLOY_KEY < deploy_key.pem
+```
+
+`ndh secrets get NAME` reveals a value; it is the only command that prints one.
+`ndh secrets list` shows names and scopes, never values.
+
+A secret named `GITHUB_TOKEN` injects as `${{ secrets.GITHUB_TOKEN }}`. It is
+separate from the hub's `--github-token`, which the action mirror uses.
+
+### Scopes
+
+A secret or variable is `global` by default, or scoped to one repo with
+`--repo owner/name`. A repo scope overrides a global of the same name at run
+time. A bare `--repo` (no value) uses the current repo's `origin` remote slug.
+
+```bash
+ndh secrets set NPM_TOKEN --repo my-org/my-service   # only that repo
+ndh vars set DEPLOY_TARGET prod --repo my-org/my-service
+ndh secrets list --repo my-org/my-service
+```
+
+### How values reach a run
+
+At `ndh run` or `ndh dispatch` time, `ndh` resolves the effective set on the
+dispatching machine: global first, then the repo scope on top. It writes secrets
+to an ephemeral `0600` file passed as `--secret-file`, and variables to a
+`--var-file`, then deletes both after the run. Values never appear on the
+command line or in logs. The remote runner receives only what the dispatch
+resolved, so store each value on the machine you dispatch from — not on the
+runner.
+
+### Backends
+
+`ndh secrets` uses a real OS keyring by default: the macOS Keychain, or the
+Linux Secret Service when it is available. Headless Linux and Windows fall back
+to an encrypted file (`secrets.json` + `secrets.key`), which is
+obfuscation-at-rest only. Switch with `ndh secrets backend keyring|file`, and
+check the active backend with `ndh secrets backend`. Variables are never
+sensitive, so they live in a plain `0600` file (`vars.json`) that `ndh vars
+list` reads back.
+
+For each backend's exact files and sensitivity, see [files.md](files.md).
+
+---
+
 ## Triggering CI
 
 GitHub webhooks do not reach your hub. Start a run through one of three paths:

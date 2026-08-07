@@ -172,7 +172,7 @@ Follow these steps to move a runner machine:
 3. Join the machine to the hub: `ndh runner join http://<hub-host>:4949 --token <token>`.
 4. Set the same labels that your workflows request in `runs-on`. Use `--labels` when you join.
 5. Start the runner: `ndh runner start`.
-6. Store each repository secret with `ndh secrets set <NAME>`. The hub does not read secrets from GitHub. On a headless or SSH-only macOS account, run `ndh secrets backend file` first.
+6. Store each repository secret with `ndh secrets set <NAME>`, and each variable with `ndh vars set <NAME> <value>`. The hub does not read secrets or variables from GitHub. On a headless or SSH-only macOS account, run `ndh secrets backend file` first.
 7. Run your CI from a repository checkout: `ndh dispatch --server http://<hub-host>:4949`.
 
 Facts that apply to a migration:
@@ -181,6 +181,7 @@ Facts that apply to a migration:
 - The first run downloads each action one time through the hub mirror. Later runs read the actions from the mirror cache.
 - GitHub webhooks do not reach your hub. To start CI, use `ndh dispatch`, a webhook from your git server, or an `on: schedule` trigger. The [operations guide](docs/operations.md) describes each trigger.
 - The hub stores artifacts and cache data from `actions/upload-artifact` and `actions/cache`.
+- Secrets and variables are stored on the machine you dispatch from, and inject into each run. See [operations.md → Secrets & variables](docs/operations.md#secrets--variables) for scopes, multiline secrets, and how values reach a run.
 
 ## Operations
 
