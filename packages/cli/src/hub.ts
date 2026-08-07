@@ -219,6 +219,20 @@ export async function prepareHub(opts: HubUpOptions): Promise<HubPlan> {
   const env: NodeJS.ProcessEnv = { ...process.env };
   // Persist runners/runs across hub restarts (default is an in-memory DB that orphans the fleet).
   env["ConnectionStrings__sqlite"] = `Data Source=${join(hubHome, "hub.db")};`;
+  // Point the engine's git server url at this hub so actions/upload-artifact stops printing a dead
+  // github.com link. It is what jobs see as GITHUB_SERVER_URL / github.server_url, and the action
+  // mints its "Artifact download URL" as `{server_url}/{owner}/{repo}/actions/runs/{run}/artifacts/{id}`.
+  // Left at the appsettings default (https://github.com) that link points at real github.com/Unknown…;
+  // pointed here, the front turns that exact path into the real hub-served artifact archive (front.ts).
+  //
+  // The host MUST end in `.localhost` (not our LAN IP): @actions/artifact treats any GITHUB_SERVER_URL
+  // that is not github.com / *.ghe.com / *.localhost as GHES and REFUSES v4 uploads entirely — so a LAN
+  // IP here would break the very upload we are fixing (verified). A `.localhost` host both passes that
+  // guard and resolves to loopback, where this front (bound on all interfaces) serves the download. We
+  // keep the front's real port; only the human link is local — the UI/CLI retrieve over the real host.
+  // Actual upload/download traffic uses ACTIONS_RESULTS_URL, not this, so the fleet is unaffected.
+  const artifactPortSuffix = port === defaultPort ? "" : `:${port}`;
+  env["Runner.Server__GitServerUrl"] = `${scheme}://ndh.localhost${artifactPortSuffix}`;
   if (token) env["Runner.Server__RUNNER_TOKEN"] = token;
   if (opts.githubToken) env["Runner.Server__GITHUB_TOKEN"] = opts.githubToken;
   if (opts.mirrorRewrite) {

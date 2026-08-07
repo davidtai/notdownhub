@@ -221,3 +221,17 @@ export function fail(msg: string): never {
 export function randomToken(): string {
   return [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
+
+/** Human byte size, e.g. 0 B, 158 B, 1.2 KB, 3.4 MB. */
+export function humanSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let n = bytes / 1024;
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i++;
+  }
+  return `${n.toFixed(n < 10 ? 1 : 0)} ${units[i]}`;
+}

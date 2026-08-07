@@ -491,4 +491,108 @@ test("handleRequest: an unexpected error becomes a 500", async () => {
   assert.match(c.rec.body!, /boom/);
 });
 
+// ---------- Artifacts: list / download through the front, and the printed-URL resolve route ----------
+
+const ART_ZIP = Buffer.from("PKfront-artifact-zip");
+
+/** Fake hub speaking the v3 pipelines artifact API (run 7 has one artifact "my-artifact"). */
+function artifactHub(): Promise<Fixture> {
+  return startServer((rq, rs) => {
+    const u = new URL(rq.url ?? "/", "http://x");
+    const j = (b: unknown) => {
+      rs.writeHead(200, { "content-type": "application/json" });
+      rs.end(JSON.stringify(b));
+    };
+    if (u.pathname === "/_apis/pipelines/workflows/7/artifacts") j({ value: [{ containerId: 5, size: 0, name: "my-artifact" }] });
+    else if (u.pathname === "/_apis/pipelines/workflows/container/5")
+      j({ value: [{ path: "my-artifact.zip", itemType: "file", fileLength: ART_ZIP.length }] });
+    else if (u.pathname === "/_apis/pipelines/workflows/artifact/5") {
+      rs.writeHead(200);
+      rs.end(ART_ZIP);
+    } else {
+      rs.writeHead(404);
+      rs.end("no");
+    }
+  });
+}
+
+test("front: GET /api/local/artifacts/<run> lists a run's artifacts (loopback)", async () => {
+  const hub = await artifactHub();
+  const f = await front({ hubPort: hub.port });
+  try {
+    const res = await req(f.port, "/api/local/artifacts/7");
+    assert.equal(res.status, 200);
+    assert.deepEqual(JSON.parse(res.body), [{ id: 5, name: "my-artifact", size: ART_ZIP.length }]);
+  } finally {
+    await f.close();
+    await hub.close();
+  }
+});
+
+test("front: GET /api/local/artifacts/<run>/<name> streams the archive as an attachment", async () => {
+  const hub = await artifactHub();
+  const f = await front({ hubPort: hub.port });
+  try {
+    const res = await req(f.port, "/api/local/artifacts/7/my-artifact");
+    assert.equal(res.status, 200);
+    assert.equal(res.headers["content-disposition"], 'attachment; filename="my-artifact.zip"');
+    assert.equal(res.body, ART_ZIP.toString());
+  } finally {
+    await f.close();
+    await hub.close();
+  }
+});
+
+test("front: the printed artifact URL /<o>/<r>/actions/runs/<run>/artifacts/<id> resolves to the archive", async () => {
+  const hub = await artifactHub();
+  const f = await front({ hubPort: hub.port });
+  try {
+    const res = await req(f.port, "/local/repro/actions/runs/7/artifacts/5");
+    assert.equal(res.status, 200);
+    assert.equal(res.body, ART_ZIP.toString());
+  } finally {
+    await f.close();
+    await hub.close();
+  }
+});
+
+test("front: the raw /_apis artifact endpoints still proxy (runner upload + direct download unaffected)", async () => {
+  const hub = await artifactHub();
+  const f = await front({ hubPort: hub.port });
+  try {
+    // Same path the runner uploads to and the CLI downloads from — must reach the hub, never be UI-gated.
+    const res = await req(f.port, "/_apis/pipelines/workflows/7/artifacts");
+    assert.equal(res.status, 200);
+    assert.match(res.body, /my-artifact/);
+  } finally {
+    await f.close();
+    await hub.close();
+  }
+});
+
+test("handleRequest: artifact list, download, and the printed URL are all UI-gated for non-loopback", async () => {
+  for (const path of ["/api/local/artifacts/7", "/api/local/artifacts/7/my-artifact", "/local/repro/actions/runs/7/artifacts/5"]) {
+    const c = capRes();
+    await gate.handleRequest(synthReq("10.9.9.9", path), c.res, { hubPort: 1, basicAuth: undefined } as never, noMint);
+    assert.equal(c.rec.code, 403, `${path} should be denied for non-loopback`);
+  }
+});
+
+test("handleRequest: artifact download is served to an authenticated remote (basic auth)", async () => {
+  const hub = await artifactHub();
+  try {
+    const c = capRes();
+    await gate.handleRequest(
+      synthReq("10.9.9.9", "/api/local/artifacts/7", { authorization: "Basic " + Buffer.from("u:p").toString("base64") }),
+      c.res,
+      { hubPort: hub.port, basicAuth: "u:p" } as never,
+      noMint,
+    );
+    assert.equal(c.rec.code, 200);
+    assert.deepEqual(JSON.parse(c.rec.body!), [{ id: 5, name: "my-artifact", size: ART_ZIP.length }]);
+  } finally {
+    await hub.close();
+  }
+});
+
 test.after(() => fl.reset());

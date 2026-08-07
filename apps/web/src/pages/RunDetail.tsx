@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, GitBranch, GitCommitHorizontal } from "lucide-react";
-import { getRuns, getAttempts, getJobs, getTimeline, type Job, type TimelineRecord } from "../lib/api";
+import { getRuns, getAttempts, getJobs, getTimeline, getArtifacts, type Job, type TimelineRecord } from "../lib/api";
 import { toState, shortRef, shortSha, elapsedMs, timelineSpan, projectLabel } from "../lib/format";
 import { usePoll } from "../lib/hooks";
 import { AppBar } from "../components/AppBar";
+import { Artifacts } from "../components/Artifacts";
 import { JobList } from "../components/JobList";
 import { JobLog } from "../components/JobLog";
 import { StatusIcon, StatePill } from "../components/StatusIcon";
@@ -31,6 +32,10 @@ export function RunDetail() {
 
   const jobs = usePoll(() => getJobs(runId, activeAttempt), 3000, [runId, activeAttempt]);
   const jobList = useMemo(() => jobs.data ?? [], [jobs.data]);
+
+  // A run's uploaded artifacts. Polled slowly — they only appear once a job finishes uploading.
+  const artifacts = usePoll(() => getArtifacts(runId), 5000, [runId]);
+  const artifactList = artifacts.data ?? [];
 
   // Fetch every job's timeline together: powers per-job durations and the selected job's steps.
   const timelineKey = jobList.map((j) => j.timeLineId).join(",");
@@ -171,6 +176,8 @@ export function RunDetail() {
             />
           </Card>
         </div>
+
+        <Artifacts runId={runId} artifacts={artifactList} />
       </main>
     </div>
   );

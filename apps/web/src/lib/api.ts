@@ -158,6 +158,35 @@ export async function getJobLogs(runId: number, timelineId: string): Promise<Job
   }
 }
 
+// ── Artifacts ────────────────────────────────────────────────────────────────
+/** One uploaded artifact on a run, from GET /api/local/artifacts/<runId>. */
+export interface ArtifactSummary {
+  /** Container id — the id used to download it. */
+  id: number;
+  name: string;
+  /** Archive size in bytes. */
+  size: number;
+}
+
+/**
+ * A run's artifacts. Served by the front (local-only) from the hub's own artifact
+ * storage. Returns [] for a run with no artifacts, and swallows errors so the
+ * run-detail page simply hides the section rather than showing an error.
+ */
+export async function getArtifacts(runId: number): Promise<ArtifactSummary[]> {
+  try {
+    const data = await getJson<ArtifactSummary[] | { value?: ArtifactSummary[] }>(`/api/local/artifacts/${runId}`);
+    return unwrap(data);
+  } catch {
+    return [];
+  }
+}
+
+/** Same-origin URL that streams an artifact's archive (Content-Disposition attachment). */
+export function artifactDownloadUrl(runId: number, name: string): string {
+  return `/api/local/artifacts/${runId}/${encodeURIComponent(name)}`;
+}
+
 // ── Settings (read-only view of secrets/variables) ──────────────────────────
 export interface ConfigInfo {
   /** Where secrets live: keychain / libsecret / file. */
