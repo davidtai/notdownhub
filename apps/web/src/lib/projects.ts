@@ -141,3 +141,22 @@ export function deriveProjects(runs: WorkflowRun[]): Project[] {
   projects.sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || a.name.localeCompare(b.name));
   return projects;
 }
+
+/** Project summary chip (#per-YAML pass/fail): how many workflows' LATEST runs pass.
+ *  tone: green = all passing; red = any latest run failed; yellow = mixed
+ *  (skips/cancels/running — nothing failed, but not everything is green). */
+export interface WorkflowSummaryChip {
+  passing: number;
+  total: number;
+  tone: "green" | "red" | "yellow";
+}
+
+export function summarizeWorkflows(
+  workflows: { latestRun: { result?: string | null } }[],
+): WorkflowSummaryChip {
+  const total = workflows.length;
+  const passing = workflows.filter((w) => w.latestRun?.result === "succeeded").length;
+  const failing = workflows.filter((w) => w.latestRun?.result === "failed").length;
+  const tone = failing > 0 ? "red" : passing === total && total > 0 ? "green" : "yellow";
+  return { passing, total, tone };
+}

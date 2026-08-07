@@ -505,3 +505,53 @@ describe("Projects", () => {
     await waitFor(() => expect(mutations.some((m) => m.startsWith("POST"))).toBe(true));
   });
 });
+
+
+describe("workflow summary chip + per-row status (#per-YAML pass/fail)", () => {
+  const wfR = (id: number, fileName: string, result: string | null) => ({
+    key: `.github/workflows/${fileName}`,
+    fileName,
+    label: fileName,
+    runCount: 1,
+    latestRun: { id, fileName: `.github/workflows/${fileName}`, status: "completed", result },
+    latestRunId: id,
+  });
+  const proj = (workflows: ReturnType<typeof wfR>[]) => ({
+    name: "acme/app",
+    kind: "repo",
+    runCount: workflows.length,
+    lastRun: { id: 1, status: "completed", result: "succeeded" },
+    lastRunId: 1,
+    workflows,
+  });
+  const serve = (workflows: ReturnType<typeof wfR>[]) =>
+    mockFetch((url: string) => {
+      if (url.includes("/api/local/projects")) return { body: [proj(workflows)] };
+      if (url.includes("/api/local/runs")) return { status: 404 };
+      if (url.includes("/api/local/job-aliases")) return { body: [] };
+      if (url.includes("/api/local/agents")) return { body: [] };
+      return { body: [] };
+    });
+
+  it("red chip with passing count when a workflow's latest run failed", async () => {
+    serve([wfR(1, "ci.yml", "succeeded"), wfR(2, "deploy.yml", "failed")]);
+    renderProjects();
+    const chip = await screen.findByTitle("1 of 2 workflows passing on their latest run");
+    expect(chip.textContent).toBe("1/2");
+    expect(chip.className).toMatch(/text-fail/);
+  });
+
+  it("green chip when every workflow's latest run passed", async () => {
+    serve([wfR(1, "ci.yml", "succeeded"), wfR(2, "smoke.yml", "succeeded")]);
+    renderProjects();
+    const chip = await screen.findByTitle("2 of 2 workflows passing on their latest run");
+    expect(chip.className).toMatch(/text-success/);
+  });
+
+  it("yellow chip when nothing failed but not everything is green", async () => {
+    serve([wfR(1, "ci.yml", "succeeded"), wfR(2, "nightly.yml", "skipped")]);
+    renderProjects();
+    const chip = await screen.findByTitle("1 of 2 workflows passing on their latest run");
+    expect(chip.className).toMatch(/text-warn/);
+  });
+});

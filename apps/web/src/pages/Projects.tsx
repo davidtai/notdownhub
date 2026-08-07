@@ -14,7 +14,7 @@ import {
   type JobAlias,
 } from "../lib/api";
 import { usePoll } from "../lib/hooks";
-import { deriveProjects, type Project, type ProjectWorkflow } from "../lib/projects";
+import { deriveProjects, type Project, type ProjectWorkflow, summarizeWorkflows } from "../lib/projects";
 import { parseWorkflowTriggers, eventSummary, workflowJobs, type WorkflowTriggers } from "../lib/workflow";
 import { toState, relativeTime } from "../lib/format";
 import { AppBar } from "../components/AppBar";
@@ -261,6 +261,7 @@ function ProjectCard({
         {project.kind === "local" && <Badge variant="outline">local checkout</Badge>}
         {project.kind === "unattributed" && <Badge variant="outline">unattributed</Badge>}
         <StatePill state={state} />
+        <WorkflowChip workflows={project.workflows} />
         <span className="text-[12px] text-fg-muted">
           {project.runCount} {project.runCount === 1 ? "run" : "runs"}
         </span>
@@ -320,6 +321,10 @@ function WorkflowRow({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
+        <StatusIcon
+          state={toState(workflow.latestRun?.status, workflow.latestRun?.result)}
+          size={14}
+        />
         {/* Opens the retained YAML in a NEW TAB — a real navigation, not a router link. */}
         <a
           href={`/projects/workflow/${workflow.latestRunId}`}
@@ -601,5 +606,26 @@ function ErrorState() {
         Couldn&apos;t reach the hub. Retrying…
       </span>
     </Card>
+  );
+}
+
+
+/** "N/M" chip: how many of the project's workflows are green on their latest run (#per-YAML). */
+function WorkflowChip({ workflows }: { workflows: EnrichedWorkflow[] }) {
+  const { passing, total, tone } = summarizeWorkflows(workflows);
+  if (total === 0) return null;
+  const toneClass =
+    tone === "green"
+      ? "bg-success/10 text-success"
+      : tone === "red"
+        ? "bg-fail/10 text-fail"
+        : "bg-warn/10 text-warn";
+  return (
+    <span
+      className={`tnum inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${toneClass}`}
+      title={`${passing} of ${total} workflows passing on their latest run`}
+    >
+      {passing}/{total}
+    </span>
   );
 }
