@@ -102,9 +102,17 @@ describe("JobLog — live streaming", () => {
     task({ id: "s3", name: "Test", order: 3, state: "pending", result: null, finishTime: null }),
   ];
 
-  it("streams frames, folds groups, routes by step and handles pin/unpin", async () => {
+  // NOTE: these were one mega-test that flaked on CI. It emitted a 5001-line
+  // frame and then ran ~8 more operations, each of which re-rendered or scanned
+  // those ~5000 <pre> nodes — O(5000) DOM work repeated many times, whose
+  // wall-clock is variable enough to blow the 5s default timeout on a slow
+  // runner (not a hang or race). Split into small, synchronously-driven cases so
+  // each is fast and a failure is attributable; the heavy MAX_LINES case is
+  // isolated (nothing re-renders on top of it) at the end.
+
+  it("shows connection status and reacts to open/error", () => {
     mockFetch(() => ({ status: 404 })); // no historical fetch while active
-    const { rerender } = render(<JobLog runId={1} job={activeJob} records={steps} loading={false} />);
+    render(<JobLog runId={1} job={activeJob} records={steps} loading={false} />);
 
     // Live header, initially not connected.
     expect(screen.getByText("Idle")).toBeTruthy();
@@ -113,11 +121,23 @@ describe("JobLog — live streaming", () => {
     const es = MockEventSource.last();
     expect(es.url).toContain("timelineId=tl1");
 
-    // The running step (Build) auto-expands and, with no output yet, prompts to wait.
-    expect(screen.getByText("Waiting for output…")).toBeTruthy();
-
     act(() => es.open());
     expect(screen.getByText("Streaming")).toBeTruthy();
+    act(() => es.error());
+    expect(screen.getByText("Idle")).toBeTruthy();
+  });
+
+  it("auto-expands the running step and prompts to wait for output", () => {
+    mockFetch(() => ({ status: 404 }));
+    render(<JobLog runId={1} job={activeJob} records={steps} loading={false} />);
+    // The running step (Build) auto-expands and, with no output yet, waits.
+    expect(screen.getByText("Waiting for output…")).toBeTruthy();
+  });
+
+  it("routes frames by explicit step, running-step fallback, and strips ANSI", () => {
+    mockFetch(() => ({ status: 404 }));
+    render(<JobLog runId={1} job={activeJob} records={steps} loading={false} />);
+    const es = MockEventSource.last();
 
     // Frame routed by explicit stepId → appears under Build.
     act(() => es.emit("log", { record: { value: ["\x1b[32mhello", "world"], stepId: "s2" } }));
@@ -131,23 +151,32 @@ describe("JobLog — live streaming", () => {
     // Frame with an unknown stepId → still routed to the running step.
     act(() => es.emit("log", { record: { value: ["fallback-routed"], stepId: "ghost" } }));
     expect(screen.getByText("fallback-routed")).toBeTruthy();
+  });
 
-    // Empty and malformed frames are ignored without throwing.
+  it("ignores empty and malformed frames without throwing", () => {
+    mockFetch(() => ({ status: 404 }));
+    render(<JobLog runId={1} job={activeJob} records={steps} loading={false} />);
+    const es = MockEventSource.last();
     act(() => es.emit("log", { record: { value: [] } }));
     act(() => es.emit("log", "{ not json"));
+    // Nothing was appended; the running step still waits.
+    expect(screen.getByText("Waiting for output…")).toBeTruthy();
+  });
 
-    // Over-cap frame exercises the MAX_LINES slice.
-    act(() => es.emit("log", { record: { value: Array.from({ length: 5001 }, (_, i) => `L${i}`), stepId: "s2" } }));
-    expect(screen.getByText("L5000")).toBeTruthy();
-
+  it("shows a no-output note and toggles steps open/closed", () => {
+    mockFetch(() => ({ status: 404 }));
+    render(<JobLog runId={1} job={activeJob} records={steps} loading={false} />);
     // Steps with no captured output show a note (rendered for every step; the
     // collapse is CSS-only). Toggle Checkout open (add) and Build closed (delete)
     // to exercise both sides of the expand toggle.
     fireEvent.click(screen.getByRole("button", { name: /Checkout/ }));
     fireEvent.click(screen.getByRole("button", { name: /Build/ }));
     expect(screen.getAllByText("No output captured for this step.").length).toBeGreaterThan(0);
+  });
 
-    // Unpin by scrolling away from the bottom, then re-pin via the button.
+  it("unpins on scroll away from the bottom and re-pins via the button", () => {
+    mockFetch(() => ({ status: 404 }));
+    render(<JobLog runId={1} job={activeJob} records={steps} loading={false} />);
     const el = scrollEl();
     Object.defineProperty(el, "scrollHeight", { configurable: true, value: 1000 });
     Object.defineProperty(el, "clientHeight", { configurable: true, value: 100 });
@@ -156,16 +185,44 @@ describe("JobLog — live streaming", () => {
     expect(screen.getByText("Pin")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Pin/ }));
     expect(screen.getByText("Pinned")).toBeTruthy();
+  });
 
-    // Connection drop.
-    act(() => es.error());
-    expect(screen.getByText("Idle")).toBeTruthy();
+  it("tears down the stream when the selected job changes", () => {
+    mockFetch(() => ({ status: 404 }));
+    const { rerender } = render(<JobLog runId={1} job={activeJob} records={steps} loading={false} />);
+    const es = MockEventSource.last();
 
     // Switching to a finished job tears down the stream and resets state.
     mockFetch(routes({ "/api/local/joblogs/": { retained: false, lines: [] } }));
     rerender(<JobLog runId={1} job={job({ jobId: "j2", timeLineId: "tl2" })} records={[]} loading={false} />);
     expect(es.closed).toBe(true);
   });
+
+  // Isolated on purpose: rendering >5000 log lines is a bounded but heavy jsdom
+  // operation. Keeping it alone (no further re-renders pile on top) makes it
+  // deterministic; the raised timeout is only a belt-and-braces guard for a
+  // constrained CI runner, not a fix for a race.
+  it(
+    "caps live output at MAX_LINES (keeps the most recent 5000 lines)",
+    () => {
+      mockFetch(() => ({ status: 404 }));
+      const single = [
+        task({ id: "s2", name: "Build", order: 1, state: "inProgress", result: null, finishTime: null }),
+      ];
+      render(<JobLog runId={1} job={activeJob} records={single} loading={false} />);
+      const es = MockEventSource.last();
+
+      act(() =>
+        es.emit("log", {
+          record: { value: Array.from({ length: 5001 }, (_, i) => `L${i}`), stepId: "s2" },
+        }),
+      );
+      // Over-cap by one → the oldest line (L0) is dropped, the newest (L5000) kept.
+      expect(screen.getByText("L5000")).toBeTruthy();
+      expect(screen.queryByText("L0")).toBeNull();
+    },
+    20000,
+  );
 
   it("streams job-level output when the job has no steps yet", async () => {
     mockFetch(() => ({ status: 404 }));
