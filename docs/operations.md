@@ -207,6 +207,9 @@ The hub keeps run records, artifact blobs, and the action mirror cache with no
 age limit. Only the job console logs auto-prune, at 14 days. Run `ndh hub prune`
 to trim the other stores on a retention policy.
 
+A finished job keeps its complete console log, with no size cap. The live
+console view throttles fast output, but the stored log is the full upload.
+
 Run it on the hub machine. It reads the local `NDH_HOME`. It is safe to run
 while the hub is up: it removes only completed runs.
 
