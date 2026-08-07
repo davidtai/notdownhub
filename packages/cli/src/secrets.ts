@@ -5,7 +5,11 @@ import { randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Command } from "commander";
-import { ndhHome, fail, log } from "./lib.js";
+import { ndhHome, fail, log, writeJson0600 } from "./lib.js";
+import { GLOBAL_SCOPE, currentRepoSlug, runScopes, scopeFromRepo, type RepoOpt } from "./scope.js";
+
+// Re-export so existing importers (vars.ts, runcmd.ts) keep working after the scope split.
+export { GLOBAL_SCOPE, currentRepoSlug } from "./scope.js";
 
 /**
  * Local secrets storage for `ndh` (issue #3).
@@ -29,7 +33,6 @@ import { ndhHome, fail, log } from "./lib.js";
  * `--github-token` (used for the action mirror) and of any GITHUB_TOKEN in your shell env.
  */
 
-export const GLOBAL_SCOPE = "global";
 const KEYCHAIN_PREFIX = () => process.env.NDH_KEYCHAIN_SERVICE ?? "notdownhub";
 
 export interface IndexEntry {
@@ -97,9 +100,7 @@ async function readIndex(): Promise<IndexEntry[]> {
 }
 
 async function writeIndex(entries: IndexEntry[]): Promise<void> {
-  await mkdir(ndhHome(), { recursive: true });
-  await writeFile(indexPath(), `${JSON.stringify(entries, null, 2)}\n`, { mode: 0o600 });
-  await chmod(indexPath(), 0o600).catch(() => {});
+  await writeJson0600(indexPath(), entries);
 }
 
 async function indexAdd(name: string, scope: string): Promise<void> {
@@ -243,9 +244,7 @@ async function readFileStore(): Promise<FileStore> {
 }
 
 async function writeFileStore(store: FileStore): Promise<void> {
-  await mkdir(ndhHome(), { recursive: true });
-  await writeFile(secretsFilePath(), `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
-  await chmod(secretsFilePath(), 0o600).catch(() => {});
+  await writeJson0600(secretsFilePath(), store);
 }
 
 async function fileSet(scope: string, name: string, value: string): Promise<void> {
@@ -308,28 +307,13 @@ export async function listSecrets(scope?: string): Promise<IndexEntry[]> {
   return scope ? entries.filter((e) => e.scope === scope) : entries;
 }
 
-// ---------- repo slug detection ----------
-
-export function currentRepoSlug(cwd: string = process.cwd()): string | null {
-  const r = spawnSync("git", ["config", "--get", "remote.origin.url"], {
-    cwd,
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-  if (r.status !== 0) return null;
-  const url = r.stdout.toString().trim();
-  if (!url) return null;
-  // git@github.com:owner/name.git  |  https://github.com/owner/name(.git)
-  const m = url.match(/[:/]([^/:]+)\/([^/]+?)(?:\.git)?\/?$/);
-  if (!m) return null;
-  return `${m[1]}/${m[2]}`;
-}
 
 // ---------- secret-file (GITHUB_ENV syntax) injection ----------
 
 /** Resolve the effective secret set for a run: global first, then repo overrides by name. */
 export async function resolveSecretsForRun(repoSlug: string | null): Promise<Map<string, string>> {
   const out = new Map<string, string>();
-  const scopes = repoSlug ? [GLOBAL_SCOPE, repoSlug] : [GLOBAL_SCOPE];
+  const scopes = runScopes(repoSlug);
   for (const scope of scopes) {
     for (const { name } of await listSecrets(scope)) {
       const value = await getSecret(scope, name);
@@ -455,19 +439,6 @@ function promptHidden(prompt: string): Promise<string> {
 }
 
 // ---------- commander wiring ----------
-
-type RepoOpt = string | boolean | undefined;
-
-/** Resolve the scope from a `--repo [slug]` option. Absent → global (for set/rm). */
-function scopeFromRepo(repo: RepoOpt): string {
-  if (typeof repo === "string") return repo;
-  if (repo === true) {
-    const slug = currentRepoSlug();
-    if (!slug) fail("not inside a git repo with an origin remote — pass --repo owner/name");
-    return slug;
-  }
-  return GLOBAL_SCOPE; // option absent
-}
 
 export function registerSecrets(program: Command): void {
   const secrets = program

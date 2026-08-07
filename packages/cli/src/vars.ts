@@ -3,8 +3,9 @@ import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Command } from "commander";
-import { ndhHome, fail, log } from "./lib.js";
-import { currentRepoSlug, GLOBAL_SCOPE, validEnvName } from "./secrets.js";
+import { ndhHome, fail, log, writeJson0600 } from "./lib.js";
+import { validEnvName } from "./secrets.js";
+import { GLOBAL_SCOPE, runScopes, scopeFromRepo, type RepoOpt } from "./scope.js";
 
 /**
  * Plain (non-secret) workflow variables — the `vars` context (`${{ vars.NAME }}`).
@@ -32,9 +33,7 @@ async function readStore(): Promise<VarStore> {
 }
 
 async function writeStore(store: VarStore): Promise<void> {
-  await mkdir(ndhHome(), { recursive: true });
-  await writeFile(varsFilePath(), `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
-  await chmod(varsFilePath(), 0o600).catch(() => {});
+  await writeJson0600(varsFilePath(), store);
 }
 
 export async function setVar(scope: string, name: string, value: string): Promise<void> {
@@ -72,7 +71,7 @@ export async function listVars(scope?: string): Promise<{ scope: string; name: s
 export async function resolveVarsForRun(repoSlug: string | null): Promise<Map<string, string>> {
   const store = await readStore();
   const out = new Map<string, string>();
-  for (const scope of repoSlug ? [GLOBAL_SCOPE, repoSlug] : [GLOBAL_SCOPE]) {
+  for (const scope of runScopes(repoSlug)) {
     for (const [name, value] of Object.entries(store[scope] ?? {})) out.set(name, value);
   }
   return out;
@@ -101,18 +100,6 @@ export async function withRunnerVars<T>(
 }
 
 // ---------- commander wiring ----------
-
-type RepoOpt = string | boolean | undefined;
-
-function scopeFromRepo(repo: RepoOpt): string {
-  if (typeof repo === "string") return repo;
-  if (repo === true) {
-    const slug = currentRepoSlug();
-    if (!slug) fail("not inside a git repo with an origin remote — pass --repo owner/name");
-    return slug;
-  }
-  return GLOBAL_SCOPE;
-}
 
 export function registerVars(program: Command): void {
   const vars = program

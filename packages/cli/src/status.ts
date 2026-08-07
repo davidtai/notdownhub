@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { unwrap } from "./lib.js";
 
 interface Agent {
   name?: string;
@@ -28,13 +29,11 @@ export function registerStatus(program: Command): void {
 export async function statusCmd(server: string): Promise<number> {
   const base = server.endsWith("/") ? server : `${server}/`;
 
-  const pools = await getJson<{ id?: number; value?: { id: number }[] } | { id: number }[]>(base, "_apis/v1/AgentPools");
-  const poolList = Array.isArray(pools) ? pools : (pools.value ?? []);
+  const poolList = unwrap<{ id: number }>(await getJson(base, "_apis/v1/AgentPools"));
   console.log("runners:");
   let any = false;
   for (const pool of poolList) {
-    const agents = await getJson<Agent[] | { value: Agent[] }>(base, `_apis/v1/Agent/${pool.id}`);
-    for (const a of Array.isArray(agents) ? agents : (agents.value ?? [])) {
+    for (const a of unwrap<Agent>(await getJson(base, `_apis/v1/Agent/${pool.id}`))) {
       any = true;
       const labels = (a.labels ?? []).map((l) => l.name).filter(Boolean).join(",");
       console.log(`  ${a.name}  [${labels}]`);
@@ -43,8 +42,7 @@ export async function statusCmd(server: string): Promise<number> {
   if (!any) console.log("  (none registered)");
 
   type Run = { id: number; fileName?: string; displayName?: string; status?: string; result?: string; eventName?: string };
-  const runsRaw = await getJson<Run[] | { value: Run[] }>(base, "_apis/v1/Message/workflow/runs?page=0");
-  const runs = Array.isArray(runsRaw) ? runsRaw : (runsRaw.value ?? []);
+  const runs = unwrap<Run>(await getJson(base, "_apis/v1/Message/workflow/runs?page=0"));
   console.log("recent runs:");
   for (const r of runs.slice(0, 15)) {
     console.log(`  #${r.id}  ${r.displayName ?? r.fileName ?? "?"}  ${r.status ?? ""}${r.result ? `/${r.result}` : ""}  (${r.eventName ?? "?"})`);

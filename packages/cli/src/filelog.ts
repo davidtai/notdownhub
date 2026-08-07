@@ -8,6 +8,7 @@ import { join } from "node:path";
  * as well as on the console.
  */
 
+const ANSI_SGR = /\x1b\[[0-9;]*m/g;
 let logDir: string | null = null;
 let logPrefix = "ndh";
 let keepDays = 14;
@@ -56,12 +57,12 @@ export function fileLogWrite(chunk: string | Buffer): void {
   if (!logDir) return;
   openForToday();
   // eslint-disable-next-line no-control-regex
-  stream!.write(chunk.toString().replace(/\x1b\[[0-9;]*m/g, ""));
+  stream!.write(chunk.toString().replace(ANSI_SGR, ""));
 }
 
 export function fileLogLine(line: string): void {
   if (!logDir) return;
-  const plain = line.replace(/\x1b\[[0-9;]*m/g, "");
+  const plain = line.replace(ANSI_SGR, "");
   fileLogWrite(`${new Date().toISOString()} ${plain}${plain.endsWith("\n") ? "" : "\n"}`);
 }
 
