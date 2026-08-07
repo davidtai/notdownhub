@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { basename, join } from "node:path";
 import { ensureVendor } from "./vendor.js";
-import { ndhHome, run, vendorExe } from "./lib.js";
+import { hubUnreachableMessage, log, ndhHome, probeServer, run, vendorExe, type Reachability } from "./lib.js";
 import { initFileLog } from "./filelog.js";
 import { currentRepoSlug, withRunnerSecrets } from "./secrets.js";
 import { withRunnerVars } from "./vars.js";
@@ -47,11 +47,21 @@ export function repositoryArgs(argv: string[], slug: string): string[] {
   return ["--repository", slug];
 }
 
+/** The value of `--server <url>` / `--server=<url>` in an argv, or null when absent. */
+export function serverArg(argv: string[]): string | null {
+  const i = argv.indexOf("--server");
+  if (i >= 0 && i + 1 < argv.length) return argv[i + 1];
+  const eq = argv.find((a) => a.startsWith("--server="));
+  return eq ? eq.slice("--server=".length) : null;
+}
+
 /** Seams so tests can observe the exact Runner.Client argv without spawning it. */
 export interface RunDeps {
   runner?: (cmd: string, args: string[]) => Promise<number>;
   ensure?: () => Promise<unknown>;
   repoSlug?: () => string | null;
+  /** Pre-flight hub reachability check (dispatch). Defaults to a real network probe. */
+  probe?: (url: string) => Promise<Reachability>;
 }
 
 /** `ndh run` — one-shot: in-process hub + runner, executes this repo's workflows right here. */
@@ -74,9 +84,19 @@ export async function dispatchCmd(argv: string[], deps: RunDeps = {}): Promise<n
   const runner = deps.runner ?? run;
   if (!deps.runner) initFileLog(join(ndhHome(), "logs"), "dispatch");
   await (deps.ensure ?? ensureVendor)();
-  if (!argv.some((a) => a === "--server" || a.startsWith("--server="))) {
+  const server = serverArg(argv);
+  if (!server) {
     console.error("usage: ndh dispatch --server http://hub:4949 [Runner.Client args...]");
     return 2;
+  }
+  // Pre-flight: an unreachable hub (down / wrong port / wrong --server) is the single most common
+  // dispatch failure (#69). Catch it here and print one actionable [ndh] line instead of leaking
+  // Runner.Client's raw "Exception: Connection refused". The underlying error follows for debugging.
+  const reach = await (deps.probe ?? probeServer)(server);
+  if (!reach.ok) {
+    log(hubUnreachableMessage(server));
+    if (reach.detail) log(`  ${reach.detail}`);
+    return 1;
   }
   const slug = (deps.repoSlug ?? currentRepoSlug)();
   const repo = repositoryArgs(argv, projectSlug(slug));
@@ -86,4 +106,4 @@ export async function dispatchCmd(argv: string[], deps: RunDeps = {}): Promise<n
 }
 
 /** Exported for tests. */
-export const __test = { defaultPlatformArgs, projectSlug, repositoryArgs };
+export const __test = { defaultPlatformArgs, projectSlug, repositoryArgs, serverArg };

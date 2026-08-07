@@ -66,6 +66,7 @@ test("dispatch: accepts --server=<url> (not only --server <url>)", async () => {
     },
     ensure: async () => 0,
     repoSlug: () => null,
+    probe: async () => ({ ok: true }), // hub reachable — exercise the --server=<url> parse path
   });
   assert.equal(code, 0);
   assert.ok(called, "runner must be invoked for the --server=<url> form");

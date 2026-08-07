@@ -204,14 +204,34 @@ test("run: main() intercepts and passes through to Runner.Client (fake vendor)",
   assert.equal(r.status, 0);
 });
 
-test("dispatch: requires --server; passes through with one present (fake vendor)", async () => {
+test("dispatch: requires --server; passes through to a reachable hub (fake vendor)", async () => {
   const home = newHome();
   seedVendor(home);
   const bad = await runCli(["dispatch", "--event", "push"], { env: fileEnv(home), cwd: nonGit });
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /--server/);
-  const ok = await runCli(["dispatch", "--server", "http://hub:4949"], { env: fileEnv(home), cwd: nonGit });
-  assert.equal(ok.status, 0);
+  // A reachable hub (any listening server answers the pre-flight probe) lets the fake vendor run.
+  const hub = await startServer((_q, r) => r.end());
+  try {
+    const ok = await runCli(["dispatch", "--server", hub.url], { env: fileEnv(home), cwd: nonGit });
+    assert.equal(ok.status, 0);
+  } finally {
+    await hub.close();
+  }
+});
+
+test("dispatch: an unreachable hub prints an [ndh] line and exits 1, no leaked Exception (#69)", async () => {
+  const home = newHome();
+  seedVendor(home);
+  // A server started then closed yields a dead port → connection refused on the probe.
+  const dead = await startServer((_q, r) => r.end());
+  const url = dead.url;
+  await dead.close();
+  const r = await runCli(["dispatch", "--server", url, "--event", "push"], { env: fileEnv(home), cwd: nonGit });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /\[ndh\]/);
+  assert.match(r.stderr, /can't reach the hub/);
+  assert.doesNotMatch(r.stderr + r.stdout, /Exception:/);
 });
 
 test("run: a runtime failure (vendor download refused) surfaces via the top-level handler, exit 1", async () => {

@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { unwrap } from "./lib.js";
+import { connErrorCode, hubUnreachableMessage, log, rootErrorMessage, unwrap } from "./lib.js";
 
 interface Agent {
   name?: string;
@@ -36,25 +36,34 @@ export function registerStatus(program: Command): void {
 /** `ndh status --server <hub>` — quick text overview of runners and recent runs. */
 export async function statusCmd(server: string): Promise<number> {
   const base = server.endsWith("/") ? server : `${server}/`;
-
-  const poolList = unwrap<{ id: number }>(await getJson(base, "_apis/v1/AgentPools"));
-  console.log("runners:");
-  let any = false;
-  for (const pool of poolList) {
-    for (const a of unwrap<Agent>(await getJson(base, `_apis/v1/Agent/${pool.id}`))) {
-      any = true;
-      const labels = (a.labels ?? []).map((l) => l.name).filter(Boolean).join(",");
-      console.log(`  ${a.name}  [${labels}]`);
+  try {
+    const poolList = unwrap<{ id: number }>(await getJson(base, "_apis/v1/AgentPools"));
+    console.log("runners:");
+    let any = false;
+    for (const pool of poolList) {
+      for (const a of unwrap<Agent>(await getJson(base, `_apis/v1/Agent/${pool.id}`))) {
+        any = true;
+        const labels = (a.labels ?? []).map((l) => l.name).filter(Boolean).join(",");
+        console.log(`  ${a.name}  [${labels}]`);
+      }
     }
-  }
-  if (!any) console.log("  (none registered)");
+    if (!any) console.log("  (none registered)");
 
-  type Run = { id: number; fileName?: string; displayName?: string; status?: string; result?: string; eventName?: string; owner?: string; repo?: string };
-  const runs = unwrap<Run>(await getJson(base, "_apis/v1/Message/workflow/runs?page=0"));
-  console.log("recent runs:");
-  for (const r of runs.slice(0, 15)) {
-    console.log(`  #${r.id}  ${r.displayName ?? r.fileName ?? "?"}  [${projectLabel(r)}]  ${r.status ?? ""}${r.result ? `/${r.result}` : ""}  (${r.eventName ?? "?"})`);
+    type Run = { id: number; fileName?: string; displayName?: string; status?: string; result?: string; eventName?: string; owner?: string; repo?: string };
+    const runs = unwrap<Run>(await getJson(base, "_apis/v1/Message/workflow/runs?page=0"));
+    console.log("recent runs:");
+    for (const r of runs.slice(0, 15)) {
+      console.log(`  #${r.id}  ${r.displayName ?? r.fileName ?? "?"}  [${projectLabel(r)}]  ${r.status ?? ""}${r.result ? `/${r.result}` : ""}  (${r.eventName ?? "?"})`);
+    }
+    if (runs.length === 0) console.log("  (no runs yet)");
+    return 0;
+  } catch (err) {
+    // A connection-level failure means the hub is down / --server is wrong (#69): translate the
+    // raw "fetch failed" into one actionable [ndh] line + the underlying error. A non-connection
+    // error (e.g. a 5xx from a live hub) still surfaces unchanged.
+    if (!connErrorCode(err)) throw err;
+    log(hubUnreachableMessage(server));
+    log(`  ${rootErrorMessage(err)}`);
+    return 1;
   }
-  if (runs.length === 0) console.log("  (no runs yet)");
-  return 0;
 }

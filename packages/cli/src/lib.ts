@@ -129,6 +129,84 @@ export function unwrap<T>(data: unknown): T[] {
   return Array.isArray(data) ? (data as T[]) : ((data as { value?: T[] })?.value ?? []);
 }
 
+// ── Hub reachability ──────────────────────────────────────────────────────────
+// Connection-level failures a --server URL can hit: the port isn't listening (hub
+// down / wrong port), the host doesn't resolve (wrong --server), or the connection
+// times out. These are the "your hub isn't up" cases we translate into one human line.
+const CONN_ERROR_CODES = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ETIMEDOUT",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ECONNRESET",
+]);
+
+/** The connection-level error code buried in an error (or its `cause` chain), if any. */
+export function connErrorCode(err: unknown): string | null {
+  let e: unknown = err;
+  const seen = new Set<unknown>();
+  while (e && typeof e === "object" && !seen.has(e)) {
+    seen.add(e);
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === "string" && CONN_ERROR_CODES.has(code)) return code;
+    // fetch() aborts (our probe timeout) surface as AbortError, not a code.
+    if ((e as { name?: unknown }).name === "AbortError") return "ETIMEDOUT";
+    e = (e as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
+/** The deepest `message` in an error's `cause` chain — e.g. "connect ECONNREFUSED 127.0.0.1:6099". */
+export function rootErrorMessage(err: unknown): string {
+  let e: unknown = err;
+  let msg = String((err as { message?: unknown })?.message ?? err);
+  const seen = new Set<unknown>();
+  while (e && typeof e === "object" && !seen.has(e)) {
+    seen.add(e);
+    const m = (e as { message?: unknown }).message;
+    if (typeof m === "string" && m) msg = m;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return msg;
+}
+
+/** The standard [ndh] line for a hub URL we could not reach. */
+export function hubUnreachableMessage(url: string): string {
+  return `can't reach the hub at ${url} — is it up? (ndh hub up) and is --server correct?`;
+}
+
+export interface Reachability {
+  ok: boolean;
+  /** connection error code when !ok (ECONNREFUSED, ENOTFOUND, …). */
+  code?: string;
+  /** underlying error message, kept for the debug line when !ok. */
+  detail?: string;
+}
+
+/**
+ * Probe a --server URL: reachable when the host answers at all (any HTTP status counts —
+ * even a 401/404 proves the port is listening), unreachable only on a connection-level
+ * failure. Bounded by a timeout so a black-holed host can't hang the command. A non-
+ * connection fetch error is treated as reachable, so the real command can surface its own
+ * precise error rather than a misleading "can't reach the hub".
+ */
+export async function probeServer(url: string, timeoutMs = 5000): Promise<Reachability> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    await fetch(url, { method: "HEAD", signal: ctrl.signal });
+    return { ok: true };
+  } catch (err) {
+    const code = connErrorCode(err);
+    if (code) return { ok: false, code, detail: rootErrorMessage(err) };
+    return { ok: true };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function log(msg: string): void {
   console.error(`\x1b[36m[ndh]\x1b[0m ${msg}`);
   fileLogLine(`[ndh] ${msg}`);
