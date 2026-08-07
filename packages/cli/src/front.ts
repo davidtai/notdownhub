@@ -16,6 +16,7 @@ import { appendDefaultPlatform, serveRerun } from "./rerunmap.js";
 import { serveRunsMeta } from "./runs-meta.js";
 import { serveLocalcheckout } from "./localcheckout.js";
 import { serveInnerLocalcheckout } from "./localcheckout-inner.js";
+import { serveOrRetainTree } from "./treecache.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -247,8 +248,9 @@ async function handleRequest(
       // hub's default mapping instead (see rerunmap.ts). Not gated, exactly like the proxied
       // native endpoint it replaces — `ndh run rerun` calls it from remote machines. On any
       // shape we cannot replay (unreadable attempts, no stored YAML, onLatestCommit) fall back
-      // to the native endpoint — the pre-#92 behavior.
-      if (!(await serveRerun(opts.hubPort, Number(m[2]), /failed/i.test(m[1]), res))) {
+      // to the native endpoint — the pre-#92 behavior. #110: the replay also carries the
+      // localcheckout wiring (and may refuse honestly) — see rerunmap.ts.
+      if (!(await serveRerun(opts.hubPort, Number(m[2]), /failed/i.test(m[1]), res, { githubToken: opts.githubToken }))) {
         proxy(req, res, opts.hubPort);
       }
     } else if (req.method === "GET" && /\/_apis\/v1\/ActionDownloadInfo\/localcheckout$/i.test(url.pathname)) {
@@ -271,6 +273,13 @@ async function handleRequest(
       if (!serveInnerLocalcheckout(url.pathname, res)) {
         proxy(req, res, opts.hubPort);
       }
+    } else if (req.method === "GET" && (m = url.pathname.match(/\/_apis\/v1\/Message\/multipart\/(\d+)\/?$/i))) {
+      // #110: the dispatched tree streams through here exactly once — the original attempt's
+      // checkout (the engine round-trips it to the still-attached dispatch client and stores
+      // nothing). Tee it into the per-run tree cache, and serve later identical requests from
+      // that cache — that is what lets a replayed re-run attempt check out after the dispatch
+      // client exited. Suffix match: ACTIONS_RUNTIME_URL may carry a tenant path prefix.
+      await serveOrRetainTree(req, res, opts.hubPort, Number(m[1]), url.searchParams);
     } else if (req.method === "POST" && url.pathname.match(/^\/_apis\/v1\/Message\/schedule2\/?$/i)) {
       // Dispatch without an explicit -P gets the same default mapping, appended to the proxied
       // query (never overriding a supplied one). Body streams through untouched.

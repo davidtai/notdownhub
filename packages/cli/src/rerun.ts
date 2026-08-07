@@ -14,11 +14,13 @@ import { log, unwrap } from "./lib.js";
  *   POST _apis/v1/Message/rerunworkflow/{id}   re-run the whole workflow
  *   POST _apis/v1/Message/rerunFailed/{id}     re-run only the failed jobs
  *
- * Honest limitation: a workflow whose `actions/checkout` copies the *dispatched
- * local working tree* cannot be reproduced from the hub — that tree lived on the
- * machine that ran `ndh dispatch`, and the hub never retained it. Such a re-run
- * executes, but its checkout step fails ("Input required and not supplied:
- * token"). Re-run those from the checkout with `ndh dispatch`.
+ * Local dispatches (#110): the hub front retains the dispatched tree per run the
+ * first time the run's checkout streams it (treecache.ts), and the re-run replay
+ * carries the same localcheckout wiring — so a re-run of a local dispatch checks
+ * out that retained tree and runs. When no tree was retained (the run predates
+ * retention) and the workflow needs actions/checkout, the hub REFUSES with one
+ * honest message instead of queueing an attempt doomed to a token error; this
+ * command prints that message. Re-dispatch such runs with `ndh dispatch`.
  */
 
 const USAGE = `usage: ndh run rerun <run-id> --server <hub> [--failed]
@@ -30,9 +32,9 @@ so it stays attributed to the same project and links to the original run.
   --server <url>   hub base url (required)
   --failed         re-run only the failed jobs (default: the whole workflow)
 
-Note: a workflow that checks out the dispatched local working tree cannot be
-re-run from the hub — that tree lived on the machine that dispatched it. Re-run
-such workflows from the checkout with 'ndh dispatch'.`;
+Note: the hub retains a local dispatch's tree, so its re-run checks out for
+real. Runs from before that retention are refused honestly — re-dispatch those
+from the checkout with 'ndh dispatch'.`;
 
 export interface RerunArgs {
   id?: string;
@@ -163,6 +165,17 @@ export async function rerunCmd(argv: string[], deps: RerunDeps = {}): Promise<nu
     return 1;
   }
   if (!res.ok) {
+    // The hub's refusal (#110) carries the honest reason as JSON; print it verbatim.
+    let reason: string | null = null;
+    try {
+      reason = ((await res.json()) as { error?: string })?.error ?? null;
+    } catch {
+      /* not JSON — fall through to the status line */
+    }
+    if (reason) {
+      err(`re-run refused for #${id}: ${reason}`);
+      return 1;
+    }
     const hint = res.status === 404 ? " — no run #" + id + " on this hub?" : "";
     err(`re-run failed: hub returned ${res.status} ${res.statusText} for #${id}${hint}`);
     return 1;

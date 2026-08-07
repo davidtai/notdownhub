@@ -3,10 +3,13 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import type { ServerResponse } from "node:http";
 import { AddressInfo } from "node:net";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { startFront } from "../front.js";
-import { appendDefaultPlatform, serveRerun } from "../rerunmap.js";
+import { appendDefaultPlatform, serveRerun, workflowUsesCheckout, TREE_GONE } from "../rerunmap.js";
+import { treeCacheDir, treeKey } from "../treecache.js";
 import { HOSTED_LABELS, hostedToSelfHosted } from "../platform.js";
-import { startServer, body, type Fixture } from "./helpers.js";
+import { startServer, body, freshHome, type Fixture } from "./helpers.js";
 
 // #92 hub-side platform mapping: the engine has no server-side default mapping config (verified
 // against runner.server v3.14.0 and main), so the front supplies it — on proxied schedule2
@@ -285,6 +288,132 @@ test("serveRerun: a thrown schedule2 fetch (engine gone mid-replay) answers 502"
   assert.equal(await serveRerun(1, 9, false, res, { fetch: doFetch }), true);
   assert.equal(status(), 502);
   assert.equal(JSON.parse(bodyOf()).ok, false);
+});
+
+// ── #110: the replay carries the localcheckout wiring the original dispatch used ────────────
+
+const CHECKOUT_WF = "on: push\njobs:\n  ci:\n    runs-on: ubuntu-latest\n    steps:\n    - uses: actions/checkout@v4\n";
+
+/** Plant a complete retained tree for a run in the current NDH_HOME. */
+function plantTree(runId: number): void {
+  const dir = join(treeCacheDir(), String(runId));
+  mkdirSync(dir, { recursive: true });
+  const key = treeKey(new URLSearchParams());
+  writeFileSync(join(dir, `${key}.multipart`), "tree-bytes");
+  writeFileSync(join(dir, `${key}.json`), JSON.stringify({ contentType: "multipart/form-data; boundary=x" }));
+}
+
+test("workflowUsesCheckout: uses-lines at any ref, quoted or not; lookalikes do not count", () => {
+  assert.equal(workflowUsesCheckout(CHECKOUT_WF), true);
+  assert.equal(workflowUsesCheckout('steps:\n  - uses: "actions/checkout@11bd719"\n'), true);
+  assert.equal(workflowUsesCheckout("- uses: actions/checkout@v4.1.2\n"), true);
+  assert.equal(workflowUsesCheckout("uses: actions/checkout@v2"), true);
+  assert.equal(workflowUsesCheckout("on: push\njobs: {}\n"), false);
+  assert.equal(workflowUsesCheckout("- uses: my/actions/checkout@v4\n"), false);
+  assert.equal(workflowUsesCheckout("# excuses: actions/checkout@v4\n"), false);
+});
+
+test("a retained tree flips the replay to localcheckout=true (full and failed-only)", async () => {
+  freshHome();
+  plantTree(5);
+  const seen: Captured[] = [];
+  const hub = await fakeHub(seen);
+  const f = await front(hub.port);
+  try {
+    const res = await post(f.port, "/_apis/v1/Message/rerunworkflow/5");
+    assert.equal(res.status, 200, res.body);
+    const failedRes = await post(f.port, "/_apis/v1/Message/rerunFailed/5");
+    assert.equal(failedRes.status, 200, failedRes.body);
+    assert.equal(seen.length, 2);
+    for (const replay of seen) {
+      const u = new URL(replay.url, "http://x");
+      assert.equal(u.pathname, "/_apis/v1/Message/schedule2");
+      assert.equal(u.searchParams.get("localcheckout"), "true");
+      assert.deepEqual(u.searchParams.getAll("platform"), PLATFORM_DEFAULTS);
+    }
+  } finally {
+    await f.close();
+    await hub.close();
+  }
+});
+
+test("no tree + a checkout workflow + no hub token → honest 409, nothing queued", async () => {
+  freshHome(); // no retained tree in this home
+  const seen: Captured[] = [];
+  const hub = await fakeHub(seen, {
+    "/_apis/v1/Message/workflow/run/5/attempts": (_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify([{ attempt: 2, eventName: "push", eventPayload: "{}", workflow: CHECKOUT_WF }]));
+    },
+  });
+  const f = await front(hub.port);
+  try {
+    const res = await post(f.port, "/_apis/v1/Message/rerunworkflow/5");
+    assert.equal(res.status, 409);
+    const bodyJson = JSON.parse(res.body);
+    assert.equal(bodyJson.ok, false);
+    assert.equal(bodyJson.error, TREE_GONE);
+    assert.equal(bodyJson.runId, 5);
+    assert.equal(seen.length, 0); // neither schedule2 nor the native endpoint was touched
+  } finally {
+    await f.close();
+    await hub.close();
+  }
+});
+
+test("no tree + checkout workflow, but the hub HAS a github token → replay with localcheckout=false", async () => {
+  freshHome();
+  const attempts = [{ attempt: 1, eventName: "push", eventPayload: "{}", workflow: CHECKOUT_WF }];
+  let target: URL | null = null;
+  const doFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const s = String(input);
+    if (init?.method === "POST") {
+      target = new URL(s);
+      return new Response("", { status: 200 });
+    }
+    if (s.endsWith("/attempts")) return Response.json(attempts);
+    return Response.json({ fileName: "ci.yml" });
+  }) as typeof fetch;
+  const { res, status } = fakeRes();
+  assert.equal(await serveRerun(1, 9, false, res, { fetch: doFetch, githubToken: "ghp_x" }), true);
+  assert.equal(status(), 200);
+  assert.equal(target!.searchParams.get("localcheckout"), "false");
+});
+
+test("no tree + a workflow WITHOUT checkout replays exactly as before (localcheckout=false)", async () => {
+  freshHome();
+  const seen: Captured[] = [];
+  const hub = await fakeHub(seen); // fakeHub's stored workflow has no checkout step
+  const f = await front(hub.port);
+  try {
+    const res = await post(f.port, "/_apis/v1/Message/rerunworkflow/5");
+    assert.equal(res.status, 200, res.body);
+    assert.equal(seen.length, 1);
+    const u = new URL(seen[0].url, "http://x");
+    assert.equal(u.searchParams.get("localcheckout"), "false");
+  } finally {
+    await f.close();
+    await hub.close();
+  }
+});
+
+test("serveRerun: the hasTree seam wires localcheckout=true without touching the filesystem", async () => {
+  const attempts = [{ attempt: 4, eventName: "push", eventPayload: "{}", workflow: CHECKOUT_WF }];
+  let target: URL | null = null;
+  const doFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const s = String(input);
+    if (init?.method === "POST") {
+      target = new URL(s);
+      return new Response("", { status: 200 });
+    }
+    if (s.endsWith("/attempts")) return Response.json(attempts);
+    return Response.json({ fileName: "ci.yml" });
+  }) as typeof fetch;
+  const { res, status, body: bodyOf } = fakeRes();
+  assert.equal(await serveRerun(1, 14, false, res, { fetch: doFetch, hasTree: async () => true }), true);
+  assert.equal(status(), 200);
+  assert.equal(JSON.parse(bodyOf()).attempt, 5);
+  assert.equal(target!.searchParams.get("localcheckout"), "true");
 });
 
 test("serveRerun: non-JSON payload and missing fileName use safe fallbacks", async () => {

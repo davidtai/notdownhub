@@ -109,6 +109,20 @@ with the stored workflow, event, ref, and sha, plus the same map. The map sends
 workflow with native labels, such as `runs-on: self-hosted`, passes through
 unchanged.
 
+### Request flow: re-run of a local dispatch
+
+The engine swaps `actions/checkout` for its localcheckout action per request.
+The `schedule2` query flag `localcheckout` controls the swap, and nothing
+persists it (#110). The engine streams the dispatched tree from the attached
+dispatch client and stores nothing. So a naive replay resolves the real
+checkout action, whose required `token` input is empty.
+
+The front fixes both halves (`treecache.ts`). It tees the tree into a per-run
+cache when the first checkout streams it past, and serves that cache on the
+same route afterward. The re-run replay then sets `localcheckout=true` exactly
+when a retained tree exists. Without a tree, the hub refuses a checkout
+workflow's re-run instead of queueing an attempt that must fail.
+
 ### Request flow: registration and the host header
 
 When a runner registers, `Runner.Server` mints **tenant URLs** for that runner

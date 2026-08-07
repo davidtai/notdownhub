@@ -1,6 +1,7 @@
 import type { ServerResponse } from "node:http";
 import { log, unwrap } from "./lib.js";
 import { hostedToSelfHosted } from "./platform.js";
+import { hasCompleteTree } from "./treecache.js";
 
 /**
  * Hub-side platform mapping (#92). Investigation result, kept here as the record:
@@ -60,7 +61,24 @@ interface AttemptRec {
 /** Injectable seams so tests can drive the replay without a live engine. */
 export interface RerunMapDeps {
   fetch?: typeof fetch;
+  /** Test seam over treecache.hasCompleteTree. */
+  hasTree?: (runId: number) => Promise<boolean>;
+  /** The hub's `--github-token`, when configured — it makes REAL actions/checkout viable. */
+  githubToken?: string;
 }
+
+/**
+ * #110: does the stored workflow resolve actions/checkout? The engine's localcheckout
+ * substitution is keyed on exactly that action name (the job JWT's `localcheckout` claim,
+ * matched by NameWithOwner in ActionDownloadInfoController), at any ref.
+ */
+export function workflowUsesCheckout(yaml: string): boolean {
+  return /(^|[^a-z0-9_])uses\s*:\s*["']?actions\/checkout@/im.test(yaml);
+}
+
+/** The one honest refusal (issue #110 path 2) — shown verbatim by the UI and `ndh run rerun`. */
+export const TREE_GONE =
+  "this run's source tree is not on the hub — re-dispatch it from the checkout with 'ndh dispatch'";
 
 /**
  * Replay a re-run of `runId` through `schedule2?runid=...` with the default platform mapping.
@@ -98,6 +116,22 @@ export async function serveRerun(
   }
   if (!latest?.workflow) return false;
 
+  // #110: carry the SAME localcheckout wiring the original dispatch used. The engine keeps no
+  // record of it (schedule2's `localcheckout` is per-request, default true from Runner.Client),
+  // so the front's own tree cache is the signal: a retained tree exists exactly when the
+  // original attempt's checkout streamed the local tree through this front. With the wiring on,
+  // the replayed attempt's checkout is served from that cache (treecache.ts). Without a tree,
+  // a workflow that resolves actions/checkout would fall through to the REAL action, whose
+  // required `token` input is empty unless the hub carries a github token — that attempt is
+  // doomed ("Input required and not supplied: token"), so refuse it honestly instead.
+  const localTree = await (deps.hasTree ?? hasCompleteTree)(runId);
+  if (!localTree && workflowUsesCheckout(latest.workflow) && !deps.githubToken) {
+    log(`re-run of #${runId} refused: ${TREE_GONE}`);
+    res.writeHead(409, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: false, error: TREE_GONE, runId }));
+    return true;
+  }
+
   // The dispatch-time event payload carries the project slug; hand it back explicitly so the
   // re-run stays attributed to the same owner/repo (the rrunid branch does not re-read the DB).
   let repository: string | null = null;
@@ -110,8 +144,8 @@ export async function serveRerun(
 
   const target = new URL(`${base}/schedule2`);
   target.searchParams.set("runid", String(runId));
-  // Native re-run semantics: localcheckout off; artifacts reset on a full re-run only.
-  target.searchParams.set("localcheckout", "false");
+  // Localcheckout wiring as decided above; artifacts reset on a full re-run only.
+  target.searchParams.set("localcheckout", localTree ? "true" : "false");
   target.searchParams.set("resetArtifacts", failed ? "false" : "true");
   if (failed) target.searchParams.set("failed", "true");
   if (latest.ref) target.searchParams.set("Ref", latest.ref);

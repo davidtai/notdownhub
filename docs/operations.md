@@ -591,10 +591,14 @@ dispatch without `-P/--platform`. An explicit `-P` on dispatch wins for that
 dispatch. A dispatch-time `-P` does not persist, so a re-run always uses the hub
 map. Dispatch again with `-P` when a run needs a container image mapping.
 
-One workflow shape cannot re-run from the hub. A workflow that checks out the
-dispatched local tree needs that tree. The tree lived on the machine that ran
-`ndh dispatch`, and the hub never kept it. Re-run that workflow from the checkout
-with `ndh dispatch`.
+The hub also retains the dispatched local tree for each run. The tree is stored
+the first time the run's checkout streams it through the hub. A re-run checks
+out that retained tree, so local dispatches re-run for real. Deleting a run
+also deletes its retained tree.
+
+Runs from before this retention have no stored tree. The hub refuses such a
+re-run with one message: the source tree is not on the hub. Re-dispatch that
+run from the checkout with `ndh dispatch`.
 
 ---
 

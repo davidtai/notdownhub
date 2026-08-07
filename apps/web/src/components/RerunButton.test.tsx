@@ -66,6 +66,17 @@ describe("RerunButton", () => {
     expect(screen.getByRole("tooltip").textContent).toMatch(/is the hub reachable/);
   });
 
+  it("shows a hub refusal's honest message verbatim (#110), not the reachability guess", async () => {
+    const reason = "this run's source tree is not on the hub — re-dispatch it from the checkout with 'ndh dispatch'";
+    mockFetch(() => ({ status: 409, body: { ok: false, error: reason, runId: 14 } }));
+    render(<RerunButton runId={14} />);
+    const btn = screen.getByLabelText("Re-run run 14");
+    fireEvent.click(btn);
+    await waitFor(() => expect(btn.className).toMatch(/text-fail/));
+    fireEvent.mouseEnter(btn.parentElement as HTMLElement);
+    expect(screen.getByRole("tooltip").textContent).toBe(reason);
+  });
+
   it("stops the click from bubbling to a wrapping click handler (no row navigation)", async () => {
     mockFetch(() => ({ status: 200, body: {} }));
     const parentClick = vi.fn();
