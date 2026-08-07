@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
+import { join } from "node:path";
 import { ensureVendor } from "./vendor.js";
-import { run, vendorExe } from "./lib.js";
+import { ndhHome, run, vendorExe } from "./lib.js";
+import { initFileLog } from "./filelog.js";
 import { currentRepoSlug, withRunnerSecrets } from "./secrets.js";
 
 function dockerAvailable(): boolean {
@@ -31,6 +33,7 @@ export interface RunDeps {
 /** `ndh run` — one-shot: in-process hub + runner, executes this repo's workflows right here. */
 export async function runCmd(argv: string[], deps: RunDeps = {}): Promise<number> {
   const runner = deps.runner ?? run;
+  if (!deps.runner) initFileLog(join(ndhHome(), "logs"), "run");
   await (deps.ensure ?? ensureVendor)();
   const slug = (deps.repoSlug ?? currentRepoSlug)();
   // Secret VALUES are passed only through the ephemeral --secret-file, never on argv.
@@ -42,6 +45,7 @@ export async function runCmd(argv: string[], deps: RunDeps = {}): Promise<number
 /** `ndh dispatch --server <hub>` — ship this repo's workflows to a hub for the fleet to run. */
 export async function dispatchCmd(argv: string[], deps: RunDeps = {}): Promise<number> {
   const runner = deps.runner ?? run;
+  if (!deps.runner) initFileLog(join(ndhHome(), "logs"), "dispatch");
   await (deps.ensure ?? ensureVendor)();
   if (!argv.includes("--server")) {
     console.error("usage: ndh dispatch --server http://hub:4949 [Runner.Client args...]");

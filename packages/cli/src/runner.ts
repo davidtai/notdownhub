@@ -4,6 +4,7 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { ensureVendor } from "./vendor.js";
 import { exists, fail, log, ndhHome, run, vendorDir } from "./lib.js";
+import { initFileLog } from "./filelog.js";
 
 function runnerDir(name: string): string {
   return join(ndhHome(), "runners", name);
@@ -102,6 +103,7 @@ async function start(name?: string): Promise<number> {
   }
   const dir = runnerDir(name);
   if (!(await exists(listenerExe(dir)))) fail(`runner '${name}' not found — join a hub first`);
+  log(`logging to ${initFileLog(join(dir, "logs"), "runner")} (daily rotation)`);
   log(`runner '${name}' listening for jobs (ctrl-c to stop)`);
   return run(listenerExe(dir), ["run"], { cwd: dir });
 }

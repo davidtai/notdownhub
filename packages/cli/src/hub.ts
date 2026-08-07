@@ -5,6 +5,7 @@ import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import { ensureVendor } from "./vendor.js";
 import { exists, log, ndhHome, randomToken, vendorExe } from "./lib.js";
+import { fileLogWrite, initFileLog } from "./filelog.js";
 import { startFront, uiDistDir } from "./front.js";
 
 interface HubUpOptions {
@@ -89,10 +90,20 @@ async function hubUp(opts: HubUpOptions): Promise<number> {
     env["Runner.Server__ActionDownloadUrls__0__ZipballUrl"] = `http://${host}:${port}/mirror/{0}/zipball/{1}`;
   }
 
+  const logPath = initFileLog(join(hubHome, "logs"), "hub");
+
   const child = spawn(vendorExe("Runner.Server"), ["--urls", `http://*:${hubPort}`], {
     env,
     cwd: hubHome,
-    stdio: ["ignore", "inherit", "inherit"],
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stdout?.on("data", (d: Buffer) => {
+    process.stdout.write(d);
+    fileLogWrite(d);
+  });
+  child.stderr?.on("data", (d: Buffer) => {
+    process.stderr.write(d);
+    fileLogWrite(d);
   });
   child.on("exit", (code) => process.exit(code ?? 1));
   for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => child.kill(sig));
@@ -107,6 +118,7 @@ async function hubUp(opts: HubUpOptions): Promise<number> {
   startFront({ port, hubPort, uiDir: ui, runnerToken: token || undefined, host, basicAuth: basic });
 
   log(`hub up on http://localhost:${port}  (ui: ${ui ? (basic ? "yes, basic-auth" : "yes, local-only") : "no"}, auth: ${token ? "on" : "OFF"}, mirror: ${opts.mirrorRewrite ? `on @ http://${host}:${port}/mirror` : "off"})`);
+  log(`logging to ${logPath} (daily rotation)`);
   if (token) log(`runner registration token: ${token}`);
   log(`join a runner:   ndh runner join http://${host}:${port}${token ? ` --token ${token}` : ""}`);
   log(`dispatch a repo: ndh dispatch --server http://${host}:${port}`);

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { spawn, spawnSync, type SpawnOptions } from "node:child_process";
 import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
+import { fileLogActive, fileLogLine, fileLogWrite } from "./filelog.js";
 
 export const VENDOR_VERSION = "3.14.0";
 export const VENDOR_TAG = `v${VENDOR_VERSION}`;
@@ -64,7 +65,20 @@ export async function extractTarGz(archive: string, dest: string): Promise<void>
 
 export function run(cmd: string, args: string[], opts: SpawnOptions = {}): Promise<number> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: "inherit", ...opts });
+    // With a file log active, child output is piped so it can be teed to the log as well.
+    // (Piping costs TTY detection in the child — its output loses color; the file stays plain.)
+    const tee = fileLogActive();
+    const child = spawn(cmd, args, { stdio: tee ? ["inherit", "pipe", "pipe"] : "inherit", ...opts });
+    if (tee) {
+      child.stdout?.on("data", (d: Buffer) => {
+        process.stdout.write(d);
+        fileLogWrite(d);
+      });
+      child.stderr?.on("data", (d: Buffer) => {
+        process.stderr.write(d);
+        fileLogWrite(d);
+      });
+    }
     child.on("error", reject);
     child.on("exit", (code, signal) => resolve(signal ? 1 : code ?? 1));
     for (const sig of ["SIGINT", "SIGTERM"] as const) {
@@ -75,10 +89,12 @@ export function run(cmd: string, args: string[], opts: SpawnOptions = {}): Promi
 
 export function log(msg: string): void {
   console.error(`\x1b[36m[ndh]\x1b[0m ${msg}`);
+  fileLogLine(`[ndh] ${msg}`);
 }
 
 export function fail(msg: string): never {
   console.error(`\x1b[31m[ndh]\x1b[0m ${msg}`);
+  fileLogLine(`[ndh] FATAL ${msg}`);
   process.exit(1);
 }
 
