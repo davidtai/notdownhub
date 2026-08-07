@@ -159,32 +159,43 @@ export async function prepareHub(opts: HubUpOptions): Promise<HubPlan> {
   return { port, scheme, origin, hubPort, host, hubHome, token, env, uiDir, basicAuth };
 }
 
+/**
+ * Resolve TLS material for the front: undefined (plain HTTP), a caller-supplied cert
+ * (--tls-cert/--tls-key, both required), or a self-signed cert minted for `host`.
+ */
+export async function resolveTls(
+  opts: Pick<HubUpOptions, "tls" | "tlsCert" | "tlsKey">,
+  hubHome: string,
+  host: string,
+  origin: string,
+): Promise<FrontOptions["tls"]> {
+  if (!opts.tls) return undefined;
+  if (opts.tlsCert || opts.tlsKey) {
+    if (!opts.tlsCert || !opts.tlsKey) fail("--tls-cert and --tls-key must be set together");
+    log(`using TLS certificate ${opts.tlsCert}`);
+    return { key: await readFile(opts.tlsKey), cert: await readFile(opts.tlsCert) };
+  }
+  const material = await ensureSelfSignedCert(hubHome, host);
+  const fp = certFingerprint(material.certPath);
+  log(`self-signed certificate: ${material.certPath}${fp ? `  (SHA-256 ${fp})` : ""}`);
+  log(`runners must trust it: copy cert.pem to the runner machine, then ndh runner join ${origin} --ca <path>`);
+  return { key: material.key, cert: material.cert };
+}
+
 async function hubUp(opts: HubUpOptions, deps: HubDeps = {}): Promise<number> {
   await (deps.ensure ?? ensureVendor)();
   const plan = await prepareHub(opts);
   const { port, scheme, origin, hubPort, host, hubHome, token, env, uiDir, basicAuth } = plan;
 
-  let tls: FrontOptions["tls"];
-  if (opts.tls) {
-    if (opts.tlsCert || opts.tlsKey) {
-      if (!opts.tlsCert || !opts.tlsKey) fail("--tls-cert and --tls-key must be set together");
-      tls = { key: await readFile(opts.tlsKey), cert: await readFile(opts.tlsCert) };
-      log(`using TLS certificate ${opts.tlsCert}`);
-    } else {
-      const material = await ensureSelfSignedCert(hubHome, host);
-      tls = { key: material.key, cert: material.cert };
-      const fp = certFingerprint(material.certPath);
-      log(`self-signed certificate: ${material.certPath}${fp ? `  (SHA-256 ${fp})` : ""}`);
-      log(`runners must trust it: copy cert.pem to the runner machine, then ndh runner join ${origin} --ca <path>`);
-    }
-  }
+  // Start the hub log before the cert/TLS block so the certificate path + fingerprint are logged.
+  const logPath = initFileLog(join(hubHome, "logs"), "hub");
+
+  const tls = await resolveTls(opts, hubHome, host, origin);
 
   const spawnFn = deps.spawn ?? spawn;
   const startFrontFn = deps.startFront ?? startFront;
   const onSignal = deps.onSignal ?? ((sig, fn) => process.on(sig, fn));
   const exit = deps.exit ?? ((code: number) => process.exit(code));
-
-  const logPath = initFileLog(join(hubHome, "logs"), "hub");
 
   const child = spawnFn(vendorExe("Runner.Server"), ["--urls", `http://*:${hubPort}`], {
     env,
@@ -206,6 +217,7 @@ async function hubUp(opts: HubUpOptions, deps: HubDeps = {}): Promise<number> {
   for (const sig of ["SIGINT", "SIGTERM"] as const)
     onSignal(sig, () => {
       // Flush + close the job-log writer before the process exits, so the last batch is durable.
+      /* c8 ignore next 3 — tee.stop() failure is a best-effort guard on the shutdown path */
       try {
         tee.stop();
       } catch {

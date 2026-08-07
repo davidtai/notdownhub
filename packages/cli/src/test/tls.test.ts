@@ -26,8 +26,61 @@ test("ensureSelfSignedCert: generates once, reuses after, fingerprint readable",
   const fp = certFingerprint(m1.certPath);
   assert.ok(fp && /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/i.test(fp), `fingerprint format: ${fp}`);
 
-  const m2 = await ensureSelfSignedCert(hubHome, "different-host");
-  assert.equal(m2.cert.toString(), m1.cert.toString(), "existing material is reused, not regenerated");
+  // Same host → material is reused, not regenerated.
+  const m2 = await ensureSelfSignedCert(hubHome, "192.168.9.9");
+  assert.equal(m2.cert.toString(), m1.cert.toString(), "same host reuses the existing certificate");
+
+  // Different host not covered by the SAN → regenerate, so runners trusting the printed cert
+  // against the new host do not hit a SAN mismatch.
+  const m3 = await ensureSelfSignedCert(hubHome, "10.0.0.5");
+  assert.notEqual(m3.cert.toString(), m1.cert.toString(), "a host not in the SAN forces a fresh certificate");
+});
+
+test("ensureSelfSignedCert: DNS hostname SAN reuse and change", async () => {
+  const home = freshHome();
+  const hubHome = join(home, "hub");
+  const a = await ensureSelfSignedCert(hubHome, "hub.local");
+  const b = await ensureSelfSignedCert(hubHome, "hub.local");
+  assert.equal(b.cert.toString(), a.cert.toString(), "same DNS host reuses the certificate");
+  const c = await ensureSelfSignedCert(hubHome, "other.local");
+  assert.notEqual(c.cert.toString(), a.cert.toString(), "a different DNS host regenerates");
+});
+
+test("certCoversHost: matches IP + DNS SANs and CN, rejects others", async () => {
+  const { __test } = await import("../tls.js");
+  const home = freshHome();
+  const hubHome = join(home, "hub");
+  const ipCert = await ensureSelfSignedCert(hubHome, "192.168.5.5");
+  assert.ok(__test.certCoversHost(ipCert.certPath, "192.168.5.5"), "IP in SAN matches");
+  assert.ok(__test.certCoversHost(ipCert.certPath, "127.0.0.1"), "loopback IP is always in the SAN");
+  assert.ok(!__test.certCoversHost(ipCert.certPath, "10.9.9.9"), "an unlisted IP does not match");
+
+  const dnsHome = join(home, "hub2");
+  const dnsCert = await ensureSelfSignedCert(dnsHome, "hub.example");
+  assert.ok(__test.certCoversHost(dnsCert.certPath, "hub.example"), "DNS host in SAN matches");
+  assert.ok(!__test.certCoversHost(dnsCert.certPath, "other.example"), "an unlisted DNS host does not match");
+});
+
+test("resolveTls: none / self-signed / bring-your-own", async () => {
+  const { resolveTls } = await import("../hub.js");
+  const home = freshHome();
+  const hubHome = join(home, "hub");
+
+  // no --tls → undefined
+  assert.equal(await resolveTls({ tls: false }, hubHome, "h", "http://h"), undefined);
+
+  // self-signed
+  const self = await resolveTls({ tls: true }, hubHome, "127.0.0.1", "https://127.0.0.1");
+  assert.ok(self && self.cert.toString().includes("BEGIN CERTIFICATE") && self.key.toString().includes("PRIVATE KEY"));
+
+  // bring-your-own: reuse the just-generated files as caller-supplied cert/key
+  const byo = await resolveTls(
+    { tls: true, tlsCert: join(hubHome, "tls", "cert.pem"), tlsKey: join(hubHome, "tls", "key.pem") },
+    hubHome,
+    "127.0.0.1",
+    "https://127.0.0.1",
+  );
+  assert.ok(byo && byo.cert.toString().includes("BEGIN CERTIFICATE"));
 });
 
 test("prepareHub with tls: scheme https, default port 443, origin elides :443, mirror URLs https", async () => {
