@@ -1,5 +1,7 @@
 # Solo and team workflows
 
+> Alpha software — see the [disclaimer in the README](../README.md#disclaimer).
+
 How one person runs CI on a plain local git repository, and how a team shares
 one hub through a git server. Every command below was run live against the
 current `main` build. The verification hub ran on test ports 6309/6310; the
