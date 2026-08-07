@@ -2,7 +2,7 @@ import http from "node:http";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ServerResponse } from "node:http";
-import { ndhHome } from "./lib.js";
+import { ndhHome, hubDbPath } from "./lib.js";
 
 /**
  * Persistent job console logs. The hub keeps step console output only in memory and
@@ -26,9 +26,6 @@ function joblogsDbPath(): string {
   return join(ndhHome(), "hub", "joblogs.db");
 }
 
-function hubDbPath(): string {
-  return join(ndhHome(), "hub", "hub.db");
-}
 
 /** Open (and, when writable, initialize) the joblogs database. */
 export async function openDb(path: string, readOnly = false): Promise<Db> {

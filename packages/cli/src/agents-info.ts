@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { ndhHome } from "./lib.js";
+import { hubDbPath, unwrap } from "./lib.js";
 
 /**
  * Runner status for the UI's Runners page. The hub's Agent read API exposes neither
@@ -36,10 +36,6 @@ interface BaseAgent {
   maxParallelism?: number;
 }
 
-function dbPath(): string {
-  return join(ndhHome(), "hub", "hub.db");
-}
-
 interface DbRead {
   agents: BaseAgent[];
   labels: Map<number, string[]>;
@@ -51,7 +47,7 @@ async function readFromDb(): Promise<DbRead | null> {
   try {
     // node:sqlite is still experimental; import lazily so its absence degrades cleanly.
     const { DatabaseSync } = await import("node:sqlite");
-    const db = new DatabaseSync(dbPath(), { readOnly: true });
+    const db = new DatabaseSync(hubDbPath(), { readOnly: true });
     try {
       const agents = db
         .prepare(
@@ -103,12 +99,14 @@ async function agentsFromApi(hubPort: number, mint: () => Promise<string | null>
   try {
     const bearer = await mint();
     const headers: Record<string, string> = bearer ? { authorization: `Bearer ${bearer}` } : {};
-    const unwrap = (d: unknown): unknown[] =>
-      Array.isArray(d) ? d : ((d as { value?: unknown[] })?.value ?? []);
-    const pools = unwrap(await fetch(`http://127.0.0.1:${hubPort}/_apis/v1/AgentPools`, { headers }).then((r) => r.json()));
+    const pools = unwrap<{ id: number }>(
+      await fetch(`http://127.0.0.1:${hubPort}/_apis/v1/AgentPools`, { headers }).then((r) => r.json()),
+    );
     const out: BaseAgent[] = [];
-    for (const p of pools as { id: number }[]) {
-      const agents = unwrap(await fetch(`http://127.0.0.1:${hubPort}/_apis/v1/Agent/${p.id}`, { headers }).then((r) => r.json()));
+    for (const p of pools) {
+      const agents = unwrap<Record<string, unknown>>(
+        await fetch(`http://127.0.0.1:${hubPort}/_apis/v1/Agent/${p.id}`, { headers }).then((r) => r.json()),
+      );
       for (const a of agents as Record<string, unknown>[]) {
         out.push({
           id: a.id as number,

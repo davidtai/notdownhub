@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { mkdir, stat, rename, rm } from "node:fs/promises";
+import { mkdir, stat, rename, rm, writeFile, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync, type SpawnOptions } from "node:child_process";
@@ -12,6 +12,18 @@ export const VENDOR_TAG = `v${VENDOR_VERSION}`;
 
 export function ndhHome(): string {
   return process.env.NDH_HOME ?? join(homedir(), ".notdownhub");
+}
+
+/** The hub's own SQLite database (runs, jobs, agents, timelines). */
+export function hubDbPath(): string {
+  return join(ndhHome(), "hub", "hub.db");
+}
+
+/** Write pretty JSON to a 0600 file, creating its parent directory. Used by the local scoped stores. */
+export async function writeJson0600(path: string, value: unknown): Promise<void> {
+  await mkdir(join(path, ".."), { recursive: true });
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  await chmod(path, 0o600).catch(() => {});
 }
 
 export function vendorDir(): string {
@@ -110,6 +122,11 @@ export function run(cmd: string, args: string[], opts: SpawnOptions = {}): Promi
       resolve(exitCode);
     });
   });
+}
+
+/** Unwrap a hub REST response that may be a bare array or an OData `{ value: [...] }` envelope. */
+export function unwrap<T>(data: unknown): T[] {
+  return Array.isArray(data) ? (data as T[]) : ((data as { value?: T[] })?.value ?? []);
 }
 
 export function log(msg: string): void {
