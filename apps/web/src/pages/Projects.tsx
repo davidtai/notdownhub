@@ -1,6 +1,18 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { TriangleAlert, ExternalLink, Trash2, GitBranch, Plus, CalendarClock, Pencil } from "lucide-react";
+import {
+  TriangleAlert,
+  ExternalLink,
+  Trash2,
+  GitBranch,
+  Plus,
+  CalendarClock,
+  Pencil,
+  ChevronDown,
+  ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
+} from "lucide-react";
 import {
   getAllRuns,
   getProjects,
@@ -13,12 +25,14 @@ import {
   aliasFor,
   type JobAlias,
 } from "../lib/api";
-import { usePoll } from "../lib/hooks";
+import { usePoll, usePersistentStrings } from "../lib/hooks";
+import { filterByTerms } from "../lib/filter";
 import { deriveProjects, type Project, type ProjectWorkflow, summarizeWorkflows } from "../lib/projects";
 import { parseWorkflowTriggers, eventSummary, workflowJobs, type WorkflowTriggers } from "../lib/workflow";
 import { toState, relativeTime } from "../lib/format";
 import { AppBar } from "../components/AppBar";
 import { AddProject } from "../components/AddProject";
+import { FilterInput } from "../components/FilterInput";
 import { RenameJobDialog, type RenameTarget } from "../components/RenameJobDialog";
 import { RerunButton } from "../components/RerunButton";
 import { Card } from "../components/ui/card";
@@ -30,6 +44,29 @@ import { Badge } from "../components/ui/badge";
 const PROJECTS_INTERVAL = 4000;
 // Re-probe for the delete backend periodically so Remove appears the moment #60 ships.
 const CAPABILITY_INTERVAL = 15000;
+/** Saved filter pills — persisted per surface, distinct from the runs/runners keys. */
+const FILTER_KEY = "ndh.filters.projects";
+/** Collapsed cards persisted as the SET of collapsed project names (absent name = expanded). */
+const COLLAPSE_KEY = "ndh.projects.collapsed";
+
+/**
+ * Searchable text for a project card: its recorded name, its kind badge, and the
+ * file names + labels of every workflow it runs. Powers the saved filter (by
+ * name / kind / workflow), mirroring lib/filter's per-surface haystack pattern.
+ */
+export function projectHaystack(p: EnrichedProject): string {
+  return [
+    p.name,
+    p.kind,
+    ...p.workflows.map((w) => w.fileName),
+    ...p.workflows.map((w) => w.label),
+    p.planned?.workflowFileName ?? "",
+    p.planned?.workflowName ?? "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
 
 export interface EnrichedWorkflow extends ProjectWorkflow {
   /** The latest known definition YAML for this workflow (null if the hub didn't retain it). */
@@ -90,6 +127,32 @@ export function Projects() {
   const aliases = aliasesPoll.data ?? [];
   const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
 
+  // Saved filter (persisted pills + a live draft), reusing the Runs pill model.
+  const [pills, setPills] = usePersistentStrings(FILTER_KEY);
+  const [draft, setDraft] = useState("");
+  const terms = useMemo(() => [...pills, draft], [pills, draft]);
+  const filtered = useMemo(() => filterByTerms(list, terms, projectHaystack), [list, terms]);
+
+  // Per-project collapse, persisted as the set of collapsed names (absent = expanded).
+  const [collapsed, setCollapsed] = usePersistentStrings(COLLAPSE_KEY);
+  const collapsedSet = useMemo(() => new Set(collapsed), [collapsed]);
+  function toggleCollapsed(name: string) {
+    if (collapsedSet.has(name)) setCollapsed(collapsed.filter((n) => n !== name));
+    else setCollapsed([...collapsed, name]);
+  }
+  // Collapse-all / expand-all act on the currently VISIBLE (filtered) cards only,
+  // preserving the collapsed state of anything the filter is hiding.
+  const visibleNames = filtered.map((p) => p.name);
+  const allCollapsed = visibleNames.length > 0 && visibleNames.every((n) => collapsedSet.has(n));
+  function toggleAll() {
+    if (allCollapsed) {
+      const hide = new Set(visibleNames);
+      setCollapsed(collapsed.filter((n) => !hide.has(n)));
+    } else {
+      setCollapsed([...new Set([...collapsed, ...visibleNames])]);
+    }
+  }
+
   async function confirmRemove() {
     if (!pending) return;
     setBusy(true);
@@ -139,14 +202,50 @@ export function Projects() {
         ) : list.length === 0 ? (
           <EmptyState />
         ) : (
-          <ProjectSections
-            list={list}
-            canRemove={canRemove}
-            onRemove={setPending}
-            onRefresh={projects.refresh}
-            aliases={aliases}
-            onRename={setRenameTarget}
-          />
+          <>
+            <div className="mb-4 flex flex-wrap items-center gap-3">
+              <div className="min-w-[220px] flex-1">
+                <FilterInput
+                  pills={pills}
+                  onPillsChange={setPills}
+                  draft={draft}
+                  onDraftChange={setDraft}
+                  label="Filter projects"
+                  placeholder="Filter by project, kind, or workflow… (Enter to save)"
+                />
+              </div>
+              {filtered.length > 0 && (
+                <Button variant="outline" size="sm" onClick={toggleAll}>
+                  {allCollapsed ? (
+                    <>
+                      <ChevronsUpDown size={14} aria-hidden />
+                      Expand all
+                    </>
+                  ) : (
+                    <>
+                      <ChevronsDownUp size={14} aria-hidden />
+                      Collapse all
+                    </>
+                  )}
+                </Button>
+              )}
+            </div>
+
+            {filtered.length === 0 ? (
+              <NoMatchState />
+            ) : (
+              <ProjectSections
+                list={filtered}
+                canRemove={canRemove}
+                onRemove={setPending}
+                onRefresh={projects.refresh}
+                aliases={aliases}
+                onRename={setRenameTarget}
+                collapsedSet={collapsedSet}
+                onToggleCollapsed={toggleCollapsed}
+              />
+            )}
+          </>
         )}
       </main>
 
@@ -186,6 +285,8 @@ function ProjectSections({
   onRefresh,
   aliases,
   onRename,
+  collapsedSet,
+  onToggleCollapsed,
 }: {
   list: EnrichedProject[];
   canRemove: boolean;
@@ -193,6 +294,8 @@ function ProjectSections({
   onRefresh: () => void;
   aliases: JobAlias[];
   onRename: (t: RenameTarget) => void;
+  collapsedSet: Set<string>;
+  onToggleCollapsed: (name: string) => void;
 }) {
   // Planned placeholders (#113) live in the main list — they are intended repos.
   const repos = list.filter((p) => p.kind === "repo" || p.kind === "planned");
@@ -203,9 +306,24 @@ function ProjectSections({
         <div className="flex flex-col gap-4">
           {repos.map((p) =>
             p.kind === "planned" ? (
-              <PlannedCard key={p.name} project={p} onRemoved={onRefresh} />
+              <PlannedCard
+                key={p.name}
+                project={p}
+                onRemoved={onRefresh}
+                collapsed={collapsedSet.has(p.name)}
+                onToggle={() => onToggleCollapsed(p.name)}
+              />
             ) : (
-              <ProjectCard key={p.name} project={p} canRemove={canRemove} onRemove={() => onRemove(p)} aliases={aliases} onRename={onRename} />
+              <ProjectCard
+                key={p.name}
+                project={p}
+                canRemove={canRemove}
+                onRemove={() => onRemove(p)}
+                aliases={aliases}
+                onRename={onRename}
+                collapsed={collapsedSet.has(p.name)}
+                onToggle={() => onToggleCollapsed(p.name)}
+              />
             ),
           )}
         </div>
@@ -219,12 +337,44 @@ function ProjectSections({
           </p>
           <div className="flex flex-col gap-4">
             {other.map((p) => (
-              <ProjectCard key={p.name} project={p} canRemove={canRemove} onRemove={() => onRemove(p)} aliases={aliases} onRename={onRename} />
+              <ProjectCard
+                key={p.name}
+                project={p}
+                canRemove={canRemove}
+                onRemove={() => onRemove(p)}
+                aliases={aliases}
+                onRename={onRename}
+                collapsed={collapsedSet.has(p.name)}
+                onToggle={() => onToggleCollapsed(p.name)}
+              />
             ))}
           </div>
         </section>
       )}
     </>
+  );
+}
+
+/** The disclosure chevron in a card header — toggles that card's persisted collapse. */
+function CollapseToggle({
+  name,
+  collapsed,
+  onToggle,
+}: {
+  name: string;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={!collapsed}
+      aria-label={`${collapsed ? "Expand" : "Collapse"} ${name}`}
+      className="-ml-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-fg-subtle transition-colors hover:bg-raised hover:text-fg"
+    >
+      {collapsed ? <ChevronRight size={16} aria-hidden /> : <ChevronDown size={16} aria-hidden />}
+    </button>
   );
 }
 
@@ -242,12 +392,16 @@ function ProjectCard({
   onRemove,
   aliases,
   onRename,
+  collapsed,
+  onToggle,
 }: {
   project: EnrichedProject;
   canRemove: boolean;
   onRemove: () => void;
   aliases: JobAlias[];
   onRename: (t: RenameTarget) => void;
+  collapsed: boolean;
+  onToggle: () => void;
 }) {
   const state = toState(project.lastRun?.status, project.lastRun?.result);
   const when = relativeTime(project.lastActivity);
@@ -255,7 +409,10 @@ function ProjectCard({
 
   return (
     <Card className="overflow-hidden">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-3">
+      <div
+        className={`flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 ${collapsed ? "" : "border-b border-line"}`}
+      >
+        <CollapseToggle name={project.name} collapsed={collapsed} onToggle={onToggle} />
         <StatusIcon state={state} size={18} />
         <h2 className="truncate font-mono text-sm font-semibold text-fg">{project.name}</h2>
         {project.kind === "local" && <Badge variant="outline">local checkout</Badge>}
@@ -298,15 +455,21 @@ function ProjectCard({
         </div>
       </div>
 
-      {note && <p className="border-b border-line-muted px-4 py-2 text-[12px] text-fg-subtle">{note}</p>}
+      {!collapsed && (
+        <>
+          {note && (
+            <p className="border-b border-line-muted px-4 py-2 text-[12px] text-fg-subtle">{note}</p>
+          )}
 
-      <ul className="divide-y divide-line-muted">
-        {project.workflows.map((w) => (
-          <li key={w.key} className="px-4 py-3">
-            <WorkflowRow workflow={w} project={project.name} aliases={aliases} onRename={onRename} />
-          </li>
-        ))}
-      </ul>
+          <ul className="divide-y divide-line-muted">
+            {project.workflows.map((w) => (
+              <li key={w.key} className="px-4 py-3">
+                <WorkflowRow workflow={w} project={project.name} aliases={aliases} onRename={onRename} />
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
     </Card>
   );
 }
@@ -426,7 +589,17 @@ function WorkflowRow({
  * the dispatch command that starts the first run — which absorbs this card
  * into a real project row. Removing it deletes only the placeholder.
  */
-function PlannedCard({ project, onRemoved }: { project: EnrichedProject; onRemoved: () => void }) {
+function PlannedCard({
+  project,
+  onRemoved,
+  collapsed,
+  onToggle,
+}: {
+  project: EnrichedProject;
+  onRemoved: () => void;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   const p = project.planned;
   const hubUrl =
@@ -442,7 +615,10 @@ function PlannedCard({ project, onRemoved }: { project: EnrichedProject; onRemov
 
   return (
     <Card className="overflow-hidden">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-3">
+      <div
+        className={`flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 ${collapsed ? "" : "border-b border-line"}`}
+      >
+        <CollapseToggle name={project.name} collapsed={collapsed} onToggle={onToggle} />
         <CalendarClock size={18} className="text-fg-subtle" aria-hidden />
         <h2 className="truncate font-mono text-sm font-semibold text-fg">{project.name}</h2>
         <Badge variant="outline">planned</Badge>
@@ -468,6 +644,7 @@ function PlannedCard({ project, onRemoved }: { project: EnrichedProject; onRemov
         </div>
       </div>
 
+      {!collapsed && (
       <div className="flex flex-col gap-2 px-4 py-3">
         {p?.workflowFileName || p?.workflowName ? (
           <div className="flex items-center gap-2">
@@ -519,6 +696,7 @@ function PlannedCard({ project, onRemoved }: { project: EnrichedProject; onRemov
           </code>
         </p>
       </div>
+      )}
     </Card>
   );
 }
@@ -613,6 +791,18 @@ function ErrorState() {
         <TriangleAlert size={16} />
         Couldn&apos;t reach the hub. Retrying…
       </span>
+    </Card>
+  );
+}
+
+/** Shown when a saved filter is active but matches none of this hub's projects. */
+function NoMatchState() {
+  return (
+    <Card className="px-6 py-16 text-center">
+      <p className="text-sm font-medium text-fg">No projects match this filter</p>
+      <p className="mt-1.5 text-[13px] text-fg-muted">
+        Clear or edit the filter above to see the rest of this hub&apos;s projects.
+      </p>
     </Card>
   );
 }

@@ -574,3 +574,209 @@ describe("workflow summary chip + per-row status (#per-YAML pass/fail)", () => {
     expect(chip.className).toMatch(/text-warn/);
   });
 });
+
+
+describe("Projects — persistent collapse + saved filter", () => {
+  const COLLAPSE_KEY = "ndh.projects.collapsed";
+  const FILTER_KEY = "ndh.filters.projects";
+
+  // A hub-side aggregate with three repo projects, each running one workflow.
+  // Attempts return empty (no retained YAML), so each card renders its workflow
+  // file name (the row we collapse) without needing per-run YAML fixtures.
+  const projRow = (name: string, file: string, id: number) => ({
+    name,
+    kind: "repo",
+    runCount: 1,
+    lastRun: { id, status: "completed", result: "succeeded" },
+    lastRunId: id,
+    workflows: [
+      {
+        key: `.github/workflows/${file}`,
+        fileName: file,
+        label: file,
+        runCount: 1,
+        latestRun: { id, fileName: `.github/workflows/${file}` },
+        latestRunId: id,
+      },
+    ],
+  });
+
+  function aggRouter() {
+    return (url: string) => {
+      if (url.includes("/api/local/projects"))
+        return {
+          body: [
+            projRow("acme/alpha", "ci.yml", 3),
+            projRow("globex/beta", "test.yml", 2),
+            projRow("initech/gamma", "deploy.yml", 1),
+          ],
+        };
+      if (url.includes("/api/local/runs")) return { status: 404 }; // no delete backend → no Remove
+      return { body: [] }; // aliases, agents, attempts, jobs, timelines
+    };
+  }
+
+  const savedCollapsed = () =>
+    JSON.parse(window.localStorage.getItem(COLLAPSE_KEY) ?? "[]") as string[];
+  const savedFilter = () => JSON.parse(window.localStorage.getItem(FILTER_KEY) ?? "[]") as string[];
+  const filterInput = () => screen.getByPlaceholderText(/Filter by project/);
+
+  it("collapses a card, hides its workflow rows, and persists the state across a remount", async () => {
+    mockFetch(aggRouter());
+    const { unmount } = renderProjects();
+    await waitFor(() => expect(screen.getByText("acme/alpha")).toBeTruthy());
+    // Expanded by default: the workflow row is visible.
+    expect(screen.getByText("ci.yml")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse acme/alpha" }));
+    // Its rows vanish; the toggle now offers to expand. Siblings stay expanded.
+    await waitFor(() => expect(screen.queryByText("ci.yml")).toBeNull());
+    expect(screen.getByRole("button", { name: "Expand acme/alpha" })).toBeTruthy();
+    expect(screen.getByText("test.yml")).toBeTruthy();
+    // Persisted as the set of collapsed names.
+    expect(savedCollapsed()).toContain("acme/alpha");
+
+    // Remount: the collapsed state is restored from localStorage.
+    unmount();
+    renderProjects();
+    await waitFor(() => expect(screen.getByText("acme/alpha")).toBeTruthy());
+    expect(screen.queryByText("ci.yml")).toBeNull();
+    expect(screen.getByRole("button", { name: "Expand acme/alpha" })).toBeTruthy();
+    // A sibling never collapsed stays open.
+    expect(screen.getByText("test.yml")).toBeTruthy();
+  });
+
+  it("expands a card that was persisted collapsed on first render", async () => {
+    window.localStorage.setItem(COLLAPSE_KEY, JSON.stringify(["acme/alpha"]));
+    mockFetch(aggRouter());
+    renderProjects();
+    await waitFor(() => expect(screen.getByText("acme/alpha")).toBeTruthy());
+    // Restored collapsed: no workflow row until expanded.
+    expect(screen.queryByText("ci.yml")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Expand acme/alpha" }));
+    await waitFor(() => expect(screen.getByText("ci.yml")).toBeTruthy());
+    expect(savedCollapsed()).not.toContain("acme/alpha");
+  });
+
+  it("collapse-all hides every card's rows and expand-all restores them", async () => {
+    mockFetch(aggRouter());
+    renderProjects();
+    await waitFor(() => expect(screen.getByText("acme/alpha")).toBeTruthy());
+    expect(screen.getByText("ci.yml")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Collapse all/ }));
+    await waitFor(() => expect(screen.queryByText("ci.yml")).toBeNull());
+    expect(screen.queryByText("test.yml")).toBeNull();
+    expect(screen.queryByText("deploy.yml")).toBeNull();
+    expect(savedCollapsed().sort()).toEqual(["acme/alpha", "globex/beta", "initech/gamma"]);
+
+    // The control flips to Expand all and restores every card.
+    fireEvent.click(screen.getByRole("button", { name: /Expand all/ }));
+    await waitFor(() => expect(screen.getByText("ci.yml")).toBeTruthy());
+    expect(screen.getByText("test.yml")).toBeTruthy();
+    expect(screen.getByText("deploy.yml")).toBeTruthy();
+    expect(savedCollapsed()).toEqual([]);
+  });
+
+  it("collapse-all acts only on filtered-visible cards, preserving the rest", async () => {
+    mockFetch(aggRouter());
+    renderProjects();
+    await waitFor(() => expect(screen.getByText("acme/alpha")).toBeTruthy());
+
+    // Narrow to globex, then collapse-all.
+    fireEvent.change(filterInput(), { target: { value: "globex" } });
+    await waitFor(() => expect(screen.queryByText("acme/alpha")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: /Collapse all/ }));
+    await waitFor(() => expect(screen.queryByText("test.yml")).toBeNull());
+    // Only the visible card was collapsed.
+    expect(savedCollapsed()).toEqual(["globex/beta"]);
+
+    // Clearing the filter reveals acme/alpha still expanded (never touched).
+    fireEvent.change(filterInput(), { target: { value: "" } });
+    await waitFor(() => expect(screen.getByText("ci.yml")).toBeTruthy());
+    // globex/beta remains collapsed.
+    expect(screen.queryByText("test.yml")).toBeNull();
+  });
+
+  it("filters projects by term and persists the saved pill across a remount", async () => {
+    mockFetch(aggRouter());
+    const { unmount } = renderProjects();
+    await waitFor(() => expect(screen.getByText("acme/alpha")).toBeTruthy());
+    expect(screen.getByText("globex/beta")).toBeTruthy();
+
+    // Live draft filter narrows immediately (before saving).
+    fireEvent.change(filterInput(), { target: { value: "globex" } });
+    await waitFor(() => expect(screen.queryByText("acme/alpha")).toBeNull());
+    expect(screen.getByText("globex/beta")).toBeTruthy();
+
+    // Enter saves the query as a persisted pill.
+    fireEvent.keyDown(filterInput(), { key: "Enter", code: "Enter" });
+    await waitFor(() => expect(savedFilter()).toEqual(["globex"]));
+
+    // Remount: the saved pill is restored and still applied.
+    unmount();
+    renderProjects();
+    await waitFor(() => expect(screen.getByText("globex/beta")).toBeTruthy());
+    expect(screen.queryByText("acme/alpha")).toBeNull();
+  });
+
+  it("matches on workflow file name and on kind, not just the project name", async () => {
+    mockFetch(aggRouter());
+    renderProjects();
+    await waitFor(() => expect(screen.getByText("initech/gamma")).toBeTruthy());
+
+    // A workflow-file term keeps only the project that runs it.
+    fireEvent.change(filterInput(), { target: { value: "deploy" } });
+    await waitFor(() => expect(screen.getByText("initech/gamma")).toBeTruthy());
+    expect(screen.queryByText("acme/alpha")).toBeNull();
+    expect(screen.queryByText("globex/beta")).toBeNull();
+
+    // A kind term ("repo") matches all three.
+    fireEvent.change(filterInput(), { target: { value: "repo" } });
+    await waitFor(() => expect(screen.getByText("acme/alpha")).toBeTruthy());
+    expect(screen.getByText("globex/beta")).toBeTruthy();
+    expect(screen.getByText("initech/gamma")).toBeTruthy();
+  });
+
+  it("shows the no-match state, and hides collapse-all, when the filter excludes everything", async () => {
+    mockFetch(aggRouter());
+    renderProjects();
+    await waitFor(() => expect(screen.getByText("acme/alpha")).toBeTruthy());
+
+    fireEvent.change(filterInput(), { target: { value: "nonesuch" } });
+    await waitFor(() => expect(screen.getByText("No projects match this filter")).toBeTruthy());
+    // No cards → no collapse-all control.
+    expect(screen.queryByRole("button", { name: /Collapse all/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Expand all/ })).toBeNull();
+  });
+
+  it("collapses a planned placeholder card, hiding its dispatch body", async () => {
+    const plannedAgg = {
+      name: "acme/planned",
+      kind: "planned",
+      runCount: 0,
+      lastRun: null,
+      lastRunId: null,
+      workflows: [],
+      planned: {
+        workflowFileName: "ci.yml",
+        workflowName: "CI",
+        events: ["push"],
+        branches: ["main"],
+        runsOn: ["self-hosted"],
+        createdAt: 1,
+      },
+    };
+    mockFetch((url: string) => {
+      if (url.includes("/api/local/projects")) return { body: [plannedAgg] };
+      return { body: [] };
+    });
+    renderProjects();
+    await waitFor(() => expect(screen.getByText("acme/planned")).toBeTruthy());
+    expect(screen.getByText(/ndh dispatch/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse acme/planned" }));
+    await waitFor(() => expect(screen.queryByText(/ndh dispatch/)).toBeNull());
+    expect(screen.getByRole("button", { name: "Expand acme/planned" })).toBeTruthy();
+  });
+});
