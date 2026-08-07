@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { cp, mkdir, readdir } from "node:fs/promises";
+import { cp, copyFile, mkdir, readdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import type { SpawnOptions } from "node:child_process";
@@ -13,6 +13,17 @@ function runnerDir(name: string): string {
 
 // The bundle acts as the runner's bin/ dir; the listener writes .runner/.credentials to
 // bin's parent, so each instance gets its own <name>/ root with the bundle nested inside.
+function caPath(dir: string): string {
+  return join(dir, "ca.pem");
+}
+
+/** Env for listener spawns: trust the stored hub certificate when one exists. */
+async function listenerEnv(dir: string): Promise<NodeJS.ProcessEnv> {
+  const ca = caPath(dir);
+  if (!(await exists(ca))) return { ...process.env };
+  return { ...process.env, SSL_CERT_FILE: ca, NODE_EXTRA_CA_CERTS: ca };
+}
+
 function listenerExe(dir: string): string {
   return join(dir, "bin", process.platform === "win32" ? "Runner.Listener.exe" : "Runner.Listener");
 }
@@ -25,6 +36,7 @@ interface JoinOptions {
   name: string;
   labels: string;
   token: string;
+  ca?: string;
 }
 
 /**
@@ -56,6 +68,7 @@ export function registerRunner(program: Command): void {
     .option("--name <name>", "runner name", defaultName())
     .option("--labels <labels>", "comma-separated runner labels", defaultLabels())
     .option("--token <token>", "hub registration token", "notdownhub")
+    .option("--ca <pem>", "trust this certificate for a --tls hub (stored with the runner)")
     .action(async (hubUrl: string, opts: JoinOptions) => {
       process.exitCode = await join_(hubUrl, opts);
     });
@@ -91,7 +104,12 @@ async function join_(hubUrl: string, opts: JoinOptions, deps: RunnerDeps = {}): 
     log(`preparing runner instance at ${dir} ...`);
     await (deps.copyVendor ?? defaultCopyVendor)(dir);
   }
+  if (opts.ca) {
+    await copyFile(opts.ca, caPath(dir));
+    log(`stored hub certificate at ${caPath(dir)}`);
+  }
   const url = new URL("runner/server", hubUrl.endsWith("/") ? hubUrl : `${hubUrl}/`).toString();
+  const env = await listenerEnv(dir);
   const code = await runner(
     listenerExe(dir),
     [
@@ -103,7 +121,7 @@ async function join_(hubUrl: string, opts: JoinOptions, deps: RunnerDeps = {}): 
       "--work", "_work",
       "--replace",
     ],
-    { cwd: dir },
+    { cwd: dir, env },
   );
   if (code !== 0) return code;
   log(`runner '${opts.name}' joined ${hubUrl}`);
@@ -122,7 +140,7 @@ async function start(name?: string, deps: RunnerDeps = {}): Promise<number> {
   if (!(await exists(listenerExe(dir)))) fail(`runner '${name}' not found — join a hub first`);
   log(`logging to ${initFileLog(join(dir, "logs"), "runner")} (daily rotation)`);
   log(`runner '${name}' listening for jobs (ctrl-c to stop)`);
-  return runner(listenerExe(dir), ["run"], { cwd: dir });
+  return runner(listenerExe(dir), ["run"], { cwd: dir, env: await listenerEnv(dir) });
 }
 
 async function listNames(): Promise<string[]> {
