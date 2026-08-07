@@ -1,7 +1,7 @@
 import type { ServerResponse } from "node:http";
 import type { Command } from "commander";
 import { unwrap } from "./lib.js";
-import { projectLabel } from "./status.js";
+import { projectLabel, runDisplayName } from "./status.js";
 import { joblogsDbPath, readDeletedRunIds } from "./joblogs.js";
 import { deletePlaceholders, frontStateDbPath, listPlaceholders, type ProjectPlaceholder } from "./frontstore.js";
 
@@ -314,7 +314,8 @@ export async function projectsCmd(server: string): Promise<number> {
       const on = p?.events?.length ? ` on ${p.events.join(", ")}` : "";
       detail = `no runs yet  ${wf}${on}`;
     } else {
-      const wf = r.displayName ?? r.fileName ?? "?";
+      // Honest name for a filter-skipped last run: basename + "(skipped)", never the raw path (#140).
+      const wf = runDisplayName(r);
       const result = r.result ? `${r.status ?? ""}/${r.result}` : (r.status ?? "");
       detail = `last: #${r.id} ${wf} ${result} (${r.eventName ?? "?"})`;
     }

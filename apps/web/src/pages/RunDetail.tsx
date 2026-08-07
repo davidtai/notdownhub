@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, GitBranch, GitCommitHorizontal } from "lucide-react";
 import { getRuns, getAttempts, getJobs, getTimeline, getArtifacts, getRunsMeta, getJobAliases, aliasFor, type Job, type TimelineRecord, type WorkflowRun } from "../lib/api";
-import { toState, shortRef, shortSha, elapsedMs, timelineSpan, projectLabel, isFinished, relativeTime, absoluteTime, humanDuration } from "../lib/format";
+import { toState, shortRef, shortSha, elapsedMs, timelineSpan, projectLabel, isFinished, relativeTime, absoluteTime, humanDuration, runDisplayName } from "../lib/format";
 import { countAnnotations } from "../lib/warnings";
 import { usePoll } from "../lib/hooks";
 import { AppBar } from "../components/AppBar";
@@ -131,7 +131,8 @@ export function RunDetail() {
   const sha = shortSha(summary?.sha ?? attempt?.sha);
   const eventName = summary?.eventName ?? attempt?.eventName;
   const project = summary ? projectLabel(summary) : null;
-  const title = summary?.displayName || summary?.fileName || `Run ${runId}`;
+  // Honest name for a filter-skipped run: basename + "(skipped)", never the raw workflow path (#140).
+  const title = summary ? runDisplayName(summary) : `Run ${runId}`;
 
   // The run object the header actions act on: the list summary when present, else the current
   // attempt's status/result so a run only reachable by deep link still gets the right controls.

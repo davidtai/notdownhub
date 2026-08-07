@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { statusCmd, projectLabel, fmtDuration, fmtTime } from "../status.js";
+import { statusCmd, projectLabel, fmtDuration, fmtTime, runDisplayName, isSkippedRun } from "../status.js";
 import type { Fleet } from "../fleet.js";
 import type { AgentInfo, RunMeta } from "../agents-info.js";
 import { startServer } from "./helpers.js";
@@ -53,6 +53,26 @@ test("fmtDuration: ms / seconds / minutes", () => {
 test("fmtTime: trims the hub timestamp to whole seconds with a UTC marker", () => {
   assert.equal(fmtTime("2026-08-07 06:42:34.833163"), "2026-08-07 06:42:34Z");
   assert.equal(fmtTime("garbage"), "garbage");
+});
+
+test("runDisplayName: skipped runs get basename + (skipped); executed runs are unchanged (#140)", () => {
+  // Filter-skipped: displayName absent or still the raw workflow path → honest basename fallback.
+  assert.equal(runDisplayName({ id: 7, fileName: ".github/workflows/ci.yml", result: "skipped" }), "ci.yml (skipped)");
+  assert.equal(
+    runDisplayName({ id: 7, fileName: ".github/workflows/ci.yml", displayName: ".github/workflows/ci.yml", result: "skipped" }),
+    "ci.yml (skipped)",
+  );
+  // A skipped run that somehow carries a real engine name keeps it.
+  assert.equal(runDisplayName({ id: 7, fileName: ".github/workflows/ci.yml", displayName: "app-ci", result: "skipped" }), "app-ci");
+  // No file at all → run id, still marked skipped.
+  assert.equal(runDisplayName({ id: 7, result: "skipped" }), "run-7 (skipped)");
+  // Executed runs: exactly the old displayName ?? fileName ?? "?" behavior.
+  assert.equal(runDisplayName({ id: 6, fileName: ".github/workflows/ci.yml", displayName: "app-ci", result: "succeeded" }), "app-ci");
+  assert.equal(runDisplayName({ id: 6, fileName: "release.yml" }), "release.yml");
+  assert.equal(runDisplayName({ id: 6 }), "?");
+  assert.equal(isSkippedRun({ result: "skipped" }), true);
+  assert.equal(isSkippedRun({ result: "succeeded" }), false);
+  assert.equal(isSkippedRun({}), false);
 });
 
 test("statusCmd: rich fleet shows labels + online/busy/idle/offline state (#68)", async () => {
@@ -121,6 +141,22 @@ test("statusCmd: recent runs carry project + timestamp/duration/runner when the 
     assert.match(out, /#7 {2}CI {2}\[acme\/widget\] {2}completed\/success {2}\(push\) {2}2026-08-07 06:42:34Z {2}4\.1s {2}on runner-a/);
     assert.match(out, /#8 {2}release\.yml {2}\[local\] {2}in_progress {2}\(\?\) {2}on runner-b/);
     assert.match(out, /#9 {2}\? {2}\[local\]\s+\(\?\)$/m); // no meta → plain line, no trailing extras
+  } finally {
+    cap.restore();
+    await srv.close();
+  }
+});
+
+test("statusCmd: a filter-skipped run renders basename + (skipped) and a — time placeholder (#140)", async () => {
+  const srv = await runsServing([
+    { id: 7, fileName: ".github/workflows/ci.yml", displayName: ".github/workflows/ci.yml", status: "completed", result: "skipped", eventName: "push", owner: "team", repo: "app" },
+  ]);
+  const cap = capture();
+  try {
+    await statusCmd(srv.url, { fleet: richFleet([]), runMeta: noMeta });
+    const out = cap.logs.join("\n");
+    assert.match(out, /#7 {2}ci\.yml \(skipped\) {2}\[team\/app\] {2}completed\/skipped {2}\(push\) {2}—$/m);
+    assert.doesNotMatch(out, /\.github\/workflows/, "the raw workflow path never renders as a name");
   } finally {
     cap.restore();
     await srv.close();

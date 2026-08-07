@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -79,6 +80,59 @@ test("currentRepoSlug parses ssh + https remotes, and returns null without one",
 
 test("readSecretValue returns the inline --value verbatim", async () => {
   assert.equal(await readSecretValue("inline-secret"), "inline-secret");
+});
+
+/**
+ * Drive the hidden prompt with a stubbed process.stdin (an EventEmitter with the
+ * stream methods promptHidden touches). setRawMode is absent on purpose — the
+ * code optional-chains it, exactly as on a non-raw stdin.
+ */
+function withFakeStdin<T>(fn: (emit: (chunk: string) => void) => Promise<T>): Promise<T> {
+  const fake = new EventEmitter() as EventEmitter & {
+    resume: () => void;
+    pause: () => void;
+    setEncoding: (e: string) => void;
+    removeListener: (ev: string, l: (...a: unknown[]) => void) => EventEmitter;
+  };
+  fake.resume = () => {};
+  fake.pause = () => {};
+  fake.setEncoding = () => {};
+  const original = Object.getOwnPropertyDescriptor(process, "stdin")!;
+  Object.defineProperty(process, "stdin", { value: fake, configurable: true });
+  return fn((chunk) => fake.emit("data", chunk)).finally(() => {
+    Object.defineProperty(process, "stdin", original);
+  });
+}
+
+test("hidden prompt: Enter terminates input and is NOT part of the secret (#135)", async () => {
+  for (const terminator of ["\n", "\r", "\u0004" /* Ctrl-D */]) {
+    const value = await withFakeStdin((emit) => {
+      const p = secretsInternal.promptHidden("value: ");
+      emit("typed-");
+      emit(`secret${terminator}`);
+      return p;
+    });
+    assert.equal(value, "typed-secret", `terminator ${JSON.stringify(terminator)} is stripped`);
+  }
+});
+
+test("hidden prompt: backspace edits, Ctrl-C aborts", async () => {
+  const edited = await withFakeStdin((emit) => {
+    const p = secretsInternal.promptHidden("value: ");
+    emit("abX\u007f");
+    emit("c\r");
+    return p;
+  });
+  assert.equal(edited, "abc", "DEL removes the last typed character");
+
+  await assert.rejects(
+    withFakeStdin((emit) => {
+      const p = secretsInternal.promptHidden("value: ");
+      emit("oops\u0003");
+      return p;
+    }),
+    /aborted/,
+  );
 });
 
 test("shred: overwrites+removes a real file, no-ops an empty one, and ignores a missing path", async () => {

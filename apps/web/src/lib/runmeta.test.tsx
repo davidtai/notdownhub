@@ -61,6 +61,21 @@ describe("runTimeCell", () => {
     expect(runTimeCell("success", undefined, null)).toBeNull();
     expect(runTimeCell("success", undefined, "garbage")).toBeNull();
   });
+
+  it("skipped run with nothing recorded: an explicit — placeholder, never a blank slot (#140)", () => {
+    const cell = runTimeCell("skipped", undefined, null);
+    expect(cell?.primary).toBe("—");
+    expect(cell?.title).toBe("Skipped — no jobs ran");
+    expect(cell?.secondary).toBeUndefined();
+  });
+
+  it("skipped run WITH a recorded timeline still shows its real times", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2020-01-01T00:10:00Z"));
+    const cell = runTimeCell("skipped", FINISHED);
+    expect(cell?.primary).toBe("10m ago");
+    expect(cell?.secondary).toBe("4.10s");
+  });
 });
 
 describe("useRunsMeta", () => {

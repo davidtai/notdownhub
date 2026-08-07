@@ -11,6 +11,27 @@ export function projectLabel(run: { owner?: string; repo?: string }): string {
   return repo || owner || "local";
 }
 
+/** True when the run finished as skipped (e.g. its branch matched no workflow filter). */
+export function isSkippedRun(run: { result?: string | null }): boolean {
+  return (run.result ?? "").toLowerCase() === "skipped";
+}
+
+/**
+ * Display name for a run line (#140). Executed runs carry the engine's parsed
+ * workflow name; a filter-skipped run never got one, so its displayName is
+ * absent or still the raw workflow path. Fall back to the file basename,
+ * marked "(skipped)" so the row reads as intentional, not half-rendered.
+ */
+export function runDisplayName(run: { id: number; fileName?: string; displayName?: string; result?: string }): string {
+  const name = run.displayName?.trim() || undefined;
+  const file = run.fileName?.trim() || undefined;
+  if (isSkippedRun(run) && (!name || name === file)) {
+    const base = file ? file.split("/").pop() || file : `run-${run.id}`;
+    return `${base} (skipped)`;
+  }
+  return name ?? file ?? "?";
+}
+
 /** Compact wall-clock duration: "820ms", "3.2s", "1m04s". */
 export function fmtDuration(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`;
@@ -79,8 +100,11 @@ export async function statusCmd(server: string, deps: StatusDeps = {}): Promise<
         m?.durationMs !== undefined ? fmtDuration(m.durationMs) : "",
         m && m.runners.length ? `on ${m.runners.join(",")}` : "",
       ].filter(Boolean);
+      // A filter-skipped run has no job timeline, so it legitimately has no times —
+      // print an explicit "—" placeholder instead of a trailing blank (#140).
+      if (extras.length === 0 && isSkippedRun(r)) extras.push("—");
       const tail = extras.length ? `  ${extras.join("  ")}` : "";
-      console.log(`  #${r.id}  ${r.displayName ?? r.fileName ?? "?"}  [${projectLabel(r)}]  ${r.status ?? ""}${r.result ? `/${r.result}` : ""}  (${r.eventName ?? "?"})${tail}`);
+      console.log(`  #${r.id}  ${runDisplayName(r)}  [${projectLabel(r)}]  ${r.status ?? ""}${r.result ? `/${r.result}` : ""}  (${r.eventName ?? "?"})${tail}`);
     }
     if (runs.length === 0) console.log("  (no runs yet)");
     return 0;

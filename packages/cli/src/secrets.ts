@@ -398,17 +398,20 @@ export async function withRunnerSecrets<T>(
 export async function readSecretValue(valueFlag: string | undefined): Promise<string> {
   if (valueFlag !== undefined) return valueFlag;
   if (!process.stdin.isTTY) {
-    // scripting: `echo -n value | ndh secrets set NAME`  (supports multi-line)
+    // scripting: `ndh secrets set NAME < deploy_key.pem` — the stored value is the EXACT piped
+    // bytes, trailing newline included (#135). PEM keys conventionally end with a newline, and
+    // byte-consumers (checksum verification, strict parsers) break if it is silently stripped.
+    // Only the interactive prompt below treats a line terminator as "done typing".
     const chunks: Buffer[] = [];
     for await (const c of process.stdin) chunks.push(c as Buffer);
-    return Buffer.concat(chunks).toString("utf8").replace(/\r?\n$/, "");
+    return Buffer.concat(chunks).toString("utf8");
   }
   return promptHidden("value (input hidden): ");
 }
 
-/* c8 ignore start -- interactive hidden-input prompt: needs a real raw-mode TTY (setRawMode + keypress
-   handling), which the test harness has no way to drive. The non-TTY (--value / piped stdin) paths in
-   readSecretValue ARE covered; only this terminal path is excluded. */
+/* The interactive hidden prompt reads raw keypresses. Enter/Return only terminates input — the
+   typed secret never includes it (#135: contrast with piped stdin above, which is byte-exact).
+   Tests drive this with a stubbed process.stdin (setRawMode is optional-chained for that reason). */
 function promptHidden(prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const stdin = process.stdin;
@@ -541,4 +544,4 @@ export function registerSecrets(program: Command): void {
 
 // ---------- exposed for tests ----------
 
-export const __test = { shred, indexPath, secretsFilePath, keyFilePath, backend, togglePath, libsecretAvailable };
+export const __test = { shred, indexPath, secretsFilePath, keyFilePath, backend, togglePath, libsecretAvailable, promptHidden };

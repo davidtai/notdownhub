@@ -46,6 +46,28 @@ export function projectLabel(run: { owner?: string | null; repo?: string | null 
   return repo || owner || "local";
 }
 
+/**
+ * Display name for a run (#140). Executed runs carry the engine's parsed
+ * workflow name; a filter-skipped run never got one, so its displayName is
+ * absent or still the raw workflow path. Fall back to the file basename,
+ * marked "(skipped)" so the row reads as intentional, not half-rendered.
+ */
+export function runDisplayName(run: {
+  id: number;
+  fileName?: string | null;
+  displayName?: string | null;
+  status?: string | null;
+  result?: string | null;
+}): string {
+  const name = run.displayName?.trim() || "";
+  const file = run.fileName?.trim() || "";
+  if (toState(run.status, run.result) === "skipped" && (!name || name === file)) {
+    const base = file ? file.split("/").pop() || file : "";
+    return base ? `${base} (skipped)` : `Run ${run.id} (skipped)`;
+  }
+  return name || file || `Run ${run.id}`;
+}
+
 /** First 7 of a commit sha, the way every git UI shows it. */
 export function shortSha(sha?: string | null): string {
   if (!sha) return "";

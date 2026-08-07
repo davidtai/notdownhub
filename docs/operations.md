@@ -664,12 +664,16 @@ echo -n "$TOKEN" | ndh secrets set NPM_TOKEN    # piped stdin (scripting)
 ndh secrets set NPM_TOKEN --value "$TOKEN"      # inline (avoid on shared shells)
 ```
 
-Piped stdin keeps newlines, so a multiline secret round-trips faithfully:
+Piped stdin stores the exact input bytes, so a multiline secret round-trips
+byte-for-byte:
 
 ```bash
 # a PEM file, TLS key, or any multiline value:
 ndh secrets set DEPLOY_KEY < deploy_key.pem
 ```
+
+A trailing newline in piped input is part of the secret and is kept. The
+hidden prompt drops only the final Enter keypress.
 
 `ndh secrets get NAME` reveals a value; it is the only command that prints one.
 `ndh secrets list` shows names and scopes, never values.
