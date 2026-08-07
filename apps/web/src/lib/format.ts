@@ -64,13 +64,26 @@ export function duration(start?: string | null, finish?: string | null): string 
   const a = Date.parse(withZone(start));
   const b = finish ? Date.parse(withZone(finish)) : Date.now();
   if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) return "";
-  const ms = b - a;
+  return humanDuration(b - a);
+}
+
+/** Human duration from milliseconds, e.g. "850ms", "1.2s", "3m 04s". "" if invalid. */
+export function humanDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "";
   if (ms < 1000) return `${ms}ms`;
   const secs = ms / 1000;
   if (secs < 60) return `${secs.toFixed(secs < 10 ? 2 : 1)}s`;
   const m = Math.floor(secs / 60);
   const s = Math.round(secs % 60);
   return `${m}m ${String(s).padStart(2, "0")}s`;
+}
+
+/** Absolute local time for hover titles, e.g. "8/7/2026, 6:42:34 AM". "" if unparseable. */
+export function absoluteTime(ts?: string | null): string {
+  if (!ts) return "";
+  const t = Date.parse(withZone(ts));
+  if (!Number.isFinite(t)) return "";
+  return new Date(t).toLocaleString();
 }
 
 // The hub emits naive local timestamps (no zone). Treat them as UTC-agnostic by

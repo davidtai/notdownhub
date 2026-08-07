@@ -389,3 +389,49 @@ describe("RunDetail", () => {
     expect(screen.queryByLabelText("Re-run run 5")).toBeNull();
   });
 });
+
+// ── #96: the run header shows real execution times from the runs-meta batch ──
+describe("RunDetail header timing (#96)", () => {
+  const detailRoutes = (run: Record<string, unknown>, meta: Record<string, unknown>) => (url: string) => {
+    if (url.includes("/workflow/runs")) return { body: [run] };
+    if (url.includes("/run/5/attempts")) return { body: [{ id: 1, attempt: 1, timeLineId: "at1" }] };
+    if (url.includes("/attempt/1/jobs")) return { body: [] };
+    if (url.includes("/api/local/runs-meta")) return { body: meta };
+    return { status: 404 };
+  };
+
+  it("finished run: shows started (absolute on hover) and the exact duration", async () => {
+    mockFetch(
+      detailRoutes(
+        { id: 5, displayName: "Deploy", status: "completed", result: "succeeded" },
+        { 5: { startedAt: "2020-01-01T00:00:00.000Z", finishedAt: "2020-01-01T00:00:04.100Z", durationMs: 4100 } },
+      ),
+    );
+    renderDetail();
+    await waitFor(() => expect(screen.getByText(/^started .+ago$/)).toBeTruthy());
+    expect(screen.getByText("took 4.10s")).toBeTruthy();
+    expect(screen.getByTitle(/^Started /)).toBeTruthy();
+    expect(screen.queryByText(/^running for /)).toBeNull();
+  });
+
+  it("in-progress run: shows started and a live 'running for …', no duration yet", async () => {
+    mockFetch(
+      detailRoutes(
+        { id: 5, displayName: "Deploy", status: "inProgress", result: null },
+        { 5: { startedAt: "2020-01-01T00:00:00.000Z" } },
+      ),
+    );
+    renderDetail();
+    await waitFor(() => expect(screen.getByText(/^started .+ago$/)).toBeTruthy());
+    expect(screen.getByText(/^running for /)).toBeTruthy();
+    expect(screen.queryByText(/^took /)).toBeNull();
+  });
+
+  it("no recorded times: the header shows no timing chips (nothing fabricated)", async () => {
+    mockFetch(detailRoutes({ id: 5, displayName: "Deploy", status: "completed", result: "succeeded" }, {}));
+    renderDetail();
+    await waitFor(() => expect(screen.getByText("Deploy")).toBeTruthy());
+    expect(screen.queryByText(/^started /)).toBeNull();
+    expect(screen.queryByText(/^took /)).toBeNull();
+  });
+});

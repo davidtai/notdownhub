@@ -54,6 +54,42 @@ describe("RunRow re-run affordance", () => {
   });
 });
 
+describe("RunRow run timing (#96)", () => {
+  it("finished run: renders finish-relative time + duration from meta, absolute times on hover", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2020-01-01T00:10:00Z"));
+    const run: WorkflowRun = { id: 9, displayName: "CI", status: "completed", result: "succeeded" };
+    renderWithRouter(
+      <RunRow
+        run={run}
+        meta={{ startedAt: "2020-01-01T00:00:00.000Z", finishedAt: "2020-01-01T00:00:04.100Z", durationMs: 4100 }}
+      />,
+    );
+    expect(screen.getByText("10m ago")).toBeTruthy();
+    expect(screen.getByText("4.10s")).toBeTruthy();
+    const title = screen.getByTitle(/Started /).getAttribute("title") ?? "";
+    expect(title).toContain("Started ");
+    expect(title).toContain(" · Finished ");
+  });
+
+  it("in-progress run: renders a live 'running for …' with the start time on hover", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2020-01-01T00:00:34Z"));
+    const run: WorkflowRun = { id: 10, displayName: "CI", status: "inProgress", result: null };
+    renderWithRouter(<RunRow run={run} meta={{ startedAt: "2020-01-01T00:00:00.000Z" }} />);
+    expect(screen.getByText("running for 34.0s")).toBeTruthy();
+    const title = screen.getByTitle(/Started /).getAttribute("title") ?? "";
+    expect(title).toMatch(/^Started /);
+    expect(title).not.toContain("Finished");
+  });
+
+  it("no meta and no createdOn: the time slot stays empty (nothing fabricated)", () => {
+    renderWithRouter(<RunRow run={{ id: 11, displayName: "CI", status: "completed", result: "succeeded" }} />);
+    expect(screen.queryByText(/ago$/)).toBeNull();
+    expect(screen.queryByTitle(/Started /)).toBeNull();
+  });
+});
+
 describe("RunRow", () => {
   it("renders full metadata: title, repo, ref, sha, event and relative time", () => {
     vi.useFakeTimers();

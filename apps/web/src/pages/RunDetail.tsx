@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, GitBranch, GitCommitHorizontal } from "lucide-react";
-import { getRuns, getAttempts, getJobs, getTimeline, getArtifacts, type Job, type TimelineRecord, type WorkflowRun } from "../lib/api";
-import { toState, shortRef, shortSha, elapsedMs, timelineSpan, projectLabel, isFinished } from "../lib/format";
+import { getRuns, getAttempts, getJobs, getTimeline, getArtifacts, getRunsMeta, type Job, type TimelineRecord, type WorkflowRun } from "../lib/api";
+import { toState, shortRef, shortSha, elapsedMs, timelineSpan, projectLabel, isFinished, relativeTime, absoluteTime, humanDuration } from "../lib/format";
 import { countAnnotations } from "../lib/warnings";
 import { usePoll } from "../lib/hooks";
 import { AppBar } from "../components/AppBar";
@@ -23,6 +23,12 @@ export function RunDetail() {
 
   const runsList = usePoll(() => getRuns(0), 5000);
   const attempts = usePoll(() => getAttempts(runId), 3000, [runId]);
+
+  // Real execution timing from the hub DB (issue #96): started/finished/duration.
+  // One-id batch on the same endpoint the runs list uses; polled so a running
+  // run's "running for …" and eventual finish time stay live.
+  const metaPoll = usePoll(() => getRunsMeta([runId]), 3000, [runId]);
+  const runMeta = metaPoll.data?.[runId];
 
   const summary = useMemo(() => (runsList.data ?? []).find((r) => r.id === runId), [runsList.data, runId]);
 
@@ -162,6 +168,24 @@ export function RunDetail() {
                   <span className="flex items-center gap-1 font-mono text-[11px]">
                     <GitCommitHorizontal size={12} className="text-fg-subtle" />
                     {sha}
+                  </span>
+                )}
+                {/* Real execution times (#96): started + duration, absolute on hover.
+                    Shown only when the hub DB recorded them — never fabricated. */}
+                {runMeta?.startedAt && (
+                  <span className="tnum text-[11px]" title={`Started ${absoluteTime(runMeta.startedAt)}`}>
+                    started {relativeTime(runMeta.startedAt)}
+                  </span>
+                )}
+                {runMeta?.startedAt && !runMeta.finishedAt && headerState === "running" && (
+                  <span className="tnum text-[11px]">running for {humanDuration(elapsedMs(runMeta.startedAt))}</span>
+                )}
+                {runMeta?.durationMs !== undefined && (
+                  <span
+                    className="tnum text-[11px]"
+                    title={runMeta.finishedAt ? `Finished ${absoluteTime(runMeta.finishedAt)}` : undefined}
+                  >
+                    took {humanDuration(runMeta.durationMs)}
                   </span>
                 )}
               </div>
