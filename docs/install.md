@@ -28,10 +28,31 @@ per-platform (`osx-arm64`, `osx-x64`, `linux-arm64`, `linux-x64`, `win-arm64`,
 
 **macOS**
 
+`ndh` needs the Xcode command-line tools, Node >= 22.13, and `corepack`:
+
 ```bash
 xcode-select --install          # git + build tools (if not already present)
-# Node >= 22.13 via your manager of choice, e.g. Homebrew:
+```
+
+With admin rights, install Node from Homebrew:
+
+```bash
 brew install node
+corepack enable
+```
+
+Without admin rights (no Homebrew, `/opt/homebrew` not writable), install Node
+into `$HOME`. Use nvm, or unpack the official tarball:
+
+```bash
+# option A — nvm (user-level, no admin):
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+nvm install 22
+
+# option B — official tarball into $HOME (arm64 shown; use x64 on Intel Macs):
+curl -fsSLO https://nodejs.org/dist/v22.14.0/node-v22.14.0-darwin-arm64.tar.gz
+tar -xzf node-v22.14.0-darwin-arm64.tar.gz -C "$HOME"
+export PATH="$HOME/node-v22.14.0-darwin-arm64/bin:$PATH"   # add this to ~/.zshrc
 corepack enable
 ```
 
@@ -50,6 +71,19 @@ Install the Node.js >= 22.13 MSI and [Git for Windows](https://git-scm.com/downl
 then run `corepack enable` in an elevated shell. `ndh` resolves the `win-<arch>`
 bundle and appends `.exe` to the binaries automatically. The launchd/systemd
 service examples in [operations.md](operations.md) are macOS/Linux only.
+
+**corepack on a fresh Node 22.13**
+
+A fresh Node 22.13.x ships an old `corepack` (0.30.0) with stale signature keys.
+On that version `corepack enable` then `pnpm install` fails with
+`Cannot find matching keyid`. Update corepack first, then continue:
+
+```bash
+npm install -g corepack@latest      # -> corepack >= 0.35
+corepack enable
+```
+
+Node >= 22.14 ships a current corepack, so this step is only for Node 22.13.x.
 
 ---
 
