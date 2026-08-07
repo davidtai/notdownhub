@@ -231,6 +231,14 @@ for adding disposable Linux capacity to a fleet. The image is `node:22-bookworm`
 with `git`, `curl`, `jq`, `unzip`, `corepack` enabled, and the pinned
 `runner.server` linux bundle baked in at build time.
 
+> **You do not need this image to run a runner in a container.** Any plain
+> `node:22` container works: `npm install -g notdownhub`, then
+> `ndh runner join <hub-url> --token <token>` and `ndh runner start`. The
+> prebuilt image only bakes the runner stack in ahead of time, so the container
+> skips the first-run `ndh install` download. Start the hub with
+> `ndh hub up --host <name the runner can reach>` so the runner can find it.
+> A cold-start test verified the plain-container path end to end.
+
 ### Build
 
 ```bash
