@@ -37,11 +37,32 @@ codebase, so workflows run with full fidelity, not a best-effort approximation.
 
 `ndh` fits between two extremes: a one-off local run, and a full forge. It runs
 the CI you already have — locally or across your own machines — with nothing
-pointing at github.com.
+pointing at github.com. Full details, request flows, and the security model:
+[docs/architecture.md](docs/architecture.md).
 
 ---
 
-## 60-second quickstart
+## Choose your setup
+
+Three setups cover the common shapes. Pick the row that matches where your
+repo lives. Every command in these setups ran live against the current build;
+hosts, paths, and tokens are generalized.
+
+| Setup | Your repo lives | CI trigger |
+|---|---|---|
+| [1 — one repo, your machines](#setup-1--one-repo-your-machines) | in a local checkout | `ndh run`, or `ndh dispatch` to a hub |
+| [2 — a team on a git server](#setup-2--a-team-on-a-git-server) | in a bare repo on a shared server | `git push` (`post-receive` hook) |
+| [3 — GitLab or another git host](#setup-3--self-hosted-gitlab-or-any-git-host) | on a self-hosted GitLab or another forge | a server hook, a mirror, or `ndh dispatch` |
+
+---
+
+## Setup 1 — one repo, your machines
+
+Use `ndh run` when one machine is enough: no server, no configuration, one
+shot. Start a persistent hub when you want run history, a web UI, or more
+build machines. Both forms run the same workflows from the same checkout.
+
+### 60-second quickstart
 
 **Requirements:** Node.js >= 22.13 (macOS / Linux / Windows on x64 or arm64).
 
@@ -92,9 +113,7 @@ host. Override any mapping with `-P`, e.g. `-P ubuntu-latest=-self-hosted`.
 > and the `NDH_HOME` layout, the Docker fleet-runner image, air-gapped setup,
 > and how to verify — see **[docs/install.md](docs/install.md)**.
 
----
-
-## Fleet quickstart
+### Fleet quickstart
 
 Start a persistent hub, then attach runners from anywhere — even across NAT
 (runners are outbound-only long-pollers).
@@ -178,18 +197,198 @@ No machine to host the hub? You can run it on a small cloud VM. See
 [Run the hub on a VM](docs/operations.md#run-the-hub-on-a-vm), which includes a
 DigitalOcean referral link with $25 of credit to try it.
 
+The operations runbook covers the rest of running a hub for real:
+launchd/systemd service, firewall rules, backups, upgrades, and a
+troubleshooting table — **[docs/operations.md](docs/operations.md)**.
+
 ---
 
-## Working with a team
+## Setup 2 — a team on a git server
 
-Teammates do not need `ndh` — only `git`. Put a bare repo on a git server,
-install `ndh` there, and let a hook dispatch each push. The git server is the
-dispatching machine: the hook runs `ndh dispatch` on the server, and the
-team's secrets live in the server account. Teammates watch results in the hub
-UI, or with `ndh watch` and `ndh status --server`. Start the hub with
-`--basic-auth user:pass` to admit their browsers. The full, live-verified
-walkthrough — topology, setup order, secrets placement, branch rules, project
-labels — is in **[docs/collaboration.md](docs/collaboration.md)**.
+One sentence locates every piece: **the git server is the dispatching
+machine.** Teammates need only `git` — no `ndh`, no tokens. The server runs
+`ndh dispatch` from a `post-receive` hook, with the team's secrets in the
+server account. This section is the compact recipe; the full, live-verified
+story — topology, roles, branch rules, project labels — is
+**[docs/collaboration.md](docs/collaboration.md)**.
+
+**1. Start the hub**, with team access to the web UI:
+
+```bash
+ndh hub up --basic-auth ops:PASSWORD
+```
+
+The web UI is loopback-only by default. `--basic-auth` admits the team's
+browsers with those credentials; without credentials a non-local request gets
+`401`.
+
+**2. Join runners** from each build machine, with the token the hub printed:
+
+```bash
+ndh runner join http://hub.internal:4949 --token 8f3c… --labels self-hosted
+ndh runner start
+```
+
+**3. Prepare the git server.** Install `ndh` there
+([install.md](docs/install.md)), store the team's values, and install the
+hook on each bare repo:
+
+```bash
+ndh secrets backend file             # headless account: encrypted file store
+ndh secrets set CI_GREETING          # hidden prompt; or pipe the value
+ndh vars set DEPLOY_TARGET staging
+ndh hook install /srv/git/app.git --server http://hub.internal:4949
+```
+
+The hook labels every run with a project slug derived from the repo path
+(`/srv/git/app.git` becomes `git/app`). Pass `--repository owner/name` to
+override. The same label scopes repo-level secrets and variables. Values
+resolve on the server at dispatch time, so a push uses the server's values.
+
+**4. Developers clone and push.** No `ndh`, no configuration:
+
+```bash
+git clone ssh://git@git.internal/srv/git/app.git
+git push origin main
+```
+
+The push waits for the dispatched run, and the result streams back as
+`remote:` lines:
+
+```
+remote: | greeting is *** on refs/heads/main
+remote: [app-ci / build] Job Completed with Status: Succeeded
+remote: [.github/workflows/ci.yml] Workflow 2 Completed with Status: Succeeded
+remote: All Workflows finished successfully
+remote: [ndh] dispatched main (refs/heads/main)
+```
+
+Secret values arrive masked (`***`). The hook dispatches each pushed branch
+with `--ref refs/heads/<branch>`, so `on: push: branches:` filters behave
+exactly like a GitHub push. Teammates watch results in the web UI with the
+`--basic-auth` credentials, or from the CLI:
+
+```bash
+ndh status   --server http://hub.internal:4949   # runners + recent runs
+ndh projects --server http://hub.internal:4949   # per-project rollup
+ndh watch <run-id> --server http://hub.internal:4949
+```
+
+CI cannot reject a push, a hub-down push still lands, and each extra repo
+gets its own `ndh hook install`. Those details, with verified transcripts,
+are in [docs/collaboration.md](docs/collaboration.md); the hook internals are
+in [docs/operations.md](docs/operations.md#trigger-ci-from-a-git-server).
+
+---
+
+## Setup 3 — self-hosted GitLab, or any git host
+
+notdownhub runs workflows in **GitHub Actions format**, from
+`.github/workflows/`, no matter where the repo is hosted. A repo on GitLab is
+no exception: the engine does not read `.gitlab-ci.yml`. Keep workflows in
+`.github/workflows/` and any git host works.
+
+The hub has no webhook endpoint for a forge to call
+([#115](https://github.com/davidtai/notdownhub/issues/115)). A webhook-shaped
+POST is accepted and dropped, and no run starts. Trigger runs through a
+checkout dispatch, a server hook, or a mirror — the three patterns below.
+
+### Dispatch from any checkout
+
+The direct path needs no integration at all. Clone from GitLab, then dispatch
+the tree to your hub — verified against a local GitLab over HTTP:
+
+```bash
+git clone http://gitlab.internal/team/app.git
+cd app
+ndh dispatch --server http://hub.internal:4949
+```
+
+The project label derives from the checkout's `origin` remote. Pass
+`--repository owner/name` to set it explicitly.
+
+### GitLab server hooks (self-hosted)
+
+Self-hosted GitLab keeps each project as a bare repo on the GitLab host, and
+runs `custom_hooks/post-receive` there after each push. That is the same hook
+shape `ndh hook install` writes. The flow below was verified live against
+GitLab CE 19.2.1 (Omnibus, in Docker). A push to GitLab dispatched the hub,
+and the run streamed back into the push output.
+
+**On the GitLab host**, give `ndh` a home the `git` user can write, and
+install the runner stack (Node >= 22.13 first — see
+[install.md](docs/install.md)):
+
+```bash
+mkdir -p /var/opt/gitlab/ndh-home
+export HOME=/var/opt/gitlab/ndh-home
+ndh install
+chown -R git:git /var/opt/gitlab/ndh-home
+```
+
+**As the `git` user**, with the same `HOME`, store the team's values. The
+GitLab host is now the dispatching machine — the same rule as Setup 2:
+
+```bash
+export HOME=/var/opt/gitlab/ndh-home
+ndh secrets backend file
+ndh secrets set CI_GREETING          # hidden prompt; or pipe the value
+```
+
+**Find the project's disk path** (GitLab hashed storage) and install the
+hook. `gitlab-rails` needs a root shell; the rest runs as the `git` user:
+
+```bash
+gitlab-rails runner "puts Project.find_by_full_path('team/app').repository.disk_path"
+# @hashed/6b/86/6b86b2…5b4b
+
+REPO=/var/opt/gitlab/git-data/repositories/@hashed/6b/86/6b86b2…5b4b.git
+mkdir -p "$REPO/hooks" "$REPO/custom_hooks"
+ndh hook install "$REPO" --server http://hub.internal:4949 --repository team/app
+mv "$REPO/hooks/post-receive" "$REPO/custom_hooks/post-receive"
+```
+
+The hashed path gives no usable project slug, so keep the explicit
+`--repository`. GitLab passes a minimal environment to a custom hook. Add one
+line at the top of `custom_hooks/post-receive`, under `#!/bin/sh`:
+
+```sh
+export HOME=/var/opt/gitlab/ndh-home PATH=/usr/bin:/bin:/usr/local/bin:/opt/gitlab/embedded/bin DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
+```
+
+- `HOME` points the hook at the ndh state installed above.
+- Omnibus git lives in `/opt/gitlab/embedded/bin`, so `PATH` must include it.
+- The Omnibus Docker image ships without `libicu`; the invariant-globalization
+  flag lets the .NET dispatch client start without it.
+
+A push to GitLab now triggers CI, and the run streams back into the push
+output as in Setup 2. Server-side secrets arrive in the run, masked as `***`.
+Runs group under the `--repository` label in the UI and in `ndh projects`.
+
+### Push mirroring to a hooked bare repo
+
+Sometimes you cannot place hooks on the GitLab host: gitlab.com, or no shell
+access. Mirror the repo to a plain bare git server that carries the Setup 2
+hook:
+
+```bash
+# on the git server:
+git init --bare /srv/git/app-mirror.git
+ndh hook install /srv/git/app-mirror.git --server http://hub.internal:4949 --repository team/app
+```
+
+Point GitLab push mirroring (Settings → Repository → Mirroring repositories)
+at that repo, or push the mirror yourself:
+
+```bash
+git push --mirror git.internal:/srv/git/app-mirror.git
+```
+
+Verified: a `git push --mirror` from a stand-in GitLab origin fired the hook,
+and the run recorded under `team/app`. The generated hook dispatches branch
+refs and skips tag refs, so a full mirror push is safe. GitLab's scheduled
+push mirroring performs the same push; that half follows GitLab's
+documentation and was not run here.
 
 ---
 
@@ -214,13 +413,6 @@ Facts that apply to a migration:
 - GitHub webhooks do not reach your hub. To start CI, use `ndh dispatch`, a webhook from your git server, or an `on: schedule` trigger. The [operations guide](docs/operations.md) describes each trigger.
 - The hub stores artifacts and cache data from `actions/upload-artifact` and `actions/cache`.
 - Secrets and variables are stored on the machine you dispatch from, and inject into each run. See [operations.md → Secrets & variables](docs/operations.md#secrets--variables) for scopes, multiline secrets, and how values reach a run.
-
-## Operations
-
-The runbook covers running a hub in production:
-**[docs/operations.md](docs/operations.md)**. It covers the launchd/systemd
-service, `--host` selection, firewall rules, backups, restart and reconnect
-behavior, mirror warm-up, upgrades, and a troubleshooting table.
 
 ---
 
@@ -260,7 +452,7 @@ with `ndh hub up --no-mirror-rewrite`.
         (laptop)          (build box)       (CI server)
 ```
 
-`ndh run` needs none of this — it spins up a hub and a runner in-process, runs
+`ndh run` needs none of this — it starts a hub and a runner in-process, runs
 your workflows, and exits. The hub exists only when you want a persistent,
 multi-machine fleet. Full details, request flows, and the security model:
 [docs/architecture.md](docs/architecture.md).
