@@ -123,6 +123,19 @@ same route afterward. The re-run replay then sets `localcheckout=true` exactly
 when a retained tree exists. Without a tree, the hub refuses a checkout
 workflow's re-run instead of queueing an attempt that must fail.
 
+The first checkout's stream can also fail to start. A dispatch directory with
+no `.git` makes `Runner.Client` walk the tree itself. That walk stops on a
+dangling symlink without reporting it. So the tree never uploads, and the runner
+waits forever (#158). `ndh dispatch` and `ndh run` pre-flight a `.git`-less
+tree. They scan it for dangling symlinks and refuse with the list instead of
+starting a run whose checkout cannot complete.
+
+The front also gives the proxied multipart GET a first-byte deadline.
+`NDH_TREE_UPLOAD_TIMEOUT_MS` sets it, and it defaults to five minutes. If the
+engine sends no response by then, the front answers the checkout 504. It also
+logs which run's dispatch client never uploaded, so the step fails instead of
+holding the runner.
+
 ### Request flow: registration and the host header
 
 When a runner registers, `Runner.Server` mints **tenant URLs** for that runner

@@ -222,3 +222,37 @@ test("an unreachable engine yields 502 (nothing cached)", async () => {
     await f.close();
   }
 });
+
+test("a dispatch client that never uploads yields 504 and caches nothing (#158)", async () => {
+  freshHome();
+  // An engine that accepts the multipart GET but never answers (the .git-less dangling-symlink
+  // stall): it holds the response open and only ends it in cleanup, so the front's first-byte
+  // deadline is what has to fire.
+  const open: http.ServerResponse[] = [];
+  const engine = await startServer((req, res) => {
+    if ((req.url ?? "").includes("/multipart/")) {
+      open.push(res); // never respond
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  const f = await front(engine.port);
+  const saved = process.env.NDH_TREE_UPLOAD_TIMEOUT_MS;
+  process.env.NDH_TREE_UPLOAD_TIMEOUT_MS = "200";
+  try {
+    const r = await get(f.port, "/_apis/v1/Message/multipart/44?submodules=false&nestedSubmodules=false");
+    assert.equal(r.status, 504);
+    assert.match(r.body, /never uploaded/);
+    assert.equal(await hasCompleteTree(44), false);
+    const dir = join(treeCacheDir(), "44");
+    const leftovers = existsSync(dir) ? readdirSync(dir) : [];
+    assert.deepEqual(leftovers, []); // no .multipart / .json / .part debris
+  } finally {
+    if (saved === undefined) delete process.env.NDH_TREE_UPLOAD_TIMEOUT_MS;
+    else process.env.NDH_TREE_UPLOAD_TIMEOUT_MS = saved;
+    for (const res of open) res.end(); // release the held engine responses
+    await f.close();
+    await engine.close();
+  }
+});

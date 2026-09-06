@@ -111,9 +111,28 @@ export async function proxyRetainTree(
   const dir = join(treeCacheDir(), String(runId));
   const key = treeKey(params);
   await mkdir(dir, { recursive: true }).catch(() => {});
+
+  // First-byte deadline (#158). A `.git`-less dispatch tree with a dangling symlink stalls
+  // Runner.Client's own walk, so the engine's GetMulti sends nothing and this GET would hang
+  // forever, holding the runner busy. If no upstream response arrives within the deadline,
+  // answer 504 so the checkout step fails instead. `responded` also serializes the timeout,
+  // the upstream error, and the normal response so none double-answers the other.
+  const timeoutMs = Number(process.env.NDH_TREE_UPLOAD_TIMEOUT_MS) || 300000;
+  let responded = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const clearTimer = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+
   const upstream = http.request(
     { host: "127.0.0.1", port: hubPort, path: req.url, method: "GET", headers: req.headers },
     (up) => {
+      clearTimer();
+      if (responded) return;
+      responded = true;
       res.writeHead(up.statusCode ?? 502, up.headers);
       res.flushHeaders?.();
       const contentType = String(up.headers["content-type"] ?? "");
@@ -165,7 +184,30 @@ export async function proxyRetainTree(
       }
     },
   );
+  timer = setTimeout(() => {
+    if (responded) return;
+    responded = true;
+    timer = null;
+    upstream.destroy();
+    log(
+      `run ${runId}: the dispatch client never uploaded its tree within ${timeoutMs} ms; answering the checkout 504 instead of holding the runner (#158)`,
+    );
+    if (!res.headersSent) {
+      res.writeHead(504, { "content-type": "text/plain" });
+      res.end("the dispatching client never uploaded its working tree");
+    } else {
+      res.destroy();
+    }
+  }, timeoutMs);
+  timer.unref?.();
+
   upstream.on("error", () => {
+    clearTimer();
+    if (responded) {
+      if (!res.writableEnded && !res.destroyed) res.destroy();
+      return;
+    }
+    responded = true;
     if (!res.headersSent) {
       res.writeHead(502);
       res.end("hub unavailable");
@@ -173,7 +215,10 @@ export async function proxyRetainTree(
       res.destroy();
     }
   });
-  const abort = () => upstream.destroy();
+  const abort = () => {
+    clearTimer();
+    upstream.destroy();
+  };
   res.on("close", abort);
   req.on("aborted", abort);
   req.pipe(upstream);

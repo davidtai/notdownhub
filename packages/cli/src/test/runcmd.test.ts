@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCmd, dispatchCmd, __test } from "../runcmd.js";
@@ -216,4 +216,62 @@ test("dispatchCmd: a reachable hub proceeds to spawn Runner.Client, silently (pr
   assert.equal(code, 0);
   assert.ok(cap.spawned(), "reachable hub -> Runner.Client is invoked");
   assert.equal(out, "", "a reachable hub logs nothing at the pre-flight");
+});
+
+/** A temp dir with no .git holding one dangling symlink; returns the dir path. */
+function danglingTree(): string {
+  const dir = mkdtempSync(join(tmpdir(), "ndh-dispatch-tree-"));
+  mkdirSync(join(dir, "skills"), { recursive: true });
+  symlinkSync("../gone/target.md", join(dir, "skills", "SKILL.md"));
+  return dir;
+}
+
+test("dispatchCmd: a .git-less tree with a dangling symlink refuses, exits 1, never spawns, names the link (#158)", async () => {
+  const cap = capture(() => "acme/widget");
+  const cwd = danglingTree();
+  const { code, out } = await dispatchWithLogs(["--server", "http://hub:4949", "-W", "."], {
+    ...cap.deps,
+    cwd,
+  });
+  assert.equal(code, 1);
+  assert.equal(cap.spawned(), false, "Runner.Client must not spawn when the tree upload cannot start");
+  assert.match(out, /refusing to dispatch/);
+  assert.match(out, /has no \.git/);
+  assert.match(out, /#158/);
+  assert.match(out, /skills\/SKILL\.md -> \.\.\/gone\/target\.md/);
+});
+
+test("dispatchCmd: the same tree WITH a .git directory proceeds to the runner (git ls-files, no scan)", async () => {
+  const cap = capture(() => "acme/widget");
+  const cwd = danglingTree();
+  mkdirSync(join(cwd, ".git"));
+  const code = await dispatchCmd(["--server", "http://hub:4949", "-W", "."], { ...cap.deps, cwd });
+  assert.equal(code, 0);
+  assert.ok(cap.spawned(), "a .git tree is never scanned; dispatch proceeds");
+});
+
+test("dispatchCmd: a .git-less tree with no dangling symlink proceeds to the runner", async () => {
+  const cap = capture(() => "acme/widget");
+  const cwd = mkdtempSync(join(tmpdir(), "ndh-dispatch-clean-"));
+  writeFileSync(join(cwd, "README.md"), "clean tree, no git, no broken links");
+  const code = await dispatchCmd(["--server", "http://hub:4949", "-W", "."], { ...cap.deps, cwd });
+  assert.equal(code, 0);
+  assert.ok(cap.spawned(), "a clean .git-less tree dispatches normally");
+});
+
+test("runCmd: a .git-less tree with a dangling symlink refuses the same way, exits 1, never spawns (#158)", async () => {
+  const cap = capture(() => "acme/widget");
+  const cwd = danglingTree();
+  const logs: string[] = [];
+  const orig = console.error;
+  console.error = (...a: unknown[]) => logs.push(a.join(" "));
+  try {
+    const code = await runCmd(["-W", "."], { ...cap.deps, cwd });
+    assert.equal(code, 1);
+    assert.equal(cap.spawned(), false, "runCmd must not spawn on a refused tree");
+    assert.match(logs.join("\n"), /refusing to dispatch/);
+    assert.match(logs.join("\n"), /skills\/SKILL\.md -> \.\.\/gone\/target\.md/);
+  } finally {
+    console.error = orig;
+  }
 });

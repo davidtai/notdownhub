@@ -760,6 +760,12 @@ an unresolved host blocks the dispatch with one clear line. A transient reset or
 a slow first response only warns, then proceeds; the dispatch surfaces any real
 error itself. The probe waits 2 seconds. Set `NDH_PROBE_TIMEOUT_MS` to change it.
 
+`ndh dispatch` and `ndh run` also pre-flight the working tree. A directory with
+no `.git` makes `Runner.Client` walk the tree itself. That walk stops on a
+dangling symlink and never uploads the tree. So the run's checkout would wait
+forever. Both commands scan a `.git`-less tree first. They refuse with the list
+of dangling links instead of starting such a run.
+
 ### Trigger CI from a git server
 
 A bare git server can trigger CI on a branch update. A `post-receive` hook
