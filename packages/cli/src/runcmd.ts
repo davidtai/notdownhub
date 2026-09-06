@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
+import { readlink } from "node:fs/promises";
 import { join } from "node:path";
 import { ensureVendor } from "./vendor.js";
+import { findDanglingSymlinks, hasGitDir } from "./treecheck.js";
 import { hubProbeAmbiguousMessage, hubUnreachableMessage, isDefinitiveDown, log, ndhHome, probeServer, run, vendorExe, type Reachability } from "./lib.js";
 import { initFileLog } from "./filelog.js";
 import { currentRepoSlug, withRunnerSecrets } from "./secrets.js";
@@ -78,6 +80,29 @@ export interface RunDeps {
   repoSlug?: () => string | null;
   /** Pre-flight hub reachability check (dispatch). Defaults to a real network probe. */
   probe?: (url: string) => Promise<Reachability>;
+  /** The tree the run checks out. Defaults to process.cwd(); a seam for the pre-flight. */
+  cwd?: string;
+}
+
+/**
+ * Pre-flight for a `.git`-less tree (#158). Runner.Client walks such a tree itself and its
+ * walk stops on a dangling symlink without reporting it, so the run's checkout waits for a
+ * tree that never uploads and the runner stays busy. Refuse before spawning, with the list.
+ * A tree with `.git` is not scanned: git ls-files enumerates the index, never symlink targets.
+ * Returns 1 to refuse, or null to proceed.
+ */
+async function treePreflight(cwd: string): Promise<number | null> {
+  if (hasGitDir(cwd)) return null;
+  const dangling = await findDanglingSymlinks(cwd);
+  if (dangling.length === 0) return null;
+  log(
+    `refusing to dispatch: ${cwd} has no .git, so Runner.Client walks the tree itself, and that walk stops on a dangling symlink without reporting it; the run's checkout would wait for the tree forever (#158). Dangling symlinks:`,
+  );
+  for (const rel of dangling) {
+    const target = await readlink(join(cwd, rel)).catch(() => "?");
+    log(`  ${rel} -> ${target}`);
+  }
+  return 1;
 }
 
 /** `ndh run` — one-shot: in-process hub + runner, executes this repo's workflows right here. */
@@ -85,6 +110,9 @@ export async function runCmd(argv: string[], deps: RunDeps = {}): Promise<number
   const runner = deps.runner ?? run;
   if (!deps.runner) initFileLog(join(ndhHome(), "logs"), "run");
   await (deps.ensure ?? ensureVendor)();
+  const cwd = deps.cwd ?? process.cwd();
+  const refusal = await treePreflight(cwd);
+  if (refusal !== null) return refusal;
   const slug = repositoryArg(argv) ?? (deps.repoSlug ?? currentRepoSlug)();
   const repo = repositoryArgs(argv, projectSlug(slug));
   // Secret VALUES are passed only through the ephemeral --secret-file, never on argv.
@@ -122,6 +150,9 @@ export async function dispatchCmd(argv: string[], deps: RunDeps = {}): Promise<n
     log(hubProbeAmbiguousMessage(server));
     if (reach.detail) log(`  ${reach.detail}`);
   }
+  const cwd = deps.cwd ?? process.cwd();
+  const refusal = await treePreflight(cwd);
+  if (refusal !== null) return refusal;
   const slug = repositoryArg(argv) ?? (deps.repoSlug ?? currentRepoSlug)();
   const repo = repositoryArgs(argv, projectSlug(slug));
   return withRunnerSecrets(slug, (sec) =>
